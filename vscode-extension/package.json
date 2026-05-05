@@ -1,0 +1,145 @@
+{
+  "name": "alphapilot",
+  "displayName": "AlphaPilot - AI 编程助手",
+  "version": "2.0.0",
+  "description": "基于 step_executor 的下一代智能体执行引擎，超越 Cursor 和 GitHub Copilot",
+  "publisher": "Alphapilot",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Machine Learning",
+    "Snippets"
+  ],
+  "keywords": [
+    "AI",
+    "Copilot",
+    "Code Generation",
+    "Intelligent Agent",
+    "step_executor"
+  ],
+  "activationEvents": [
+    "onLanguage:python",
+    "onLanguage:javascript",
+    "onLanguage:typescript",
+    "onLanguage:java",
+    "onLanguage:cpp",
+    "onLanguage:c",
+    "onLanguage:go",
+    "onLanguage:rust"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "alphapilot.openPanel",
+        "title": "AlphaPilot: 打开任务面板",
+        "category": "AlphaPilot",
+        "icon": "$(rocket)"
+      },
+      {
+        "command": "alphapilot.submitTask",
+        "title": "AlphaPilot: 提交新任务",
+        "category": "AlphaPilot",
+        "icon": "$(plus)"
+      },
+      {
+        "command": "alphapilot.stopTask",
+        "title": "AlphaPilot: 停止当前任务",
+        "category": "AlphaPilot",
+        "icon": "$(stop)"
+      },
+      {
+        "command": "alphapilot.selectModel",
+        "title": "AlphaPilot: 选择 AI 模型",
+        "category": "AlphaPilot",
+        "icon": "$(symbol-method)"
+      },
+      {
+        "command": "alphapilot.openReactPanel",
+        "title": "AlphaPilot: 打开 React 面板 (v2.2)",
+        "category": "AlphaPilot",
+        "icon": "$(rocket)"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "when": "resourceLangId",
+          "command": "alphapilot.openReactPanel",
+          "group": "navigation"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "alphapilot.openReactPanel",
+          "when": "true"
+        },
+        {
+          "command": "alphapilot.openPanel",
+          "when": "true"
+        },
+        {
+          "command": "alphapilot.submitTask",
+          "when": "true"
+        },
+        {
+          "command": "alphapilot.stopTask",
+          "when": "true"
+        },
+        {
+          "command": "alphapilot.selectModel",
+          "when": "true"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "alphapilot.openPanel",
+        "key": "ctrl+shift+a",
+        "mac": "cmd+shift+a",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "alphapilot.submitTask",
+        "key": "ctrl+shift+p",
+        "mac": "cmd+shift+p",
+        "when": "editorTextFocus"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts",
+    "pretest": "npm run compile",
+    "package": "vsce package",
+    "publish": "vsce publish"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.0",
+    "@types/vscode": "^1.80.0",
+    "typescript": "^5.0.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "eslint": "^8.0.0",
+    "@vscode/vsce": "^2.0.0"
+  },
+  "dependencies": {
+    "socket.io-client": "^4.8.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-org/alphapilot.git"
+  },
+  "bugs": {
+    "url": "https://github.com/your-org/alphapilot/issues"
+  },
+  "homepage": "https://github.com/your-org/alphapilot#readme",
+  "icon": "images/icon.png",
+  "galleryBanner": {
+    "color": "#4fc3f7",
+    "theme": "dark"
+  }
+}

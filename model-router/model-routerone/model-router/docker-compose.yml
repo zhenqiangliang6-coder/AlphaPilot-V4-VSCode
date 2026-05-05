@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  model_router:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - ENV_FILE=.env
+    volumes:
+      - .:/app
+    depends_on:
+      - redis
+      - sqlite
+
+  redis:
+    image: "redis:alpine"
+    ports:
+      - "6379:6379"
+
+  sqlite:
+    image: "nouchka/sqlite3"
+    volumes:
+      - sqlite_data:/data
+
+volumes:
+  sqlite_data:

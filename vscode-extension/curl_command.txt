@@ -1,0 +1,6 @@
+curl -X POST "https://ark.cn-beijing.volces.com/api/v3/responses" -H "Authorization: Bearer 4ab0723a-e83a-469e-adbc-9ffdc0995b7b" -H "Content-Type: application/json" -d "{\"model\": \"doubao-seed-2-0-lite-260215\", \"input\": [{\"role\": \"user\", \"content\": [{\"type\": \"input_image\", \"image_url\": \"https://ark-project.tos-cn-beijing.volces.com/doc_image/ark_demo_img_1.png\"}, {\"type\": \"input_text\", \"text\": \"你看见了什么？\"}]}]}"
+
+curl -X POST "https://ark.cn-beijing.volces.com/api/v3/responses" ^
+-H "Authorization: Bearer 4ab0723a-e83a-469e-adbc-9ffdc0995b7b" ^
+-H "Content-Type: application/json" ^
+-d "{\"model\": \"doubao-seed-2-0-lite-260215\", \"input\": [{\"role\": \"user\", \"content\": [{\"type\": \"input_image\", \"image_url\": \"https://ark-project.tos-cn-beijing.volces.com/doc_image/ark_demo_img_1.png\"}, {\"type\": \"input_text\", \"text\": \"你看见了什么？\"}]}]}"

@@ -1,0 +1,3 @@
+upstash-redis
+python-dotenv
+requests

@@ -1,0 +1,17 @@
+fastapi
+uvicorn[standard]
+gradio
+redis
+sqlalchemy
+huggingface_hub
+pydantic
+httpx
+pytest
+pytest-asyncio
+aiohttp
+numpy
+scikit-learn
+pillow
+python-dotenv
+docker
+docker-compose

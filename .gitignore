@@ -1,0 +1,39 @@
+# ===== Python =====
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+
+# ===== Node =====
+node_modules/
+npm-debug.log
+yarn-error.log
+dist/
+build/
+
+# ===== VSCode Extension =====
+.vscode/
+out/
+*.vsix
+
+# ===== Webview =====
+webview/node_modules/
+webview/dist/
+webview/build/
+
+# ===== OS / Editor =====
+.DS_Store
+Thumbs.db
+
+# ===== Logs =====
+*.log
+
+# ===== Environment =====
+.env
+.env.local
+.env.development
+.env.production
+.venv_worker/
