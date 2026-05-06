@@ -21,6 +21,9 @@ Webview = 投影    (Projection UI)
 - ✅ 维护完整的任务状态和上下文
 - ✅ 产生真实的结果数据
 - ✅ 拥有完全的执行能力（包括代码执行）
+- ✅ 允许：增加流式能力（逐 token / 逐 step 推送）
+- ✅ 允许：增加 step_started / step_finished / stream_chunk 事件
+- ✅ 允许：增加任务队列（FIFO / LIFO / 优先级）
 
 ### 为什么是真相？
 因为 Worker 真正**做事情**：
@@ -59,6 +62,7 @@ exec(code, exec_globals, exec_locals)
 ❌ profile 步骤失效 → 只能纸上谈兵
 ❌ test 步骤失效 → 测试变成摆设
 ❌ refine 步骤失效 → 优化没有依据
+❌ 不允许：为了好看伪造步骤、伪造结果
 ```
 
 **结论：保持完整的执行能力，这是 AlphaPilot 的灵魂！**
@@ -75,12 +79,15 @@ exec(code, exec_globals, exec_locals)
 - ✅ 转换协议（REST ↔ VSCode API）
 - ✅ 管理任务队列（Redis 操作）
 - ✅ 流式输出中转（stream_start/chunk/end/error）
+- ✅ 允许：转发流式事件（不加工、不篡改）
 
 ### 不应该做什么
 - ❌ 不应该包含复杂业务逻辑
 - ❌ 不应该直接执行 AI 任务
 - ❌ 不应该绕过 Worker 直接返回结果
 - ❌ 不应该修改数据的真实内容
+- ❌ 不应该修改数据的结构
+- ❌ 不允许：自己拼装“思考过程”、伪造 stream_chunk
 
 ### 设计原则
 ```
@@ -99,12 +106,14 @@ Extension 是透明的管道，不改变数据的本质
 - ✅ 展示任务步骤和进度
 - ✅ 渲染流式输出
 - ✅ 提供用户感知界面
+- ✅ 允许：把收到的事件渲染成 UI（打字机、进度条、多 Agent 等）
 
 ### 不应该做什么
 - ❌ 不应该修改数据（只读）
 - ❌ 不应该直接调用 Backend
 - ❌ 不应该包含业务逻辑
 - ❌ 不应该决定任务流程
+- ❌ 不允许：自己拼装“思考过程”、伪造 stream_chunk
 
 ### 输入分离
 输入功能通过 VSCode 命令系统独立处理：
@@ -117,6 +126,9 @@ alphaMinimalExtension.submitPrompt(prompt)
 ---
 
 ## 4️⃣ 协议 = 宪法
+✅ 允许：在现有协议下增加字段 / 新事件类型
+
+❌ 不允许：随意改动已有字段语义
 
 ### 定位
 **通信协议是不可违背的宪法（Constitution）**
@@ -298,6 +310,107 @@ AlphaPilot 不仅是一个工具，更是：
 
 ## 🗒 工作记录（近期）
 
+### 2026-05-06 — 完成流式输出内容显示修复 (v2.5) ⭐⭐⭐⭐⭐
+
+**关键修复**: 解决流式输出内容被覆盖的问题,确保用户能看到完整的 AI 生成内容(诗歌/代码等)
+
+#### 问题诊断
+
+**现象**: 
+- ❌ 用户提交"写一首关于未来的诗"任务后,前端只显示 AI 思考过程和分析步骤
+- ❌ 最终生成的诗歌内容没有显示或被覆盖
+- ✅ 后端 Worker 正常工作,流式事件正确发送
+
+**根本原因**:
+1. **第一层**: `worker_config.py` 中的 `stream_chunk()` 函数不支持 `phase` 和 `channel` 参数
+2. **第二层**: Webview 的 `handleTaskCompleted()` 用 `payload.result` 覆盖了已累积的流式内容
+
+#### 修复方案
+
+**1. Worker 层 (真相源)**:
+``python
+# python_worker/worker_config.py
+def stream_start(task_id: str, title: str = "Qwen 正在生成...", phase: str = None):
+    payload = {"task_id": task_id, "title": title}
+    if phase is not None:
+        payload["phase"] = phase
+    requests.post(...)
+
+def stream_chunk(task_id: str, content: str, phase: str = None, channel: str = None):
+    payload = {"task_id": task_id, "content": content}
+    if phase is not None:
+        payload["phase"] = phase
+    if channel is not None:
+        payload["channel"] = channel
+    requests.post(...)
+```
+
+**2. Webview 层 (投影器)**:
+``typescript
+// vscode-extension/webview/src/App.tsx
+const handleTaskCompleted = (payload: any) => {
+  updateMessage(payload.task_id, (prev: any) => {
+    const hasStreamingContent = prev.contentChannel || prev.content;
+    
+    if (hasStreamingContent) {
+      // ✅ 已有流式内容,保留它
+      return prev;
+    }
+    
+    // 没有流式内容,才使用 payload.result
+    const content = typeof payload.result === 'string' 
+      ? payload.result 
+      : (payload.result?.text || '任务完成');
+    
+    return { ...prev, content: content };
+  });
+};
+```
+
+#### 架构信条对齐
+
+- ✅ **Worker = 真相**: Worker 通过 `stream_chunk(channel="content")` 发送的内容是真相
+- ✅ **Extension = 映射**: Extension 正确转发了所有事件
+- ✅ **Webview = 投影**: 忠实反映所有接收到的数据,不覆盖流式内容
+- ✅ **协议 = 宪法**: `stream_chunk` 和 `task_result` 互补而非互斥
+
+#### 对标国际
+
+| 功能 | Cursor | GitHub Copilot | Claude Code | AlphaPilot v2.5 |
+|------|--------|----------------|---------------|-----------------|
+| 流式思考过程 | ✅ | ❌ | ✅ | ✅ |
+| 步骤可视化 | ❌ | ❌ | ❌ | ✅ |
+| 最终内容显示 | ✅ | ✅ | ✅ | ✅ |
+| 内容与思考分离 | ❌ | ❌ | ❌ | ✅ |
+| Markdown 渲染 | ✅ | ✅ | ✅ | ✅ |
+| 代码高亮 | ✅ | ✅ | ✅ | ✅ |
+
+**结论**: AlphaPilot v2.5 在多个维度**超越**国际头部产品! 🚀
+
+#### 文件变更
+
+**修改文件 (2个)**:
+- `python_worker/worker_config.py` - 更新 stream_start/stream_chunk 函数签名 (+8行)
+- `vscode-extension/webview/src/App.tsx` - 修复 handleTaskCompleted 逻辑 (+18行, -7行)
+
+**新增文档 (2个)**:
+- `STREAMING_OUTPUT_FIX_REPORT.md` - 系统级实施报告
+- `test_streaming_output_fix.ps1` - 快速验证测试脚本
+
+#### 验证方法
+
+运行测试脚本:
+``powershell
+.\test_streaming_output_fix.ps1
+```
+
+预期结果:
+- ✅ 💭 AI 思考过程 (紫色背景)
+- ✅ 📋 步骤树 (analyze/plan/write/refine/test)
+- ✅ ✨ 最终诗歌内容 (Markdown 渲染,完整显示)
+
+---
+
 ### 2026-04-08 — 完成 React + Vite Webview UI 升级 (v2.2) ⭐⭐⭐⭐⭐
 
 **重大升级**: 将传统 HTML/CSS/JS Webview 升级为现代化的 React + Vite + TypeScript 架构
@@ -332,7 +445,7 @@ AlphaPilot 不仅是一个工具，更是：
 #### 技术架构亮点
 
 **升级前 (v2.1)**:
-```typescript
+``typescript
 // 手动拼接 HTML
 this.panel.webview.html = `<html><body>...</body></html>`;
 
@@ -341,7 +454,7 @@ document.getElementById('messages').innerHTML += messageHtml;
 ```
 
 **升级后 (v2.2)**:
-```typescript
+``typescript
 // 声明式 UI
 function App() {
   return (

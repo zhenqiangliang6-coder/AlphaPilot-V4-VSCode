@@ -9,6 +9,10 @@ export interface Message {
   timestamp: number;
   taskId?: string;
   steps?: Step[];
+  
+  // ⭐ 新增：流式通道内容分离
+  reasoningContent?: string;  // channel = reasoning (思考过程)
+  contentChannel?: string;    // channel = content (最终产出)
 }
 
 export interface Step {
@@ -18,6 +22,9 @@ export interface Step {
   output?: any;
   startedAt?: number;
   completedAt?: number;
+  
+  // ⭐ 新增：阶段信息
+  phase?: 'analyze' | 'plan' | 'write' | 'refine' | 'test';
 }
 
 export interface ChatState {
@@ -25,6 +32,7 @@ export interface ChatState {
   currentTaskId: string | null;
   isStreaming: boolean;
   selectedModel: string;
+  currentPhase: string | null;  // ⭐ 新增：当前阶段
   
   // Actions
   addMessage: (message: Message) => void;
@@ -35,6 +43,7 @@ export interface ChatState {
   clearMessages: () => void;
   addStep: (taskId: string, step: Step) => void;
   updateStep: (taskId: string, stepId: string, updates: Partial<Step>) => void;
+  setCurrentPhase: (phase: string | null) => void;  // ⭐ 新增
 }
 
 export const useChatStore = create<ChatState>()(
@@ -43,7 +52,8 @@ export const useChatStore = create<ChatState>()(
       messages: [],
       currentTaskId: null,
       isStreaming: false,
-      selectedModel: 'qwen_generate',
+      selectedModel: 'qwen-turbo',  // ⭐ 改为默认模型名
+      currentPhase: null,  // ⭐ 初始化
       
       addMessage: (message) => 
         set((state) => ({ 
@@ -75,7 +85,7 @@ export const useChatStore = create<ChatState>()(
         set({ selectedModel: model }),
       
       clearMessages: () =>
-        set({ messages: [], currentTaskId: null, isStreaming: false }),
+        set({ messages: [], currentTaskId: null, isStreaming: false, currentPhase: null }),
       
       addStep: (taskId, step) =>
         set((state) => ({
@@ -103,7 +113,11 @@ export const useChatStore = create<ChatState>()(
             }
             return msg;
           })
-        }))
+        })),
+      
+      // ⭐ 新增：设置当前阶段
+      setCurrentPhase: (phase) =>
+        set({ currentPhase: phase })
     }),
     {
       name: 'alphapilot-chat-storage',

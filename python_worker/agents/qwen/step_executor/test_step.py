@@ -1,30 +1,41 @@
 # step_executor/test_step.py
 # ---------------------------------------------------------
-# 自动生成并运行 pytest 风格单元测试（工业级容错版本）
+# 自动生成并运行 pytest 风格单元测试（工业级容错 + 流式输出版本）
 # ---------------------------------------------------------
 
 from .utils import extract_code, FAKE_PYTEST
 from .prompts import test_prompt
 from ....code_executor import run_python
-from ....worker_config import create_event
-from ..qwen_api import call_qwen
+from ....worker_config import create_event, stream_chunk, stream_start, stream_end
+from ..qwen_api import call_qwen_stream, call_qwen
 
 
-def run_test_step(step, context, events):
+def run_test_step(step, context, events, task_id=None):
     """
-    执行 test 步骤（工业级容错）：
+    执行 test 步骤（工业级容错 + 流式输出）：
     - 从 write 步骤获取代码
-    - 生成 pytest 风格测试代码
+    - 流式生成 pytest 风格测试代码
     - 注入 fake pytest
     - 组合执行
     
     容错策略:
     1. 验证 write 输出存在且有效
-    2. LLM 调用保护
+    2. LLM 流式调用保护
     3. 代码提取保护（多策略）
     4. 测试执行保护
     5. 输出保证
+    
+    ⭐ 新增：流式输出支持
+    - 通过 task_id 发送 stream_chunk 事件
+    - 实时展示 AI 思考过程
     """
+
+    # ===== 第0层：启动流式输出 =====
+    if task_id:
+        try:
+            stream_start(task_id, "🧪 正在生成测试用例...")
+        except Exception as e:
+            print(f"[WARN] stream_start 失败: {e}")
 
     # ===== 第1层防御：获取并验证 write 步骤的代码 =====
     try:
@@ -35,17 +46,19 @@ def run_test_step(step, context, events):
         ]
 
         if not write_outputs:
-            step["output"] = {
-                "text": "test：未找到 write 步骤的代码，无法生成测试用例。"
-            }
+            error_msg = "test：未找到 write 步骤的代码，无法生成测试用例。"
+            if task_id:
+                stream_chunk(task_id, error_msg)
+            step["output"] = {"text": error_msg}
             return
 
         write_text = write_outputs[-1]
         
     except Exception as e:
-        step["output"] = {
-            "text": f"test：获取代码时发生错误：{str(e)}"
-        }
+        error_msg = f"test：获取代码时发生错误：{str(e)}"
+        if task_id:
+            stream_chunk(task_id, error_msg)
+        step["output"] = {"text": error_msg}
         return
 
     # ===== 第2层防御：提取用户代码 =====
@@ -68,22 +81,33 @@ def run_test_step(step, context, events):
         code = ""
 
     if not code:
-        step["output"] = {
-            "text": "test：write 步骤未提供可解析的代码块。"
-        }
+        error_msg = "test：write 步骤未提供可解析的代码块。"
+        if task_id:
+            stream_chunk(task_id, error_msg)
+        step["output"] = {"text": error_msg}
         return
 
-    # ===== 第3层防御：调用 LLM 生成测试代码 =====
-    test_code_text = None
+    # ===== 第3层防御：流式调用 LLM 生成测试代码 =====
+    test_code_text = ""
     llm_success = False
     
     try:
         prompt = test_prompt(code)
-        test_code_text = call_qwen(prompt)
+        
+        # ⭐ 关键改动：使用流式调用而非阻塞调用
+        if task_id:
+            # 流式模式：逐块接收并转发
+            for chunk in call_qwen_stream(prompt):
+                test_code_text += chunk
+                # 实时发送到前端
+                stream_chunk(task_id, chunk)
+        else:
+            # 非流式模式（向后兼容）
+            test_code_text = call_qwen(prompt)
         
         # 验证返回值
-        if test_code_text is None:
-            raise ValueError("LLM 返回 None")
+        if not test_code_text:
+            raise ValueError("LLM 返回空字符串")
         
         if not isinstance(test_code_text, str):
             try:
@@ -91,17 +115,18 @@ def run_test_step(step, context, events):
             except:
                 raise TypeError(f"LLM 返回非字符串类型: {type(test_code_text)}")
         
-        if not test_code_text.strip():
-            raise ValueError("LLM 返回空字符串")
-        
         llm_success = True
         
     except TimeoutError:
-        print("[WARN] LLM 调用超时")
-        test_code_text = f"# LLM 调用超时\n# 无法生成测试"
+        error_msg = "# LLM 调用超时\n# 无法生成测试"
+        if task_id:
+            stream_chunk(task_id, error_msg)
+        test_code_text = error_msg
     except Exception as e:
-        print(f"[ERROR] LLM 调用失败: {e}")
-        test_code_text = f"# LLM 调用失败: {str(e)}"
+        error_msg = f"# LLM 调用失败: {str(e)}"
+        if task_id:
+            stream_chunk(task_id, error_msg)
+        test_code_text = error_msg
 
     # ===== 第4层防御：提取测试代码 =====
     test_code = ""
@@ -120,10 +145,15 @@ def run_test_step(step, context, events):
         test_code = ""
 
     if not test_code:
+        error_msg = "test：未能从 LLM 输出中提取到有效的测试代码。"
+        if task_id:
+            stream_chunk(task_id, "\n\n" + error_msg)
         step["output"] = {
-            "text": "test：未能从 LLM 输出中提取到有效的测试代码。",
+            "text": test_code_text if test_code_text else error_msg,
             "llm_success": llm_success
         }
+        if task_id:
+            stream_end(task_id)
         return
 
     # ===== 第5层防御：执行测试代码 =====
@@ -151,7 +181,7 @@ def run_test_step(step, context, events):
         exception = test_result.get('exception', None) if isinstance(test_result, dict) else None
         
         test_summary = (
-            f"## 🧪 生成的测试代码\n"
+            f"\n\n## 🧪 生成的测试代码\n"
             f"```python\n{test_code}\n```\n\n"
             f"## 📊 测试结果\n"
             f"stdout:\n{stdout}\n\n"
@@ -165,14 +195,27 @@ def run_test_step(step, context, events):
         else:
             test_summary += "⚠️ 测试执行异常\n"
             
+        # ⭐ 流式发送测试结果摘要
+        if task_id:
+            stream_chunk(task_id, test_summary)
+            
     except Exception as e:
         test_summary = f"测试结果格式化失败: {str(e)}"
+        if task_id:
+            stream_chunk(task_id, "\n\n" + test_summary)
 
     # ===== 第7层防御：写入输出 =====
     step["output"] = {
-        "text": test_summary,
+        "text": (test_code_text if test_code_text else "") + test_summary,
         "test_code": test_code,
         "test_result": test_result,
         "llm_success": llm_success,
         "exec_success": exec_success
     }
+    
+    # ⭐ 结束流式输出
+    if task_id:
+        try:
+            stream_end(task_id)
+        except Exception as e:
+            print(f"[WARN] stream_end 失败: {e}")

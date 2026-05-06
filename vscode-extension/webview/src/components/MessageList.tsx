@@ -2,9 +2,11 @@
 import React, { useEffect, useRef } from 'react';
 import { useChatStore } from '../store/chatStore';
 import { StepTree } from './StepTree';
+import { StreamingOutput } from './StreamingOutput';
+import { MarkdownRenderer } from './MarkdownRenderer';
 
 export const MessageList: React.FC = () => {
-  const { messages } = useChatStore();
+  const { messages, isStreaming, currentPhase } = useChatStore();
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // 自动滚动到底部
@@ -15,10 +17,16 @@ export const MessageList: React.FC = () => {
   if (messages.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center text-gray-500">
-        <div className="text-center">
-          <div className="text-4xl mb-2">🚀</div>
-          <div>开始与 AlphaPilot 对话</div>
-          <div className="text-sm mt-2">输入任务描述,AI 将帮你完成</div>
+        <div className="text-center space-y-3">
+          <div className="text-6xl animate-bounce">🚀</div>
+          <div className="text-lg font-semibold">开始与 AlphaPilot 对话</div>
+          <div className="text-sm text-gray-400">输入任务描述，AI 将帮你完成</div>
+          <div className="text-xs text-gray-500 mt-4 space-y-1">
+            <div>✨ 支持代码生成、问题解答、任务规划</div>
+            <div>⚡ 实时流式输出，可视化执行步骤</div>
+            <div>🎨 Markdown渲染，代码高亮显示</div>
+            <div>💭 思考过程与最终产出分离展示</div>
+          </div>
         </div>
       </div>
     );
@@ -29,13 +37,13 @@ export const MessageList: React.FC = () => {
       {messages.map((message) => (
         <div
           key={message.id}
-          className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
+          className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'} animate-fade-in`}
         >
           <div
-            className={`max-w-[80%] rounded-lg px-4 py-2 ${
+            className={`max-w-[85%] rounded-lg px-4 py-3 shadow-md ${
               message.role === 'user'
-                ? 'bg-vscode-button-bg text-vscode-button-fg'
-                : 'bg-vscode-list-hover text-vscode-fg'
+                ? 'bg-gradient-to-br from-blue-600 to-blue-700 text-white'
+                : 'bg-vscode-list-hover border border-vscode-border'
             }`}
           >
             {/* 用户消息 */}
@@ -45,26 +53,51 @@ export const MessageList: React.FC = () => {
 
             {/* AI 消息 */}
             {message.role === 'assistant' && (
-              <div className="space-y-3">
+              <div className="space-y-4">
                 {/* 步骤树 */}
                 {message.steps && message.steps.length > 0 && (
                   <StepTree steps={message.steps} />
                 )}
 
-                {/* 文本内容 */}
-                {message.content && (
-                  <div className="prose prose-invert max-w-none">
-                    <pre className="whitespace-pre-wrap text-sm">
-                      {message.content}
-                    </pre>
+                {/* ⭐ 思考过程（channel = reasoning）*/}
+                {message.reasoningContent && (
+                  <div className="mt-3 p-3 bg-purple-500/10 border-l-4 border-purple-500 rounded">
+                    <div className="text-xs text-purple-400 mb-2 flex items-center gap-2">
+                      <span>💭</span>
+                      <span>AI 思考过程</span>
+                      {isStreaming && <span className="animate-pulse">●</span>}
+                    </div>
+                    <StreamingOutput 
+                      content={message.reasoningContent} 
+                      isStreaming={isStreaming} 
+                    />
+                  </div>
+                )}
+
+                {/* ⭐ 最终产出（channel = content）*/}
+                {(message.contentChannel || message.content) && (
+                  <div className="mt-3">
+                    {isStreaming ? (
+                      <StreamingOutput 
+                        content={message.contentChannel || message.content} 
+                        isStreaming={isStreaming} 
+                      />
+                    ) : (
+                      <MarkdownRenderer content={message.contentChannel || message.content} />
+                    )}
                   </div>
                 )}
               </div>
             )}
 
-            {/* 时间戳 */}
-            <div className="text-xs opacity-50 mt-2">
-              {new Date(message.timestamp).toLocaleTimeString()}
+            {/* 时间戳和阶段标签 */}
+            <div className="text-xs opacity-50 mt-2 text-right flex items-center justify-end gap-2">
+              {currentPhase && isStreaming && (
+                <span className="px-2 py-0.5 bg-blue-500/20 text-blue-400 rounded text-xs">
+                  {currentPhase}
+                </span>
+              )}
+              <span>{new Date(message.timestamp).toLocaleTimeString()}</span>
             </div>
           </div>
         </div>

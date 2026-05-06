@@ -24,7 +24,11 @@ const io = new Server(httpServer, {
   },
 });
 
-app.use(express.json());
+// ⭐ 关键修复：增加 body-parser 限制到 10MB
+// 原因：智能体生成的 reasoning + content 可能非常大（复杂分析、代码生成、测试用例等）
+// 这是世界级编程助手（Cursor/Claude Code）都必须做的配置
+app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ limit: "10mb", extended: true }));
 
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL,
@@ -36,8 +40,19 @@ function pretty(obj) {
 }
 
 // ============================================================
+// ⭐ 新增：支持的模型列表（与Python端保持一致）
+// ============================================================
+const SUPPORTED_MODELS = {
+  qwen: ["qwen-turbo", "qwen-plus", "qwen-max", "qwen2.5"],
+  deepseek: ["deepseek-chat", "deepseek-coder"],
+  doubao: ["doubao-pro", "doubao-lite"],
+  gpt: ["gpt-4", "gpt-4o", "gpt-5"],
+  claude: ["claude-3-opus", "claude-3-sonnet", "claude-3-haiku"],
+  gemini: ["gemini-pro", "gemini-ultra"]
+};
+
+// ============================================================
 // v2 新增：事件流缓存（task_id => events[]）
-// Worker 的流式输出会写入这里，最终在 /task/notify 合并
 // ============================================================
 const taskEvents = new Map();
 
@@ -106,58 +121,66 @@ async function broadcastTaskResult(taskId, result) {
 app.set("broadcastTaskResult", broadcastTaskResult);
 
 // ============================================================
-// 【任务提交】支持 TaskModel v2
+// 【任务提交】支持 TaskModel v2 + 模型无关协议
 // ============================================================
 app.post("/task/submit", async (req, res) => {
   try {
     console.log("\n📥 收到前端提交任务：");
     console.log(pretty(req.body));
 
-    const { type, payload, source = "vscode-plugin" } = req.body;
+    const { type, payload, source = "vscode-plugin", meta = {} } = req.body;
     const task_id = uuidv4();
 
+    // ⭐ 验证任务类型（支持模型无关的 task.generate）
     if (!type) return res.status(400).json({ error: "任务类型 type 不能为空" });
+    
+    // 允许的类型：task.generate（推荐）或向后兼容的旧类型
+    const allowedTypes = ["task.generate", "qwen_generate", "deepseek_generate", "doubao_generate"];
+    if (!allowedTypes.includes(type)) {
+      return res.status(400).json({ 
+        error: `不支持的任务类型: ${type}`,
+        supported: allowedTypes
+      });
+    }
+
     if (!payload || typeof payload !== "object") {
       return res.status(400).json({ error: "payload 必须是对象" });
     }
 
-    let finalPayload = {};
+    // ⭐ 提取模型配置（从 meta 字段）
+    const model = meta.model || "qwen-turbo";  // 默认模型
+    const stream = meta.stream || false;  // 默认非流式
 
-    switch (type) {
-      case "add_numbers": {
-        const { a, b } = payload;
-        if (typeof a !== "number" || typeof b !== "number") {
-          return res.status(400).json({ error: "加法任务需要数字 a 和 b" });
-        }
-        finalPayload = { a, b };
-        break;
-      }
-
-      case "qwen_generate": {
-        const { prompt } = payload;
-        if (!prompt || typeof prompt !== "string") {
-          return res.status(400).json({ error: "AI 任务需要 prompt 字符串" });
-        }
-        finalPayload = { prompt };
-        break;
-      }
-
-      default:
-        finalPayload = payload;
-        break;
+    // 验证模型名称
+    const modelVendor = model.split("-")[0];
+    if (!SUPPORTED_MODELS[modelVendor]) {
+      console.warn(`⚠️ 未知模型厂商: ${modelVendor}，使用默认队列`);
     }
 
-    // 使用 v2 TaskModel
-    const task = createTaskSubmit(task_id, type, finalPayload, source);
+    let finalPayload = {};
 
-    console.log("\n📤 推入 Redis 队列（v2 标准格式）");
+    // ⭐ 统一处理所有生成类任务
+    if (type === "task.generate" || type.endsWith("_generate")) {
+      const { prompt } = payload;
+      if (!prompt || typeof prompt !== "string") {
+        return res.status(400).json({ error: "生成任务需要 prompt 字符串" });
+      }
+      finalPayload = { prompt };
+    } else {
+      // 其他任务类型（向后兼容）
+      finalPayload = payload;
+    }
+
+    // ⭐ 使用 v2 TaskModel，传入模型和流式配置
+    const task = createTaskSubmit(task_id, type, finalPayload, source, model, stream);
+
+    console.log("\n📤 推入 Redis 队列（v2 标准格式 + 模型无关）");
     console.log(pretty(task));
 
-    // ⭐ 根据任务类型路由到专属队列（符合多智能体架构）
-    const queueName = getWorkerQueue(type);
-    console.log(`🎯 路由到队列: ${queueName}`);
+    // ⭐ 根据模型类型路由到专属队列（符合多智能体架构）
+    const queueName = getWorkerQueue(model);
+    console.log(`🎯 路由到队列: ${queueName} (模型: ${model})`);
 
-    // 添加 Redis 操作返回值日志，便于排查问题
     const result = await redis.lpush(queueName, JSON.stringify(task));
     console.log("Redis LPUSH 返回值：", result);
     console.log(`✅ 任务已成功推入 Redis 队列，当前队列长度：${result}`);
@@ -165,6 +188,8 @@ app.post("/task/submit", async (req, res) => {
     const response = { 
       status: "submitted", 
       task_id,
+      model,
+      stream,
       message: "任务已提交到队列" 
     };
 
@@ -181,22 +206,28 @@ app.post("/task/submit", async (req, res) => {
 });
 
 // ============================================================
-// ⭐ 新增：根据任务类型获取队列名称（协议宪法扩展）
+// ⭐ 改进：根据模型名称获取队列名称（模型无关）
 // ============================================================
-function getWorkerQueue(taskType) {
+function getWorkerQueue(modelOrType) {
   // Worker 与队列的映射关系
   const WORKER_QUEUE_MAP = {
     "qwen": "task_queue:qwen",
     "deepseek": "task_queue:deepseek",
     "doubao": "task_queue:doubao",
-    // 未来扩展
+    "gpt": "task_queue:openai",  // GPT系列使用OpenAI Worker
     "claude": "task_queue:claude",
     "gemini": "task_queue:gemini",
-    "openai": "task_queue:openai",
   };
 
-  // 提取模型前缀 (qwen/deepseek/doubao 等)
-  const modelPrefix = taskType.split("_")[0];
+  // 提取模型前缀 (qwen/deepseek/doubao/gpt/claude/gemini)
+  let modelPrefix;
+  
+  if (modelOrType.startsWith("task.")) {
+    // 如果是 task.generate，需要从其他地方推断（暂时使用默认）
+    modelPrefix = "qwen";  // 默认
+  } else {
+    modelPrefix = modelOrType.split("_")[0].split("-")[0];
+  }
   
   // 查找映射，如果没有则使用默认队列（向后兼容）
   return WORKER_QUEUE_MAP[modelPrefix] || "task_queue";
@@ -241,16 +272,16 @@ app.post("/task/notify/:task_id", async (req, res) => {
 app.post("/task/stream_start/:task_id", async (req, res) => {
   try {
     const { task_id } = req.params;
-    const { title } = req.body;
+    const { title, phase } = req.body;
 
-    console.log(`\n🔴 流式开始：${task_id} - ${title}`);
+    console.log(`\n🔴 流式开始：${task_id} - ${title} (phase: ${phase})`);
 
     // v2：记录事件
     if (!taskEvents.has(task_id)) taskEvents.set(task_id, []);
     taskEvents.get(task_id).push({
       timestamp: Date.now(),
       type: "stream_start",
-      data: { title }
+      data: { title, phase }
     });
 
     // 推送给前端
@@ -259,7 +290,7 @@ app.post("/task/stream_start/:task_id", async (req, res) => {
       subscribers.forEach((socketId) => {
         const socket = io.sockets.sockets.get(socketId);
         if (socket) {
-          socket.emit("stream_start", { task_id, title });
+          socket.emit("stream_start", { task_id, title, phase });
         }
       });
     }
@@ -272,27 +303,36 @@ app.post("/task/stream_start/:task_id", async (req, res) => {
   }
 });
 
-// 流内容块
+// 流内容块（⭐ 增强：支持 phase 和 channel）
 app.post("/task/stream_chunk/:task_id", async (req, res) => {
   try {
     const { task_id } = req.params;
-    const { content } = req.body;
+    const { content, phase, channel } = req.body;
 
-    // v2：记录 token 事件
+    // v2：记录 token 事件（包含 phase 和 channel）
     if (!taskEvents.has(task_id)) taskEvents.set(task_id, []);
     taskEvents.get(task_id).push({
       timestamp: Date.now(),
       type: "token",
-      data: { text: content }
+      data: { 
+        text: content,
+        phase: phase || "unknown",
+        channel: channel || "content"
+      }
     });
 
-    // 推送给前端
+    // 推送给前端（携带 phase 和 channel）
     if (taskSubscriptions.has(task_id)) {
       const subscribers = taskSubscriptions.get(task_id);
       subscribers.forEach((socketId) => {
         const socket = io.sockets.sockets.get(socketId);
         if (socket) {
-          socket.emit("stream_chunk", { task_id, chunk: content });
+          socket.emit("stream_chunk", { 
+            task_id, 
+            chunk: content,
+            phase: phase || "unknown",
+            channel: channel || "content"
+          });
         }
       });
     }
@@ -309,15 +349,16 @@ app.post("/task/stream_chunk/:task_id", async (req, res) => {
 app.post("/task/stream_end/:task_id", async (req, res) => {
   try {
     const { task_id } = req.params;
+    const { phase } = req.body;
 
-    console.log(`\n🟢 流式结束：${task_id}`);
+    console.log(`\n🟢 流式结束：${task_id} (phase: ${phase})`);
 
     // v2：记录事件
     if (!taskEvents.has(task_id)) taskEvents.set(task_id, []);
     taskEvents.get(task_id).push({
       timestamp: Date.now(),
       type: "stream_end",
-      data: {}
+      data: { phase }
     });
 
     // 推送给前端
@@ -326,7 +367,7 @@ app.post("/task/stream_end/:task_id", async (req, res) => {
       subscribers.forEach((socketId) => {
         const socket = io.sockets.sockets.get(socketId);
         if (socket) {
-          socket.emit("stream_end", { task_id });
+          socket.emit("stream_end", { task_id, phase });
         }
       });
     }
@@ -343,16 +384,16 @@ app.post("/task/stream_end/:task_id", async (req, res) => {
 app.post("/task/stream_error/:task_id", async (req, res) => {
   try {
     const { task_id } = req.params;
-    const { message } = req.body;
+    const { message, phase } = req.body;
 
-    console.log(`\n⚠️ 流式错误：${task_id} - ${message}`);
+    console.log(`\n⚠️ 流式错误：${task_id} - ${message} (phase: ${phase})`);
 
     // v2：记录事件
     if (!taskEvents.has(task_id)) taskEvents.set(task_id, []);
     taskEvents.get(task_id).push({
       timestamp: Date.now(),
       type: "error",
-      data: { message }
+      data: { message, phase }
     });
 
     // 推送给前端
@@ -361,7 +402,7 @@ app.post("/task/stream_error/:task_id", async (req, res) => {
       subscribers.forEach((socketId) => {
         const socket = io.sockets.sockets.get(socketId);
         if (socket) {
-          socket.emit("stream_error", { task_id, message });
+          socket.emit("stream_error", { task_id, message, phase });
         }
       });
     }

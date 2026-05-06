@@ -23,26 +23,101 @@ body {
   flex-direction: column;
 }
 
-/* 滚动条样式 */
+/* 自定义动画 */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.3s ease-out;
+}
+
+/* Markdown 渲染样式 */
+.markdown-renderer {
+  font-size: 0.875rem;
+  line-height: 1.6;
+}
+
+.markdown-renderer h1,
+.markdown-renderer h2,
+.markdown-renderer h3 {
+  margin-top: 1em;
+  margin-bottom: 0.5em;
+  font-weight: 600;
+}
+
+.markdown-renderer p {
+  margin-bottom: 0.75em;
+}
+
+.markdown-renderer ul,
+.markdown-renderer ol {
+  margin-left: 1.5em;
+  margin-bottom: 0.75em;
+}
+
+.markdown-renderer li {
+  margin-bottom: 0.25em;
+}
+
+.markdown-renderer blockquote {
+  border-left: 4px solid #3b82f6;
+  padding-left: 1em;
+  margin-left: 0;
+  color: #9ca3af;
+}
+
+/* 代码块样式优化 */
+.markdown-renderer pre {
+  margin: 0;
+  border-radius: 0.5rem;
+}
+
+.markdown-renderer code:not(pre code) {
+  background-color: rgba(110, 118, 129, 0.4);
+  padding: 0.2em 0.4em;
+  border-radius: 3px;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 0.85em;
+}
+
+/* 流式输出光标闪烁 */
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+.streaming-output .cursor {
+  animation: blink 1s infinite;
+}
+
+/* 滚动条美化 */
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-track {
-  background: var(--vscode-scrollbarSlider-background);
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--vscode-scrollbarSlider-hoverBackground);
-  border-radius: 5px;
+  background: #4a4a4a;
+  border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--vscode-scrollbarSlider-activeBackground);
+  background: #5a5a5a;
 }
 
-/* Markdown 样式 */
+/* 保留部分原有 Markdown 样式以兼容 */
 .prose {
   max-width: none;
 }
@@ -58,18 +133,4 @@ body {
 .prose code {
   font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
   font-size: 0.9em;
-}
-
-/* 动画 */
-@keyframes pulse {
-  0%, 100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.5;
-  }
-}
-
-.animate-pulse {
-  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
