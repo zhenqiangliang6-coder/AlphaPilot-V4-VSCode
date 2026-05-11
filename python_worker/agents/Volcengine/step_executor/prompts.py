@@ -1,299 +1,241 @@
 # -*- coding: utf-8 -*-
-# step_executor/prompts.py
-# ---------------------------------------------------------
-# 所有步骤类型的 prompt 模板
+# step_executor/prompts.py — AlphaPilot OS v3.0（对齐现有代码版）
 # ---------------------------------------------------------
 
 __all__ = [
-    # 核心步骤 prompt
     "analyze_prompt",
     "plan_prompt",
     "write_prompt",
-    "refine_prompt",
-    
-    # 扩展步骤 prompt
+    "optimize_prompt",
     "test_prompt",
     "fix_prompt",
     "profile_prompt",
     "doc_prompt",
     "docstring_prompt",
-    "optimize_prompt",
 ]
 
-
 def analyze_prompt(user_input: str) -> str:
-    """
-    analyze 步骤的 prompt：分析用户需求
-    
-    参数:
-        user_input: 用户输入的自然语言任务描述
-    
-    返回:
-        str: 用于调用 LLM 的完整 prompt
-    """
     return f"""
-请分析下面的任务描述，并提取关键需求点：
+你是 AlphaPilot OS 的 analyze 模块。
 
-【用户任务描述】：
+请分析用户任务描述，输出结构化分析：
+
+【输出格式】
+- 任务目标：
+- 输入：
+- 输出：
+- 关键功能点：
+- 难点：
+- 可能的模块结构：
+
+用户输入：
 {user_input}
-
-请输出：
-1. 任务的核心目标
-2. 需要实现的功能点
-3. 输入与输出要求
-4. 可能的边界情况
-5. 需要注意的风险点
-
-请使用结构化的自然语言，不要生成代码。
 """
-
 
 def plan_prompt(analysis: str) -> str:
-    """
-    plan 步骤的 prompt：根据分析结果生成代码结构规划
-    
-    参数:
-        analysis: analyze 步骤的分析结果
-    
-    返回:
-        str: 用于调用 LLM 的完整 prompt
-    """
     return f"""
-下面是对任务的分析结果，请根据这些内容生成代码结构规划：
+你是 AlphaPilot OS 的 plan 模块。
 
-【分析结果】：
+根据 analyze 的分析内容，生成项目规划：
+
+【输出格式】
+# 项目规划
+1. 模块结构（文件列表）
+2. 每个文件的职责
+3. 关键函数设计
+4. 数据结构
+5. 伪代码（必须包含）
+
+分析内容：
 {analysis}
-
-请输出：
-1. 代码的整体结构（模块/函数/类）
-2. 每个函数的职责
-3. 输入与输出设计
-4. 伪代码（如果有必要）
-5. 需要注意的边界情况
-
-请使用自然语言描述，不要生成完整代码。
 """
-
 
 def write_prompt(plan: str) -> str:
-    """
-    write 步骤的 prompt：根据规划生成代码
-    
-    参数:
-        plan: plan 步骤的规划内容
-    
-    返回:
-        str: 用于调用 LLM 的完整 prompt
-    """
     return f"""
-请根据下面的代码规划生成完整的 Python 代码：
+你是 AlphaPilot OS 的 write 模块。
 
-【代码规划】：
+根据项目规划，生成完整项目代码，使用多文件协议 v3.0：
+
+【多文件协议 v3.0 - 严格格式】
+# FILE: path/to/file.py
+直接写代码内容，不要任何标签或标记
+
+# TEST: tests/test_xxx.py
+直接写测试代码
+
+# DOC: docs/xxx.md
+直接写文档内容
+
+# META:
+{{ "any": "metadata" }}
+
+# DEPENDS:
+{{ "deps": [] }}
+
+【重要要求】
+1. ❌ 禁止使用 <代码>、</代码>、<内容>、```python 等任何标签或代码块标记
+2. ✅ # FILE: 后面直接换行，然后就是纯代码内容
+3. ✅ 每个文件之间用空行分隔
+4. ✅ 必须至少生成 1 个 FILE
+5. ✅ 代码必须可运行
+6. ✅ 不要解释，不要多余文字
+7. ✅ 只输出多文件协议内容
+
+【正确示例】
+# FILE: hello.py
+def greet():
+    return "Hello"
+
+# FILE: main.py
+from hello import greet
+print(greet())
+
+【错误示例 - 禁止这样输出】
+# FILE: hello.py
+<代码>
+def greet():
+    return "Hello"
+</代码>
+
+项目规划：
 {plan}
-
-要求：
-1. 输出完整的 Python 代码（保持 ```python 格式）
-2. 代码必须可运行
-3. 变量命名清晰
-4. 逻辑结构与规划一致
-5. 不要包含解释性文字，只输出代码
-6. 输出必须是合法 Python 代码，不要包含解释性文字
 """
 
-
-def refine_prompt(code: str, exec_summary: str) -> str:
-    """
-    refine 步骤的 prompt：根据执行结果优化代码
-    
-    参数:
-        code: 原始代码
-        exec_summary: 执行结果摘要（stdout/stderr/error）
-    
-    返回:
-        str: 用于调用 LLM 的完整 prompt
-    """
+def optimize_prompt(code: str, exec_summary: str) -> str:
     return f"""
-下面是一段 Python 代码及其执行结果，请在保持语义不变的前提下优化代码：
+你是 AlphaPilot OS 的 refine 模块。
 
-【原始代码】：
-```python
+下面是一段（可能是多文件协议中的）Python 代码及其执行结果，请在保持语义不变的前提下进行优化。
+
+【原始代码或多文件片段】：
 {code}
-```
 
 【执行结果】：
 {exec_summary}
 
-要求：
-1. 在保证语义不变的前提下优化代码
-2. 输出优化后的完整代码（保持 ```python 格式）
-3. 输出必须是合法 Python 代码，不要包含解释性文字
-"""
+【优化要求】
+1. 修复潜在 bug
+2. 优化结构
+3. 提升可读性
+4. 保持功能一致
+5. ❌ 禁止使用 <代码>、</代码>、```python 等任何标签
+6. ✅ 如果输入是多文件协议，则输出必须使用多文件协议 v3.0（# FILE: 直接跟代码）
+7. ✅ 如果输入是单文件代码，则直接输出纯代码（无标签）
+8. ✅ 不要解释，不要多余文字
 
+【正确示例 - 多文件协议】
+# FILE: hello.py
+def greet():
+    return "Hello"
+
+【错误示例 - 禁止这样输出】
+# FILE: hello.py
+<代码>
+def greet():
+    return "Hello"
+</代码>
+"""
 
 def test_prompt(code: str) -> str:
-    """
-    生成 pytest 风格单元测试的 prompt
-    
-    参数:
-        code: 被测代码字符串
-    
-    返回:
-        str: 用于调用 LLM 的完整 prompt
-    """
     return f"""
-下面是一段 Python 代码，请你为它生成 pytest 风格的单元测试代码。
+你是 AlphaPilot OS 的 test 模块。
 
-【被测试代码】：
-```python
+请为下面的 Python 代码生成 pytest 风格测试：
+
+【要求】
+- 使用 assert
+- 覆盖正常情况、边界情况、异常情况
+- 不要 import pytest（Worker 会自动注入 fake pytest）
+- 不要解释，只输出 \\`\\`\\`python 代码块
+
+代码：
+\\`\\`\\`python
 {code}
-```
-
-要求：
-1. 使用 pytest 风格（assert + pytest.raises）
-2. 不要 import pytest（Worker 会自动注入 fake pytest）
-3. 覆盖正常情况、边界情况、异常情况
-4. 包含清晰的断言
-5. 输出完整的测试代码（保持 ```python 格式）
-6. 输出必须是合法 Python 代码，不要包含解释性文字
+\\`\\`\\`
 """
 
-
 def fix_prompt(code: str, error_message: str) -> str:
-    """
-    生成自动修复代码的 prompt
-    
-    参数:
-        code: 原始代码字符串
-        error_message: 执行错误信息
-    
-    返回:
-        str: 用于调用 LLM 的完整 prompt
-    """
     return f"""
-下面是一段 Python 代码和它的执行错误，请分析错误原因并给出修复后的完整代码：
+你是 AlphaPilot OS 的 fix 模块。
 
-【原始代码】：
-```python
+下面是一段 Python 代码及其执行错误，请分析错误原因并给出修复后的完整代码。
+
+【原始代码或多文件片段】：
 {code}
-```
 
 【执行错误】：
 {error_message}
 
-要求：
+【要求】
 1. 分析错误的根本原因
-2. 给出修复后的完整代码（保持 ```python 格式）
-3. 简要说明修复了什么问题
-4. 输出必须是合法 Python 代码，不要包含解释性文字
-"""
+2. 给出修复后的完整代码
+3. ❌ 禁止使用 <代码>、</代码>、```python 等任何标签
+4. ✅ 如果输入是多文件协议，则输出必须使用多文件协议 v3.0（# FILE: 直接跟代码）
+5. ✅ 如果输入是单文件代码，则直接输出纯代码（无标签）
+6. ✅ 不要解释，不要多余文字
 
+【正确示例 - 多文件协议】
+# FILE: hello.py
+def greet():
+    return "Hello"
+
+【错误示例 - 禁止这样输出】
+# FILE: hello.py
+<代码>
+def greet():
+    return "Hello"
+</代码>
+"""
 
 def profile_prompt(code: str) -> str:
-    """
-    生成性能分析的 prompt
-    
-    参数:
-        code: 待分析的代码字符串
-    
-    返回:
-        str: 用于调用 LLM 的完整 prompt
-    """
     return f"""
-请对下面的 Python 代码进行性能分析：
+你是 AlphaPilot OS 的 profile 模块。
+
+请对下面的代码（可能是单文件，也可能是多文件协议中的某个文件）进行性能分析：
 
 【代码】：
-```python
 {code}
-```
 
 请分析：
-1. 时间复杂度（大 O 表示法）
-2. 空间复杂度
-3. 性能瓶颈在哪里
-4. 如何优化（给出具体的优化建议）
-5. 如果可能，提供优化后的代码示例
-6. 输出必须是合法 Python 代码，不要包含解释性文字
+- 时间复杂度（大 O 表示法）
+- 空间复杂度
+- 性能瓶颈在哪里
+- 如何优化（给出具体的优化建议）
 """
-
 
 def doc_prompt(code: str) -> str:
-    """
-    生成完整文档的 prompt
-    
-    参数:
-        code: 需要生成文档的代码字符串
-    
-    返回:
-        str: 用于调用 LLM 的完整 prompt
-    """
     return f"""
-请为下面的 Python 代码生成完整的文档：
+你是 AlphaPilot OS 的 doc 模块。
 
-【代码】：
-```python
+请为下面的 code（可以是整个项目的多文件协议）生成 README 风格的 Markdown 文档：
+
+【代码或多文件协议】：
 {code}
-```
 
 请生成：
-1. 模块级别的文档字符串（说明用途、功能）
-2. 每个函数的完整文档（参数说明、返回值、异常、示例）
-3. 类的文档（如果有类）
-4. 使用示例代码
-5. 注意事项
-6. 输出必须是合法 Markdown 文档，不要包含解释性文字
-"""
+- 项目简介
+- 功能列表
+- 文件结构（如果是多文件）
+- 使用方法
+- 示例
+- 注意事项
 
+输出合法 Markdown，不要解释，不要多余文字。
+"""
 
 def docstring_prompt(code: str) -> str:
-    """
-    为代码添加 docstring 的 prompt
-    
-    参数:
-        code: 需要添加文档字符串的代码
-    
-    返回:
-        str: 用于调用 LLM 的完整 prompt
-    """
     return f"""
-请在下面这段 Python 代码中添加完整的文档字符串（docstring），保持代码功能不变：
+你是 AlphaPilot OS 的 docstring 模块。
 
-【原始代码】：
-```python
+请在下面这段 code中添加完整的文档字符串（docstring），保持 code功能不变。
+
+【原始代码或多文件片段】：
 {code}
-```
 
-要求：
-1. 为模块添加顶部的文档字符串
-2. 为每个函数添加完整的文档字符串（包括参数、返回值、示例）
-3. 输出添加了文档的完整代码（保持 ```python 格式）
-4. 输出必须是合法 Python 代码，不要包含解释性文字
-"""
-
-
-def optimize_prompt(code: str, exec_summary: str) -> str:
-    """
-    生成代码优化的 prompt
-    
-    参数:
-        code: 原始代码字符串
-        exec_summary: 执行结果摘要
-    
-    返回:
-        str: 用于调用 LLM 的完整 prompt
-    """
-    return f"""
-下面是一段 Python 代码和它的执行结果，请你在保证语义不变的前提下进行优化：
-
-【原始代码】：
-```python
-{code}
-```
-
-【执行结果】：
-{exec_summary}
-
-要求：
-1. 在保证语义不变的前提下优化代码
-2. 输出优化后的完整代码（保持 ```python 格式）
-3. 输出必须是合法 Python 代码，不要包含解释性文字
+【要求】
+- 为模块添加顶部 docstring（如果合适）
+- 为每个函数添加 docstring（参数、返回值、异常）
+- 为每个类及其方法添加 docstring
+- 输出完整 code，使用 \\`\\`\\`python 代码块
+- 不要解释，不要多余文字。
 """

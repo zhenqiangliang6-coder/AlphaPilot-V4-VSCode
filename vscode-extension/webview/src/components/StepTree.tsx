@@ -26,7 +26,7 @@ const stepDescriptions: Record<Step['type'], string> = {
   analyze: '理解任务需求和上下文',
   plan: '设计实现方案和步骤',
   write: '生成具体代码实现',
-  refine: '优化和改进代码质量',
+  refine: '优化和改进代码质量 (v3.0)',
   test: '验证功能正确性'
 };
 
@@ -106,37 +106,42 @@ export const StepTree: React.FC<StepTreeProps> = ({ steps }) => {
 
                 {/* 步骤信息 */}
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium">
+                  <div className="flex items-center justify-between">
+                    <span className="font-medium text-sm truncate">
                       {stepIcons[step.type]} {stepNames[step.type]}
                     </span>
-                    {hasOutput && (
+                    {step.duration && (
                       <span className="text-xs text-gray-500">
-                        {isExpanded ? '▼' : '▶'}
+                        {(step.duration / 1000).toFixed(1)}s
                       </span>
                     )}
                   </div>
-                  <div className="text-xs text-gray-500 mt-0.5">
+                  <p className="text-xs text-gray-400 mt-1 truncate">
                     {stepDescriptions[step.type]}
-                  </div>
+                  </p>
                 </div>
-
-                {/* 耗时 */}
-                {step.startedAt && step.completedAt && (
-                  <span className="text-xs text-gray-500 flex-shrink-0">
-                    {((step.completedAt - step.startedAt) / 1000).toFixed(1)}s
-                  </span>
-                )}
               </div>
 
-              {/* 展开的输出内容 */}
+              {/* 展开详情 (v3.0 FileOps 预览) */}
               {isExpanded && hasOutput && (
-                <div className="ml-8 mt-2 p-3 bg-vscode-bg rounded border border-vscode-border text-xs">
-                  <pre className="whitespace-pre-wrap overflow-x-auto">
-                    {typeof step.output === 'string' 
-                      ? step.output 
-                      : JSON.stringify(step.output, null, 2)}
-                  </pre>
+                <div className="mt-2 ml-8 p-3 bg-black/30 rounded-lg text-xs font-mono space-y-2 border border-gray-700">
+                  {step.output.file_ops && step.output.file_ops.length > 0 ? (
+                    <>
+                      <div className="text-gray-400">📂 v3.0 FileOps 协议执行:</div>
+                      {step.output.file_ops.map((op: any, idx: number) => (
+                        <div key={idx} className="flex items-center gap-2">
+                          <span className="text-blue-400">
+                            {op.op === 'create' ? '➕' : op.op === 'test' ? '🧪' : op.op === 'doc' ? '📄' : '💾'}
+                          </span>
+                          <span className="text-gray-300">{op.path || JSON.stringify(op.data)}</span>
+                        </div>
+                      ))}
+                    </>
+                  ) : (
+                    <pre className="whitespace-pre-wrap text-gray-300 max-h-40 overflow-y-auto">
+                      {typeof step.output.text === 'string' ? step.output.text.substring(0, 500) : JSON.stringify(step.output)}
+                    </pre>
+                  )}
                 </div>
               )}
             </div>

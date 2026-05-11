@@ -1,19 +1,18 @@
 # -*- coding: utf-8 -*-
-# qwen_worker_v2.py
+# qwen_worker_v3.py
 # ---------------------------------------------------------
-# Worker 主入口（v2）
-# - 从 Redis 取任务
-# - 调用 Planner（任务拆解）
-# - 调用 Step Executor（多步骤执行）
-# - 写入 TaskModel v2 结果
-# - 写入 DLQ（死信队列）
-# - ⭐ 新增：步骤状态管理（pending → running → success / error）
+# Qwen Worker v3.0 — 世界级执行链架构版
+# - Intent Router：意图识别
+# - Persona Engine：执行链人格（engineer/creator/conversational）
+# - Execution Chain：analyze → plan → write → refine → test → fix → doc → docstring → profile
+# - FileOps：多文件协议 v3.0（FILE/TEST/DOC/META/DEPENDS）
+# - 与现有 step_executor 完全兼容（最小侵入升级）
 # ---------------------------------------------------------
 
 import json
 import time
 import traceback
-import requests  # ⭐ 修复：导入 requests 用于调用 /task/notify
+import requests
 
 from ...worker_config import (
     redis,
@@ -21,91 +20,191 @@ from ...worker_config import (
     create_empty_context,
     check_stop_flag,
     clear_stop_flag,
-    get_worker_queue,  #  新增：队列路由函数
-    NODE_API_URL,  # ⭐ 修复：导入 NODE_API_URL
+    get_worker_queue,
+    NODE_API_URL,
 )
 
 from ...planner import llm_decompose_task
+from ...intent_router import IntentRouter
 from .step_executor import execute_step
+from .personas import get_persona_config
 from ...TaskModel_v2 import TaskModel
 
 
+# =========================================================
+# v3.0：执行链定义（按意图动态裁剪）
+# =========================================================
+
+BASE_CHAIN = ["analyze", "plan", "write", "refine", "test", "fix", "doc", "docstring", "profile"]
+
+INTENT_CHAINS = {
+    "write_code": ["analyze", "plan", "write", "refine", "test", "fix", "doc", "docstring"],
+    "generate_doc": ["analyze", "plan", "write", "doc", "docstring"],
+    "explain_code": ["analyze", "plan", "doc"],
+    "creative_writing": ["analyze", "plan", "write", "refine"],
+    "chat": ["analyze", "write"],
+}
+
+
+def build_execution_chain(intent: str) -> list:
+    """
+    根据意图选择执行链；未知意图使用默认 BASE_CHAIN。
+    """
+    return INTENT_CHAINS.get(intent, BASE_CHAIN)
+
+
+# =========================================================
+# v3.0：根据执行链构建步骤（与现有 step_executor 协议对齐）
+# =========================================================
+
+def create_steps_from_chain(execution_chain: list, prompt: str, persona: str, intent: str = None) -> list:
+    """
+    v3.0：根据执行链动态生成步骤定义。
+    - 不在这里做复杂逻辑，复杂逻辑交给各 step_xxx.py
+    """
+    steps = []
+    step_templates = {
+        "analyze": {
+            "type": "analyze",
+            "input": {"prompt": prompt}
+        },
+        "plan": {
+            "type": "plan",
+            "input": {"prompt": "根据分析结果制定执行计划"}
+        },
+        "write": {
+            "type": "write",
+            "input": {"prompt": f"根据 {persona} 人格生成代码/内容"}
+        },
+        "refine": {
+            "type": "refine",
+            "input": {"prompt": "根据执行结果优化代码（多文件协议 v3.0）"}
+        },
+        "test": {
+            "type": "test",
+            "input": {"prompt": "为代码生成并执行 pytest 风格测试"}
+        },
+        "fix": {
+            "type": "fix",
+            "input": {"prompt": "根据错误信息修复代码"}
+        },
+        "doc": {
+            "type": "doc",
+            "input": {"prompt": "为代码生成 Markdown 文档"}
+        },
+        "docstring": {
+            "type": "docstring",
+            "input": {"prompt": "为代码添加完整 docstring（多文件）"}
+        },
+        "profile": {
+            "type": "profile",
+            "input": {"prompt": "分析代码性能并给出优化建议"}
+        },
+    }
+
+    for i, step_type in enumerate(execution_chain):
+        tmpl = step_templates.get(step_type)
+        if not tmpl:
+            continue
+        step = tmpl.copy()
+        step["id"] = f"step-{i+1}"
+        step["status"] = "pending"
+        steps.append(step)
+
+    return steps
+
+
+# =========================================================
+# v3.0：统一任务执行入口
+# =========================================================
+
 def execute_task(task_type: str, payload: dict, task_id: str, steps: list, events: list, context: dict):
     """
-    Worker 的统一入口（v2）：
-    - qwen_generate → Planner + 多步骤执行
-    - 其它任务类型可逐步迁移
+    Qwen Worker v3.0 统一入口：
+    - 只处理 qwen_generate 任务
+    - Intent Router + Persona + Execution Chain
+    - 多步骤执行 + FileOps 全链路
     """
-    if task_type == "qwen_generate":
-        prompt = payload.get("prompt", "")
-        if not prompt:
-            raise ValueError("prompt 不能为空")
+    if task_type != "qwen_generate":
+        raise ValueError(f"不支持的任务类型：{task_type}")
 
-        # ---------------------------------------------------------
-        # 1) 调用 Planner：让 Qwen 拆解任务
-        # ---------------------------------------------------------
+    prompt = payload.get("prompt", "")
+    if not prompt:
+        raise ValueError("prompt 不能为空")
+
+    # 1) 意图识别 + 人格选择
+    intent, persona_type, _ = IntentRouter.detect_intent(prompt)
+    persona_config = get_persona_config(persona_type)
+
+    # 2) 构建执行链
+    execution_chain = build_execution_chain(intent)
+
+    # 写入 meta
+    context["meta"] = {
+        "intent": intent,
+        "persona": persona_type,
+        "persona_config": persona_config,
+        "execution_chain": execution_chain,
+    }
+
+    print("\n🧠 Qwen Worker v3.0 决策：")
+    print(f"  意图: {intent}")
+    print(f"  人格: {persona_config['name']} ({persona_config['icon']})")
+    print(f"  执行链: {' → '.join(execution_chain)}")
+
+    # 3) 如果外部未传入 steps，则根据执行链动态生成
+    if not steps:
+        steps.extend(create_steps_from_chain(execution_chain, prompt, persona_type, intent))
+        print(f"\n📋 动态生成 {len(steps)} 个步骤 (意图: {intent})")
+
+    # 4) Planner 兜底（可选）
+    if not steps:
         plan_steps = llm_decompose_task(prompt)
         steps.extend(plan_steps)
 
-        # ---------------------------------------------------------
-        # 2) 依次执行每个步骤（新增：步骤状态管理 + 取消检查）
-        # ---------------------------------------------------------
-        for step in steps:
-            try:
-                # ⭐ 检查是否被取消（在每个步骤执行前）
-                if check_stop_flag(task_id):
-                    step["status"] = "cancelled"
-                    step["output"] = {"text": "任务已被用户取消"}
-                    raise Exception("任务已被用户取消")
+    # 5) 逐步执行（带取消检查 + 状态管理）
+    for step in steps:
+        try:
+            if check_stop_flag(task_id):
+                step["status"] = "failed"
+                step["output"] = {"text": "任务已被用户取消"}
+                raise Exception("任务已被用户取消")
 
-                # ⭐ 状态：pending → running
-                step["status"] = "running"
+            step["status"] = "running"
 
-                # 执行步骤
-                execute_step(task_id, step, events, context)
+            # 交给通用 step_executor.execute_step
+            execute_step(task_id, step, events, context)
 
-                # ⭐ 状态：running → success
-                step["status"] = "success"
+            step["status"] = "completed"
 
-            except Exception as step_error:
-                # ⭐ 如果是取消异常，保持 cancelled 状态
-                if "取消" in str(step_error) or "cancel" in str(step_error).lower():
-                    step["status"] = "cancelled"
-                    step["output"] = {"text": "任务已被用户取消"}
-                else:
-                    # ⭐ 状态：running → error
-                    step["status"] = "error"
-                    step["output"] = {"text": f"步骤执行失败：{step_error}"}
-                raise step_error
+        except Exception as step_error:
+            msg = str(step_error)
+            if "取消" in msg or "cancel" in msg.lower():
+                step["status"] = "failed"
+                step["output"] = {"text": "任务已被用户取消"}
+            else:
+                step["status"] = "failed"
+                step["output"] = {"text": f"步骤执行失败：{step_error}"}
+            raise step_error
 
-        # ---------------------------------------------------------
-        # 3) 最终结果：取最后一个步骤的 output
-        # ---------------------------------------------------------
-        last_output = steps[-1].get("output", {})
-        return last_output.get("text", "")
-
-    else:
-        raise ValueError(f"未知任务类型：{task_type}")
+    # 6) 返回最后一步的输出
+    last_output = steps[-1].get("output", {})
+    return last_output.get("text", "")
 
 
-# =========================
-# 主循环：从 Redis 取任务 → 执行 → 写回结果（v2）
-# =========================
+# =========================================================
+# 主循环：从 Redis 取任务 → 执行 → 写回结果
+# =========================================================
 
 def main_loop():
     dlq_key = "dlq"
-    
-    # ⭐ 获取 Qwen Worker 专属队列（符合多智能体架构）
     queue_name = get_worker_queue("qwen_generate")
-    print(f"📡 监听队列: {queue_name}")
+    print(f"📡 Qwen Worker v3.0 监听队列: {queue_name}")
 
     while True:
         try:
-            result_key = None  # ⭐ 必须提前定义，否则 except 会报错
+            result_key = None
 
-            # ---------------------------------------------------------
-            # 从专属队列取任务
-            # ---------------------------------------------------------
             task_json = redis.rpop(queue_name)
             if not task_json:
                 time.sleep(2)
@@ -113,42 +212,37 @@ def main_loop():
 
             task = json.loads(task_json)
 
-            print("\n" + "="*60)
+            print("\n" + "=" * 60)
             print("收到任务:")
             print(TaskModel.pretty_print(task))
-            print("="*60 + "\n")
+            print("=" * 60 + "\n")
 
-            # v2 正确字段
             task_id = task["task_id"]
-            task_type = task.get("task_type") or task.get("type")  # ⭐ 兼容两种格式
+            task_type = task.get("task_type") or task.get("type")
             payload = task["payload"]
-            
-            # ⭐ 二次验证：确保任务类型匹配（尊重 Worker 真相地位）
+
+            # 只处理 qwen_generate
             if task_type and not task_type.startswith("qwen_"):
-                # 如果错误地收到了非 Qwen 任务，放回原队列并记录警告
                 redis.lpush(queue_name, task_json)
                 print(f"⚠️ 收到不匹配的任务类型: {task_type}，已放回队列")
                 time.sleep(1)
                 continue
 
-            # ⭐ 兼容处理：meta 字段可能不存在（简单测试任务）
             meta = task.get("meta", {})
             retry_count = meta.get("retry_count", 0)
             started_at = meta.get("started_at", int(time.time() * 1000))
 
-            # 初始化 v2 容器
             steps = []
             events = []
             context = create_empty_context()
+            
+            # ⭐ 初始化 final_file_ops（唯一真相源）
+            context["final_file_ops"] = []
 
-            # ---------------------------------------------------------
-            # 执行任务（Planner + 多步骤）
-            # ---------------------------------------------------------
+            # 执行任务
             result = execute_task(task_type, payload, task_id, steps, events, context)
 
-            # ---------------------------------------------------------
             # 写回成功结果
-            # ---------------------------------------------------------
             result_key = f"task_result:{task_id}"
             result_data = TaskModel.create_task_result_success(
                 task_id=task_id,
@@ -158,36 +252,28 @@ def main_loop():
                 started_at=started_at,
                 steps=steps,
                 events=events,
-                context=context
+                context=context,
             )
 
             redis.set(result_key, json.dumps(result_data))
 
-            print("\n" + "="*60)
+            print("\n" + "=" * 60)
             print("任务完成，结果已写入 Redis:")
             print(TaskModel.pretty_print(result_data))
-            print("="*60 + "\n")
+            print("=" * 60 + "\n")
 
-            # ⭐ 关键修复：通知 Node.js 推送结果到前端
+            # 通知 Node.js
             try:
                 notify_url = f"{NODE_API_URL}/task/notify/{task_id}"
-                print(f"\n 正在通知 Node.js: {notify_url}")
-                
-                # ⭐ 调试：打印 requests 模块信息
-                print(f"  requests 模块: {requests}")
-                print(f"  requests.post: {requests.post}")
-                
+                print(f"\n📡 正在通知 Node.js: {notify_url}")
+
                 response = requests.post(
                     notify_url,
                     json=result_data,
                     headers={"Content-Type": "application/json"},
-                    timeout=10
+                    timeout=10,
                 )
-                
-                # ⭐ 调试：打印 response 类型
-                print(f"  response 类型: {type(response)}")
-                print(f"  response: {response}")
-                
+
                 if response.status_code == 200:
                     print("✅ Node.js 已成功接收通知，将推送给前端")
                 else:
@@ -197,18 +283,12 @@ def main_loop():
                 print(f"⚠️ 通知 Node.js 失败: {notify_error}")
                 print("   结果已保存在 Redis，但前端可能无法实时收到")
 
-            # ⭐ 清理取消标记
             clear_stop_flag(task_id)
 
         except Exception as e:
-            # ⭐ 判断是否是取消操作
             is_cancelled = "取消" in str(e) or "cancel" in str(e).lower()
-            
-            # ---------------------------------------------------------
-            # 构造错误结果（区分取消和真实错误）
-            # ---------------------------------------------------------
+
             if is_cancelled:
-                # 任务被取消
                 error_result = TaskModel.create_task_result_error(
                     task_id=task_id,
                     task_type=task_type,
@@ -220,14 +300,13 @@ def main_loop():
                     retry_count=retry_count,
                     steps=steps,
                     events=events,
-                    context=context
+                    context=context,
                 )
-                
-                print("\n" + "="*60)
+
+                print("\n" + "=" * 60)
                 print("🛑 任务已被用户取消")
-                print("="*60 + "\n")
+                print("=" * 60 + "\n")
             else:
-                # 真实错误
                 error_result = TaskModel.create_task_result_error(
                     task_id=task_id,
                     task_type=task_type,
@@ -239,30 +318,28 @@ def main_loop():
                     retry_count=retry_count,
                     steps=steps,
                     events=events,
-                    context=context
+                    context=context,
                 )
-                
-                print("\n" + "="*60)
+
+                print("\n" + "=" * 60)
                 print("任务失败，错误结果已写入 Redis:")
                 print(TaskModel.pretty_print(error_result))
-                print("="*60 + "\n")
+                print("=" * 60 + "\n")
 
-            # 只有 result_key 已经生成时才写入
             if result_key:
                 redis.set(result_key, json.dumps(error_result))
 
-            # ⭐ 关键修复：即使是错误任务,也要通知 Node.js 推送给前端
             try:
                 notify_url = f"{NODE_API_URL}/task/notify/{task_id}"
                 print(f"\n📡 正在通知 Node.js (错误任务): {notify_url}")
-                
+
                 response = requests.post(
                     notify_url,
                     json=error_result,
                     headers={"Content-Type": "application/json"},
-                    timeout=10
+                    timeout=10,
                 )
-                
+
                 if response.status_code == 200:
                     print("✅ Node.js 已成功接收错误通知，将推送给前端")
                 else:
@@ -270,12 +347,8 @@ def main_loop():
             except Exception as notify_error:
                 print(f"⚠️ 通知 Node.js 失败: {notify_error}")
 
-            # ⭐ 清理取消标记
             clear_stop_flag(task_id)
 
-            # ---------------------------------------------------------
-            # 写入 DLQ（死信队列）- 只对真实错误
-            # ---------------------------------------------------------
             if not is_cancelled:
                 dlq_item = TaskModel.create_dlq_item(
                     original_task=task,
@@ -283,22 +356,22 @@ def main_loop():
                         "error_message": str(e),
                         "error_stack": traceback.format_exc(),
                         "retry_count": retry_count,
-                        "retryable": True
+                        "retryable": True,
                     },
                     retry_count=retry_count,
-                    first_failed_at=int(time.time() * 1000)
+                    first_failed_at=int(time.time() * 1000),
                 )
 
                 redis.lpush(dlq_key, json.dumps(dlq_item))
 
-                print("\n" + "="*60)
+                print("\n" + "=" * 60)
                 print("任务已写入死信队列:")
                 print(TaskModel.pretty_print(dlq_item))
-                print("="*60 + "\n")
+                print("=" * 60 + "\n")
 
 
 if __name__ == "__main__":
-    print("\n🚀 Qwen Worker v2 已启动")
+    print("\n🚀 Qwen Worker v3.0 已启动")
     print(f"   · Worker ID: {WORKER_ID}")
     print(f"   · Node API: 已连接")
     print(f"   · 正在监听任务队列...\n")

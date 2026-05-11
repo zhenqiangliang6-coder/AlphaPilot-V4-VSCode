@@ -4,6 +4,8 @@ import { useChatStore } from '../store/chatStore';
 import { StepTree } from './StepTree';
 import { StreamingOutput } from './StreamingOutput';
 import { MarkdownRenderer } from './MarkdownRenderer';
+import { IntentBadge } from './IntentBadge';      // ⭐ v2.6 新增
+import { PersonaIcon } from './PersonaIcon';      // ⭐ v2.6 新增
 
 export const MessageList: React.FC = () => {
   const { messages, isStreaming, currentPhase } = useChatStore();
@@ -26,6 +28,7 @@ export const MessageList: React.FC = () => {
             <div>⚡ 实时流式输出，可视化执行步骤</div>
             <div>🎨 Markdown渲染，代码高亮显示</div>
             <div>💭 思考过程与最终产出分离展示</div>
+            <div>🧠 智能意图识别，自动切换人格</div>
           </div>
         </div>
       </div>
@@ -54,6 +57,14 @@ export const MessageList: React.FC = () => {
             {/* AI 消息 */}
             {message.role === 'assistant' && (
               <div className="space-y-4">
+                {/* ⭐ v2.6 新增：意图和人格标签 */}
+                {(message.intent || message.persona) && (
+                  <div className="flex items-center gap-2 mb-2">
+                    <PersonaIcon persona={message.persona} />
+                    <IntentBadge intent={message.intent} />
+                  </div>
+                )}
+
                 {/* 步骤树 */}
                 {message.steps && message.steps.length > 0 && (
                   <StepTree steps={message.steps} />

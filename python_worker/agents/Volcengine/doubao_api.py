@@ -9,7 +9,10 @@
 import requests
 import json
 import os
+import time
 from dotenv import load_dotenv
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 load_dotenv()
 
@@ -17,6 +20,31 @@ load_dotenv()
 DOUBAO_API_KEY = os.getenv("VOLC_API_KEY")
 MODEL_NAME = "doubao-seed-2-0-lite-260215"
 BASE_URL = "https://ark.cn-beijing.volces.com/api/v3/responses"
+
+
+def _create_session_with_retry():
+    """
+    创建带有重试机制的 Session，并禁用代理（解决 ProxyError）
+    """
+    session = requests.Session()
+    
+    # ⭐ 配置重试策略：最多重试 3 次，每次间隔递增
+    retry_strategy = Retry(
+        total=3,
+        backoff_factor=2,  # 第1次等2秒，第2次等4秒，第3次等8秒
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["POST"]
+    )
+    
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    
+    # ⭐ 关键修复：禁用所有代理（解决 ProxyError）
+    session.trust_env = False  # 忽略系统环境变量中的代理设置
+    session.proxies = {'http': None, 'https': None}  # 显式禁用代理
+    
+    return session
 
 
 def call_doubao(prompt: str, image_url: str = None) -> str:
@@ -68,33 +96,38 @@ def call_doubao(prompt: str, image_url: str = None) -> str:
         ]
     }
     
-    # 发送请求
-    response = requests.post(BASE_URL, headers=headers, json=payload, timeout=120)
-    response.raise_for_status()
+    # ⭐ 使用带重试机制的 Session（已禁用代理）
+    session = _create_session_with_retry()
     
-    # 解析响应
-    result = response.json()
-    
-    # 提取响应内容（根据实际 API 返回结构调整）
-    # 注意：这里需要根据豆包 API 的实际返回格式进行调整
-    # 以下是假设的格式，需要根据实际情况修改
-    if "output" in result:
-        output = result["output"]
-        if "text" in output:
-            return output["text"]
-        elif "choices" in output:
-            choices = output["choices"]
+    try:
+        # 发送请求
+        response = session.post(BASE_URL, headers=headers, json=payload, timeout=120)
+        response.raise_for_status()
+        
+        # 解析响应
+        result = response.json()
+        
+        # 提取响应内容（根据实际 API 返回结构调整）
+        if "output" in result:
+            output = result["output"]
+            if "text" in output:
+                return output["text"]
+            elif "choices" in output:
+                choices = output["choices"]
+                if choices and len(choices) > 0:
+                    return choices[0].get("message", {}).get("content", "")
+        
+        # 备用提取路径
+        if "choices" in result:
+            choices = result["choices"]
             if choices and len(choices) > 0:
                 return choices[0].get("message", {}).get("content", "")
-    
-    # 备用提取路径
-    if "choices" in result:
-        choices = result["choices"]
-        if choices and len(choices) > 0:
-            return choices[0].get("message", {}).get("content", "")
-    
-    # 如果都无法提取，返回整个结果（用于调试）
-    return json.dumps(result, ensure_ascii=False)
+        
+        # 如果都无法提取，返回整个结果（用于调试）
+        return json.dumps(result, ensure_ascii=False)
+        
+    finally:
+        session.close()  # 确保关闭 Session
 
 
 def call_doubao_stream(prompt: str, image_url: str = None):
@@ -140,33 +173,39 @@ def call_doubao_stream(prompt: str, image_url: str = None):
         "stream": True  # 启用流式
     }
     
-    with requests.post(BASE_URL, headers=headers, json=payload, stream=True, timeout=120) as response:
-        response.raise_for_status()
-        
-        for line in response.iter_lines():
-            if not line:
-                continue
+    # ⭐ 使用带重试机制的 Session（已禁用代理）
+    session = _create_session_with_retry()
+    
+    try:
+        with session.post(BASE_URL, headers=headers, json=payload, stream=True, timeout=120) as response:
+            response.raise_for_status()
             
-            decoded = line.decode('utf-8')
-            
-            if decoded.startswith("data: "):
-                data_str = decoded[6:]
-                if data_str.strip() == "[DONE]":
-                    break
-                
-                try:
-                    data = json.loads(data_str)
-                    # 根据实际格式提取内容
-                    if "output" in data:
-                        output = data["output"]
-                        if "text" in output:
-                            yield output["text"]
-                        elif "choices" in output:
-                            choices = output["choices"]
-                            if choices:
-                                delta = choices[0].get("delta", {})
-                                content = delta.get("content", "")
-                                if content:
-                                    yield content
-                except json.JSONDecodeError:
+            for line in response.iter_lines():
+                if not line:
                     continue
+                
+                decoded = line.decode('utf-8')
+                
+                if decoded.startswith("data: "):
+                    data_str = decoded[6:]
+                    if data_str.strip() == "[DONE]":
+                        break
+                    
+                    try:
+                        data = json.loads(data_str)
+                        # 根据实际格式提取内容
+                        if "output" in data:
+                            output = data["output"]
+                            if "text" in output:
+                                yield output["text"]
+                            elif "choices" in output:
+                                choices = output["choices"]
+                                if choices:
+                                    delta = choices[0].get("delta", {})
+                                    content = delta.get("content", "")
+                                    if content:
+                                        yield content
+                    except json.JSONDecodeError:
+                        continue
+    finally:
+        session.close()  # 确保关闭 Session

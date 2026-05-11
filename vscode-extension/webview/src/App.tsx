@@ -1,10 +1,11 @@
 // src/App.tsx
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useChatStore } from './store/chatStore';
 import { Toolbar } from './components/Toolbar';
 import { ModelSelector } from './components/ModelSelector';
 import { MessageList } from './components/MessageList';
 import { ChatInput } from './components/ChatInput';
+import { FileOpsList } from './components/FileOpsList';  // ⭐ v2.7 新增
 import { vscodeAPI } from './utils/vscode';
 
 function App() {
@@ -17,6 +18,11 @@ function App() {
     updateStep,
     setCurrentPhase  // ⭐ 新增
   } = useChatStore();
+
+  // ⭐ v2.7 新增：FileOps 状态管理
+  const [showFileOps, setShowFileOps] = useState(false);
+  const [currentFileOps, setCurrentFileOps] = useState<any[]>([]);
+  const [currentTaskIdForFileOps, setCurrentTaskIdForFileOps] = useState<string | null>(null);
 
   // 监听来自 Extension 的消息
   useEffect(() => {
@@ -59,6 +65,12 @@ function App() {
           setStreaming(false);
           setCurrentPhase(null);  // ⭐ 重置阶段
           break;
+        
+        // ⭐ v2.7 新增：监听 file_ops 消息
+        case 'file_ops':
+          console.log('📁 Webview 收到 file_ops:', message.payload);
+          handleFileOps(message.payload);
+          break;
       }
     };
 
@@ -70,6 +82,13 @@ function App() {
     setCurrentTaskId(payload.task_id);
     setStreaming(true);
     
+    // ⭐ v2.6 新增：提取意图和人格信息
+    const meta = payload.context?.meta || {};
+    const intent = meta.intent;
+    const persona = meta.persona;
+    
+    console.log('🧠 Intent Router 决策:', { intent, persona });
+    
     // 添加用户消息
     addMessage({
       id: `user-${Date.now()}`,
@@ -78,7 +97,7 @@ function App() {
       timestamp: Date.now()
     });
 
-    // 添加 AI 占位消息（支持分离的通道）
+    // 添加 AI 占位消息（支持分离的通道 + 意图/人格元数据）
     addMessage({
       id: payload.task_id,
       role: 'assistant',
@@ -87,7 +106,9 @@ function App() {
       contentChannel: '',    // ⭐ 最终产出
       timestamp: Date.now(),
       taskId: payload.task_id,
-      steps: []
+      steps: [],
+      intent: intent,        // ⭐ v2.6 新增
+      persona: persona       // ⭐ v2.6 新增
     });
   };
 
@@ -182,12 +203,56 @@ function App() {
     });
   };
 
+  // ⭐ v2.7 新增：处理 file_ops 消息
+  const handleFileOps = (payload: any) => {
+    const { taskId, fileOps } = payload;
+    
+    console.log('📁 收到 FileOps:', { taskId, count: fileOps.length });
+    
+    setCurrentTaskIdForFileOps(taskId);
+    setCurrentFileOps(fileOps);
+    setShowFileOps(true);
+  };
+
+  // ⭐ v2.7 新增：应用文件操作
+  const handleApplyFileOps = () => {
+    if (!currentTaskIdForFileOps || currentFileOps.length === 0) {
+      console.warn('⚠️ 没有可应用的文件操作');
+      return;
+    }
+    
+    console.log('✅ 应用文件操作:', currentFileOps.length);
+    
+    // 发送消息给 Extension
+    vscodeAPI.postMessage({
+      type: 'apply_file_ops',
+      taskId: currentTaskIdForFileOps,
+      fileOps: currentFileOps
+    });
+    
+    // 关闭 FileOps 面板
+    setShowFileOps(false);
+  };
+
+  // ⭐ v2.7 新增：取消文件操作
+  const handleCancelFileOps = () => {
+    setShowFileOps(false);
+    setCurrentFileOps([]);
+    setCurrentTaskIdForFileOps(null);
+  };
+
   return (
     <div className="flex flex-col h-screen bg-vscode-bg text-vscode-fg">
       <Toolbar />
       <ModelSelector />
       <MessageList />
       <ChatInput />
+      <FileOpsList  // ⭐ v2.7 新增
+        show={showFileOps}
+        setShow={setShowFileOps}
+        fileOps={currentFileOps}
+        taskId={currentTaskIdForFileOps}
+      />
     </div>
   );
 }

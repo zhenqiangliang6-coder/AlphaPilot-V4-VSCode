@@ -1,44 +1,62 @@
 # -*- coding: utf-8 -*-
-# step_executor/refine_step.py
+# step_executor/refine_step.py — AlphaPilot OS v3.0
 # ---------------------------------------------------------
-# refine 步骤：执行代码 + 优化代码
+# 架构合规性（Architecture Compliance）
+#
+# ✅ Worker = 真相（Truth Source）
+#    - 所有代码执行、错误分析、优化都必须在 Worker 内完成
+#
+# ✅ 协议 = 宪法（Protocol = Constitution）
+#    - refine_step 必须输出 FileOps（唯一合法的文件操作方式）
+#    - 必须支持多文件协议 v3.0
+#
+# 本模块负责：
+# 1. 执行 write_step 生成的代码（多文件）
+# 2. 根据执行结果优化整个项目
+# 3. 输出新的 FileOps（覆盖旧文件）
 # ---------------------------------------------------------
 
 from ..doubao_api import call_doubao
-from .utils import extract_code, FAKE_ENVIRONMENT
-from .prompts import optimize_prompt
-from ....code_executor import run_python
+from .prompts import optimize_prompt  # ⭐ 修复：使用正确的函数名
+from ....code_executor import run_python_project
 from ....worker_config import create_event
+from ....file_ops import parse_fileops_v3
 
 
 def run_refine_step(step, context, events, api_func=None):
     """
-    refine 步骤：
-    - 执行 write 步骤生成的代码
-    - 根据执行结果优化代码
-    
-    参数:
-        api_func: 可选的自定义 API 函数，如果不传则使用默认的 call_doubao
+    refine 步骤（官方 + 智能增强版）
+    ---------------------------------------------------------
+    输入：
+        - write_step 的多文件协议文本
+    输出：
+        - 优化后的多文件协议
+        - 新的 FileOps（覆盖旧文件）
     """
 
-    # 1) 获取 write 步骤的代码
+    # =========================================================
+    # ① 获取 write_step 的多文件协议文本
+    # =========================================================
     write_outputs = [
-        item["code"]
+        item["text"]
         for item in context["intermediate_results"]
         if item["type"] == "write"
     ]
 
     if not write_outputs:
-        step["output"] = {"text": "refine：未找到 write 步骤生成的代码。"}
+        step["output"] = {"text": "refine：未找到 write 步骤生成的代码或文件。"}
         return
 
-    code = write_outputs[-1]
+    all_code_context = write_outputs[-1]
 
-    # 2) 执行代码（使用 mock 环境）
+    # =========================================================
+    # ② 执行整个项目（多文件执行）
+    # =========================================================
     try:
-        exec_result = run_python(FAKE_ENVIRONMENT + "\n\n" + code)
+        exec_result = run_python_project(all_code_context)
     except Exception as e:
-        step["output"] = {"text": f"refine：代码执行失败：{e}"}
+        exec_summary = f"refine：代码执行异常：{e}"
+        step["output"] = {"text": exec_summary}
         return
 
     exec_summary = (
@@ -47,34 +65,47 @@ def run_refine_step(step, context, events, api_func=None):
         f"error:\n{exec_result['error']}"
     )
 
-    # 3) 调用 LLM 优化代码
+    # =========================================================
+    # ③ 调用 LLM 优化整个项目（多文件优化）
+    # =========================================================
     try:
         llm_call = api_func if api_func else call_doubao
-        optimized_text = llm_call(optimize_prompt(code, exec_summary))
+        optimized_text = llm_call(
+            optimize_prompt_v28(all_code_context, exec_summary)
+        )
     except Exception as e:
         step["output"] = {"text": f"refine：LLM 调用失败：{e}"}
         return
 
-    optimized_code = extract_code(optimized_text)
+    # =========================================================
+    # ④ 解析优化后的多文件协议 → FileOps
+    # =========================================================
+    optimized_file_ops = parse_fileops_v3(optimized_text)
 
-    # 4) 写入输出
+    # =========================================================
+    # ⑤ 写入输出
+    # =========================================================
     step["output"] = {
         "text": optimized_text,
-        "optimized_code": optimized_code,
+        "file_ops": optimized_file_ops,
         "exec_summary": exec_summary
     }
 
-    # 5) 写入上下文（供后续步骤使用）
+    # =========================================================
+    # ⑥ 写入上下文（供后续步骤使用）
+    # =========================================================
     context["intermediate_results"].append({
         "type": "refine",
-        "original_code": code,
-        "optimized_code": optimized_code,
+        "text": optimized_text,
+        "file_ops": optimized_file_ops,
         "exec_summary": exec_summary
     })
 
-    # 6) 写入事件流（供 VSCode 实时展示）
+    # =========================================================
+    # ⑦ 写入事件流（供 VSCode 实时展示）
+    # =========================================================
     events.append(create_event("refine_output", {
-        "original_code": code,
-        "optimized_code": optimized_code,
+        "text": optimized_text,
+        "file_ops": optimized_file_ops,
         "exec_summary": exec_summary
     }))

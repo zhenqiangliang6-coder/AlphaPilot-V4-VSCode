@@ -72,7 +72,7 @@ def execute_task(task_type: str, payload: dict, task_id: str, steps: list, event
             try:
                 # ⭐ 检查是否被取消（在每个步骤执行前）
                 if check_stop_flag(task_id):
-                    step["status"] = "cancelled"
+                    step["status"] = "failed"  # ✅ 修复：使用前端协议的状态值
                     step["output"] = {"text": "任务已被用户取消"}
                     raise Exception("任务已被用户取消")
 
@@ -82,17 +82,17 @@ def execute_task(task_type: str, payload: dict, task_id: str, steps: list, event
                 # 执行步骤（传入 DeepSeek 专用的 call_deepseek）
                 execute_step(task_id, step, events, context, api_func=call_deepseek_wrapper)
 
-                # ⭐ 状态：running → success
-                step["status"] = "success"
+                # ⭐ 状态：running → completed (修复：success → completed)
+                step["status"] = "completed"
 
             except Exception as step_error:
-                # ⭐ 如果是取消异常，保持 cancelled 状态
+                # ⭐ 如果是取消异常，保持 failed 状态
                 if "取消" in str(step_error) or "cancel" in str(step_error).lower():
-                    step["status"] = "cancelled"
+                    step["status"] = "failed"  # ✅ 修复：使用前端协议的状态值
                     step["output"] = {"text": "任务已被用户取消"}
                 else:
-                    # ⭐ 状态：running → error
-                    step["status"] = "error"
+                    # ⭐ 状态：running → failed (修复：error → failed)
+                    step["status"] = "failed"  # ✅ 修复：使用前端协议的状态值
                     step["output"] = {"text": f"步骤执行失败：{step_error}"}
                 raise step_error
 

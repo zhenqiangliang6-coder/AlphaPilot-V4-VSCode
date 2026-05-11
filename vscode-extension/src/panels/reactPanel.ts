@@ -26,6 +26,10 @@ export class ReactPanel {
         retainContextWhenHidden: true,
         localResourceRoots: [
           vscode.Uri.joinPath(extensionUri, 'webview-dist')
+        ],
+        // ⭐ v3.0: 配置端口映射，允许 Webview 访问 Node API
+        portMapping: [
+          { webviewPort: 3000, extensionHostPort: 3000 }
         ]
       }
     );
@@ -101,6 +105,21 @@ export class ReactPanel {
       });
     });
 
+    // ⭐ v2.7 新增：监听 file_ops 事件并转发给 Webview
+    websocketService.on('file_ops', (data) => {
+      console.log('📁 WebSocket: file_ops', data);
+      
+      // ⭐ 严格禁止修改/过滤 fileOps，原样转发
+      // 这是架构信条 "Extension = 映射" 的核心要求
+      this.panel.webview.postMessage({
+        type: 'file_ops',
+        payload: {
+          taskId: data.taskId,
+          fileOps: data.fileOps  // 原样推送，不做任何修改
+        }
+      });
+    });
+
     // 任务已完成 (兼容 task_result 和 task_completed)
     websocketService.on('task_result', (data) => {
       console.log('📥 WebSocket: task_result', data);
@@ -163,6 +182,11 @@ export class ReactPanel {
       case 'clear_chat':
         this.handleClearChat();
         break;
+      
+      // ⭐ v2.7 新增：处理 apply_file_ops 请求
+      case 'apply_file_ops':
+        this.handleApplyFileOps(message.payload);
+        break;
     }
   }
 
@@ -221,6 +245,104 @@ export class ReactPanel {
     // Webview 会自行清空状态
   }
 
+  // ⭐ v2.7 新增：处理 apply_file_ops 请求,真正写盘
+  private async handleApplyFileOps(payload: any): Promise<void> {
+    const { taskId, fileOps } = payload;
+    
+    console.log('📁 应用文件操作:', { taskId, count: fileOps.length });
+    
+    try {
+      // 获取工作区根目录
+      const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri;
+      if (!workspaceRoot) {
+        vscode.window.showErrorMessage('❌ 未打开工作区文件夹');
+        return;
+      }
+      
+      let successCount = 0;
+      let errorCount = 0;
+      
+      // 遍历所有文件操作
+      for (const op of fileOps) {
+        try {
+          const uri = vscode.Uri.joinPath(workspaceRoot, op.path);
+          
+          if (op.action === 'create' && op.type === 'file') {
+            // 创建文件
+            await vscode.workspace.fs.writeFile(
+              uri, 
+              Buffer.from(op.content || '', 'utf8')
+            );
+            console.log(`✅ Created: ${op.path}`);
+            successCount++;
+          }
+          
+          if (op.action === 'modify' && op.type === 'file') {
+            // 修改文件
+            await vscode.workspace.fs.writeFile(
+              uri, 
+              Buffer.from(op.content || '', 'utf8')
+            );
+            console.log(`✅ Modified: ${op.path}`);
+            successCount++;
+          }
+          
+          if (op.action === 'create' && op.type === 'folder') {
+            // 创建目录
+            await vscode.workspace.fs.createDirectory(uri);
+            console.log(`✅ Created directory: ${op.path}`);
+            successCount++;
+          }
+          
+          if (op.action === 'delete') {
+            // 删除文件/目录
+            await vscode.workspace.fs.delete(uri, { recursive: true });
+            console.log(`✅ Deleted: ${op.path}`);
+            successCount++;
+          }
+          
+        } catch (error) {
+          console.error(`❌ Failed to apply operation: ${op.path}`, error);
+          errorCount++;
+        }
+      }
+      
+      // 显示结果通知
+      if (errorCount === 0) {
+        vscode.window.showInformationMessage(
+          `✅ 成功应用 ${successCount} 个文件操作`
+        );
+      } else {
+        vscode.window.showWarningMessage(
+          `⚠️ 部分操作失败: ${successCount} 成功, ${errorCount} 失败`
+        );
+      }
+      
+      // 通知 Webview 应用结果
+      this.panel.webview.postMessage({
+        type: 'file_ops_applied',
+        success: errorCount === 0,
+        successCount,
+        errorCount,
+        taskId
+      });
+      
+    } catch (error: any) {
+      console.error('❌ Failed to apply file ops:', error);
+      vscode.window.showErrorMessage(
+        `❌ 应用文件操作失败: ${error.message}`
+      );
+      
+      // 通知 Webview 应用失败
+      this.panel.webview.postMessage({
+        type: 'file_ops_applied',
+        success: false,
+        error: error.message,
+        taskId
+      });
+    }
+  }
+
   public setTaskId(taskId: string): void {
     // 设置当前任务 ID
     console.log('📋 设置任务 ID:', taskId);
@@ -237,12 +359,18 @@ export class ReactPanel {
 
     const nonce = getNonce();
 
+    // ⭐ v3.0 最终修复：CSP 必须显式允许 localhost 和 ws 协议
+    // 配合 portMapping 使用，确保 Webview 能穿透沙箱访问 Node API
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${this.panel.webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; 
+    img-src vscode-resource: https: data:; 
+    connect-src http://localhost:3000 ws://localhost:3000 ${this.panel.webview.cspSource}; 
+    style-src ${this.panel.webview.cspSource} 'unsafe-inline'; 
+    script-src 'nonce-${nonce}';">
   <title>AlphaPilot Chat</title>
   <link href="${styleUri}" rel="stylesheet">
 </head>
@@ -270,3 +398,9 @@ export class ReactPanel {
     }
   }
 }
+
+
+
+
+
+

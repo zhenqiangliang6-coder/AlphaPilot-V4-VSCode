@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # step_executor/__init__.py
 # ---------------------------------------------------------
-# 多步骤执行器模块（analyze / plan / write / refine / test / fix / profile / doc）
+# 多步骤执行器模块（analyze / plan / write / refine / test / fix / profile / doc / docstring）
 # 统一导出所有公共 API，供 Worker 调用
 # ---------------------------------------------------------
 
@@ -20,6 +20,7 @@ from .test_step import run_test_step
 from .fix_step import run_fix_step
 from .profile_step import run_profile_step
 from .doc_step import run_doc_step
+from .docstring_step import run_docstring_step   # ⭐ v3.0: docstring 步骤
 
 # ---------------------------------------------------------
 # 统一步骤调度器（★ Worker 调用的唯一入口）
@@ -64,6 +65,7 @@ __all__ = [
     "run_fix_step",
     "run_profile_step",
     "run_doc_step",
+    "run_docstring_step",  # ⭐ v3.0: docstring 步骤
 
     # 统一步骤调度器（Worker 只需要调用这个）
     "execute_step",

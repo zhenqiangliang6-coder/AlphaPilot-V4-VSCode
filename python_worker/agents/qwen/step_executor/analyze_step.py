@@ -1,21 +1,26 @@
 # -*- coding: utf-8 -*-
 # step_executor/analyze_step.py
 # ---------------------------------------------------------
-# analyze 步骤：分析用户需求，提取关键点（工业级容错 + 流式输出版本）
+# analyze 步骤：分析用户需求，提取关键点（工业级容错 + 流式输出 + 人格配置版本）
 # ---------------------------------------------------------
 
-from ..qwen_api import call_qwen, call_qwen_stream
+from ..qwen_api import call_qwen, call_qwen_stream, call_qwen_with_persona
 from .prompts import analyze_prompt
 from ....worker_config import create_event, stream_chunk, stream_start, stream_end
 
 
 def run_analyze_step(step, context, events, task_id=None):
     """
-    analyze 步骤（工业级容错 + 流式输出）：
+    analyze 步骤（工业级容错 + 流式输出 + 人格配置）：
     - 输入：用户任务描述
     - 输出：需求分析（自然语言）
     
-    ⭐ 新增：流式输出支持
+    ⭐ v2.6 新增：人格配置支持
+    - 从 context.meta 读取 persona 类型
+    - 动态注入 System Prompt
+    - 工程师/创作者/对话三种人格切换
+    
+    ⭐ 流式输出支持
     - 通过 task_id 发送 stream_chunk 事件
     - 实时展示 AI 思考过程 (channel=reasoning)
     
@@ -31,6 +36,21 @@ def run_analyze_step(step, context, events, task_id=None):
             stream_start(task_id, "🔍 正在分析需求...", phase="analyze")
         except Exception as e:
             print(f"[WARN] stream_start 失败: {e}")
+
+    # ===== 第0.5层：⭐ v2.6 新增 - 获取人格配置 =====
+    persona_config = None
+    try:
+        meta = context.get("meta", {})
+        persona_type = meta.get("persona", "engineer")  # 默认工程师人格
+        
+        # 导入人格配置模块
+        from ..personas import get_persona_config
+        persona_config = get_persona_config(persona_type)
+        
+        print(f"🎨 analyze_step 使用人格: {persona_config['name']} ({persona_config['icon']})")
+    except Exception as e:
+        print(f"[WARN] 获取人格配置失败: {e}, 使用默认配置")
+        persona_config = None
 
     # ===== 第1层防御：获取并验证用户输入 =====
     try:
@@ -50,23 +70,33 @@ def run_analyze_step(step, context, events, task_id=None):
         step["output"] = {"text": error_msg}
         return
 
-    # ===== 第2层防御：流式调用 LLM 生成分析结果 =====
+    # ===== 第2层防御：流式调用 LLM 生成分析结果（带人格配置）=====
     result = ""
     llm_success = False
     
     try:
         prompt = analyze_prompt(user_input)
         
-        # ⭐ 关键改动：使用流式调用
+        # ⭐ v2.6 关键改动：使用带人格配置的流式调用
         if task_id:
-            # 流式模式：逐块接收并转发
-            for chunk in call_qwen_stream(prompt):
-                result += chunk
-                # 实时发送到前端 (channel=reasoning，因为analyze阶段主要是思考)
-                stream_chunk(task_id, chunk, phase="analyze", channel="reasoning")
+            # ⭐ 使用带人格配置的流式调用
+            if persona_config:
+                print(f"🚀 使用人格配置进行流式调用: {persona_config['name']}")
+                for chunk in call_qwen_with_persona(prompt, persona_config, use_stream=True):
+                    result += chunk
+                    # 实时发送到前端 (channel=reasoning)
+                    stream_chunk(task_id, chunk, phase="analyze", channel="reasoning")
+            else:
+                # 降级到普通流式调用
+                for chunk in call_qwen_stream(prompt):
+                    result += chunk
+                    stream_chunk(task_id, chunk, phase="analyze", channel="reasoning")
         else:
             # 非流式模式（向后兼容）
-            result = call_qwen(prompt)
+            if persona_config:
+                result = call_qwen_with_persona(prompt, persona_config, use_stream=False)
+            else:
+                result = call_qwen(prompt)
         
         # 验证返回值
         if not result:
@@ -116,6 +146,6 @@ def run_analyze_step(step, context, events, task_id=None):
     # ⭐ 结束流式输出
     if task_id:
         try:
-            stream_end(task_id, phase="analyze")
+            stream_end(task_id)  # ⭐ v2.7 修复：移除 phase 参数
         except Exception as e:
             print(f"[WARN] stream_end 失败: {e}")

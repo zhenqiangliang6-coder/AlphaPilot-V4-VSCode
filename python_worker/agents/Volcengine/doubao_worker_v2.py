@@ -25,7 +25,8 @@ from ...worker_config import (
     get_worker_queue,  # ⭐ 新增：队列路由函数
 )
 
-from ...planner import llm_decompose_task
+# ⭐ 修复：导入 Doubao 专用的 Planner，不再依赖全局 planner.py（Qwen）
+from .doubao_planner import llm_decompose_task
 from .step_executor import execute_step
 from ...TaskModel_v2 import TaskModel
 
@@ -70,7 +71,7 @@ def execute_task(task_type: str, payload: dict, task_id: str, steps: list, event
             try:
                 # ⭐ 检查是否被取消（在每个步骤执行前）
                 if check_stop_flag(task_id):
-                    step["status"] = "cancelled"
+                    step["status"] = "failed"  # ✅ 修复：使用前端协议的状态值
                     step["output"] = {"text": "任务已被用户取消"}
                     raise Exception("任务已被用户取消")
 
@@ -81,17 +82,17 @@ def execute_task(task_type: str, payload: dict, task_id: str, steps: list, event
                 api_func_with_image = lambda p: call_doubao_wrapper(p, image_url)
                 execute_step(task_id, step, events, context, api_func=api_func_with_image)
 
-                # ⭐ 状态：running → success
-                step["status"] = "success"
+                # ⭐ 状态：running → completed (修复：success → completed)
+                step["status"] = "completed"
 
             except Exception as step_error:
-                # ⭐ 如果是取消异常，保持 cancelled 状态
+                # ⭐ 如果是取消异常，保持 failed 状态
                 if "取消" in str(step_error) or "cancel" in str(step_error).lower():
-                    step["status"] = "cancelled"
+                    step["status"] = "failed"  # ✅ 修复：使用前端协议的状态值
                     step["output"] = {"text": "任务已被用户取消"}
                 else:
-                    # ⭐ 状态：running → error
-                    step["status"] = "error"
+                    # ⭐ 状态：running → failed (修复：error → failed)
+                    step["status"] = "failed"  # ✅ 修复：使用前端协议的状态值
                     step["output"] = {"text": f"步骤执行失败：{step_error}"}
                 raise step_error
 
@@ -170,8 +171,16 @@ def main_loop():
                 time.sleep(1)
                 continue
 
-            retry_count = task["meta"]["retry_count"]
-            started_at = task["meta"]["started_at"]
+            # ⭐ 初始化 meta 字段（如果不存在）
+            if "meta" not in task:
+                task["meta"] = {
+                    "retry_count": 0,
+                    "started_at": int(time.time() * 1000),
+                    "worker_id": WORKER_ID  # ✅ 使用从 worker_config 导入的常量
+                }
+            
+            retry_count = task["meta"].get("retry_count", 0)
+            started_at = task["meta"].get("started_at", int(time.time() * 1000))
 
             # 初始化 v2 容器
             steps = []

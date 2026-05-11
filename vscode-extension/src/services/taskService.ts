@@ -1,7 +1,111 @@
-// src/services/taskService.ts
-// 任务管理服务
+// vscode-extension/src/services/fileOpsService.ts
+// ---------------------------------------------------------
+// AlphaPilot OS v3.0 FileOps Service (Frontend)
+// 负责与 Node API 通信，执行文件操作并更新 UI
+// ---------------------------------------------------------
 
 import * as vscode from 'vscode';
+import * as path from 'path';
+
+export interface FileOp {
+    op: string;
+    path?: string;
+    content?: string;
+    data?: any;
+}
+
+export class FileOpsService {
+    private context: vscode.ExtensionContext;
+    private outputChannel: vscode.OutputChannel;
+
+    constructor(context: vscode.ExtensionContext) {
+        this.context = context;
+        this.outputChannel = vscode.window.createOutputChannel('AlphaPilot FileOps');
+    }
+
+    /**
+     * 执行一组 FileOps
+     */
+    async executeFileOps(fileOps: FileOp[]): Promise<void> {
+        if (!fileOps || fileOps.length === 0) return;
+
+        this.outputChannel.show(true);
+        this.outputChannel.appendLine(`[v3.0] 开始执行 ${fileOps.length} 个文件操作...`);
+
+        try {
+            // 1. 获取工作区根路径
+            const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+            if (!workspaceFolder) {
+                throw new Error('未找到打开的工作区');
+            }
+
+            for (const op of fileOps) {
+                let fullPath = '';
+                if (op.path) {
+                    // 使用 path.join 确保路径兼容性，然后转换为 URI
+                    const joinedPath = path.join(workspaceFolder.uri.fsPath, op.path);
+                    fullPath = joinedPath;
+                }
+
+                switch (op.op) {
+                    case 'create':
+                    case 'test':
+                    case 'doc':
+                        await this.writeFile(fullPath, op.content || '');
+                        this.outputChannel.appendLine(`✅ 创建/写入: ${op.path}`);
+                        break;
+                    case 'modify':
+                        await this.writeFile(fullPath, op.content || '');
+                        this.outputChannel.appendLine(`✏️ 修改: ${op.path}`);
+                        break;
+                    case 'delete':
+                        await vscode.workspace.fs.delete(vscode.Uri.file(fullPath), { recursive: true, useTrash: false });
+                        this.outputChannel.appendLine(`🗑️ 删除: ${op.path}`);
+                        break;
+                    case 'meta':
+                    case 'depends':
+                        this.outputChannel.appendLine(`💾 存储元数据: ${JSON.stringify(op.data)}`);
+                        // 这里可以根据需要添加实际的元数据存储逻辑，例如更新 globalState
+                        break;
+                    default:
+                        this.outputChannel.appendLine(`⚠️ 未知操作类型: ${op.op}`);
+                        break;
+                }
+            }
+            this.outputChannel.appendLine(`[v3.0] 所有文件操作执行完毕。`);
+        } catch (error: any) {
+            vscode.window.showErrorMessage(`FileOps 执行失败: ${error.message}`);
+            this.outputChannel.appendLine(`❌ 错误: ${error.message}`);
+            console.error('FileOps execution error:', error);
+        }
+    }
+
+    /**
+     * 写入文件内容，自动创建目录
+     */
+    private async writeFile(filePath: string, content: string): Promise<void> {
+        if (!filePath) return;
+
+        const uri = vscode.Uri.file(filePath);
+        const dirPath = path.dirname(filePath);
+        const dirUri = vscode.Uri.file(dirPath);
+        
+        // 自动创建目录
+        try {
+            await vscode.workspace.fs.createDirectory(dirUri);
+        } catch (e) {
+            // 目录可能已存在，忽略错误
+        }
+
+        const encoder = new TextEncoder();
+        await vscode.workspace.fs.writeFile(uri, encoder.encode(content));
+    }
+}
+
+// 单例模式导出，方便在其他地方引用，但通常建议通过依赖注入传递实例
+// 这里为了简单起见，提供一个工厂函数或让调用者自行实例化
+// 如果需要在 extension.ts 中初始化并共享，建议在 extension.ts 中创建实例并传递
+
 import { Task, TaskStatus } from '../types/task';
 
 const NODE_API_BASE_URL = 'http://localhost:3000';
@@ -258,3 +362,5 @@ class TaskService {
 
 // 单例模式
 export const taskService = new TaskService();
+
+

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 from .utils import extract_code
-from .prompts import doc_prompt
+from .prompts import doc_prompt, docstring_prompt
 from ....code_executor import run_python
 from ..qwen_api import call_qwen
 from ....worker_config import create_event
@@ -9,14 +9,8 @@ from ....worker_config import create_event
 def run_doc_step(step, context, events):
     """
     doc 步骤（工业级容错）：生成文档和 docstring
-    
-    容错策略:
-    1. 验证 write 输出
-    2. LLM 调用保护（两次调用）
-    3. 代码提取保护
-    4. 输出保证
     """
-    
+
     # ===== 第1层防御：获取并验证 write 输出 =====
     try:
         write_outputs = [
@@ -72,8 +66,9 @@ def run_doc_step(step, context, events):
     documented = ""
     
     try:
-        docstring_prompt = f"请为下面代码添加 docstring：\n```python\n{code}\n```"
-        docstring_code = call_qwen(docstring_prompt)
+        # ⭐ 修复：使用 docstring_prompt() 函数，而不是手写 prompt
+        ds_prompt = docstring_prompt(code)
+        docstring_code = call_qwen(ds_prompt)
         
         if docstring_code and isinstance(docstring_code, str):
             documented = extract_code(docstring_code, fallback_strategies=True)

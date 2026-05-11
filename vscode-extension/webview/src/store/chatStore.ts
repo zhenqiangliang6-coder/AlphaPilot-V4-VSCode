@@ -10,6 +10,10 @@ export interface Message {
   taskId?: string;
   steps?: Step[];
   
+  // ⭐ v2.6 新增：意图和人格元数据
+  intent?: string;      // 意图类型 (write_code/explain_code/creative_writing等)
+  persona?: string;     // 人格类型 (engineer/creator/conversational)
+  
   // ⭐ 新增：流式通道内容分离
   reasoningContent?: string;  // channel = reasoning (思考过程)
   contentChannel?: string;    // channel = content (最终产出)
@@ -22,6 +26,7 @@ export interface Step {
   output?: any;
   startedAt?: number;
   completedAt?: number;
+  duration?: number;  // ⭐ v3.0 新增：步骤执行耗时（毫秒）
   
   // ⭐ 新增：阶段信息
   phase?: 'analyze' | 'plan' | 'write' | 'refine' | 'test';

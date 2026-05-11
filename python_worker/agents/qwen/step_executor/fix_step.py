@@ -1,120 +1,58 @@
 # -*- coding: utf-8 -*-
-# fix_step.py
-# ---------------------------------------------------------
-# 修复步骤（Fix Step - 工业级容错版本）
-# 根据错误信息让模型修复代码，然后执行修复后的代码
-# ---------------------------------------------------------
+# fix_step_v3.py — 统一函数签名 + 支持多文件协议 + 不执行代码
 
-from .utils import extract_code, FAKE_ENVIRONMENT
+from .utils import extract_code
 from .prompts import fix_prompt
-from ....code_executor import run_python
-from ..qwen_api import call_qwen
+from ....file_ops import parse_fileops_v3, create_file_op
+from ....worker_config import stream_start, stream_chunk, stream_end
+from ..qwen_api import call_qwen_with_persona, call_qwen
 
 
-def run_fix_step(task_id: str, step: dict, context: dict):
+def run_fix_step(step, context, events, task_id=None):
     """
-    修复代码（Fix Step - 工业级容错）
-    
-    容错策略:
-    1. 验证输入参数（原始代码和错误信息）
-    2. LLM 调用保护
-    3. 代码提取保护
-    4. 代码执行保护
-    5. 输出保证
+    v3.0 修复步骤（不执行代码，只生成 file_ops）
     """
-    
-    # ===== 第1层防御：验证输入 =====
-    original_code = step.get("code", "")
-    error_message = step.get("error", "")
-    
-    if not isinstance(original_code, str) or not original_code.strip():
-        return {
-            "fixed_code": "",
-            "result": {"error": "No original code provided"},
-            "success": False
-        }
-    
-    if not isinstance(error_message, str):
-        error_message = str(error_message)
 
-    # ===== 第2层防御：生成修复提示词并调用 LLM =====
-    response = None
-    llm_success = False
-    
-    try:
-        prompt = fix_prompt.format(
-            code=original_code,
-            error=error_message
-        )
-        
+    # ===== 流式输出开始 =====
+    if task_id:
+        stream_start(task_id, "🔧 正在根据错误信息修复代码...", phase="fix")
+
+    # ===== 获取错误信息和原始代码 =====
+    error_info = context.get("last_error", "")
+    original_code = context.get("last_code", "")
+
+    # ===== 构造 prompt =====
+    prompt = fix_prompt(original_code, error_info)
+
+    # ===== 调用模型 =====
+    meta = context.get("meta", {})
+    persona = meta.get("persona_config")
+
+    if persona:
+        response = call_qwen_with_persona(prompt, persona, use_stream=False)
+    else:
         response = call_qwen(prompt)
-        
-        # 验证返回值
-        if response is None:
-            raise ValueError("LLM 返回 None")
-        
-        if not isinstance(response, str):
-            try:
-                response = str(response)
-            except:
-                raise TypeError(f"LLM 返回非字符串类型: {type(response)}")
-        
-        if not response.strip():
-            raise ValueError("LLM 返回空字符串")
-        
-        llm_success = True
-        
-    except TimeoutError:
-        print("[WARN] LLM 调用超时")
-        response = f"# LLM 调用超时\n{original_code}"
-    except Exception as e:
-        print(f"[ERROR] LLM 调用失败: {e}")
-        response = f"# LLM 调用失败: {str(e)}\n{original_code}"
 
-    # ===== 第3层防御：提取修复后的代码 =====
-    fixed_code = ""
-    
-    try:
-        if llm_success and response:
-            fixed_code = extract_code(response, fallback_strategies=True)
-            
-            # 降级策略
-            if not fixed_code and response:
-                if any(kw in response for kw in ['def ', 'class ', 'import ']):
-                    fixed_code = response.strip()
-                    
-    except Exception as e:
-        print(f"[ERROR] Code extraction failed: {e}")
-        fixed_code = ""
+    # ===== 提取代码 =====
+    fixed_code = extract_code(response, fallback_strategies=True)
 
-    # 最终保障
-    if not fixed_code:
-        fixed_code = original_code
-        print("[INFO] Fallback to original code (fix extraction failed)")
+    # ===== 解析 file_ops =====
+    file_ops = parse_fileops_v3(response)
 
-    # ===== 第4层防御：执行修复后的代码 =====
-    result = {}
-    exec_success = False
-    
-    try:
-        result = run_python(FAKE_ENVIRONMENT + "\n\n" + fixed_code)
-        
-        # 检查执行结果
-        if isinstance(result, dict):
-            error = result.get('error', 'None')
-            exec_success = (error == 'None' or error is None)
-        else:
-            exec_success = True
-            
-    except Exception as e:
-        result = {"error": f"Execution failed: {str(e)}"}
-        exec_success = False
-
-    # ===== 第5层防御：返回结果 =====
-    return {
-        "fixed_code": fixed_code,
-        "result": result,
-        "llm_success": llm_success,
-        "exec_success": exec_success,
-        "success": llm_success and exec_success
+    # ===== 写入输出 =====
+    step["output"] = {
+        "text": "修复完成",
+        "file_ops": file_ops,
+        "fixed_code": fixed_code
     }
+
+    # ===== 写入上下文 =====
+    context["file_ops"] = file_ops
+    context["intermediate_results"].append({
+        "type": "fix",
+        "file_ops": file_ops
+    })
+
+    # ===== 流式输出结束 =====
+    if task_id:
+        stream_end(task_id)

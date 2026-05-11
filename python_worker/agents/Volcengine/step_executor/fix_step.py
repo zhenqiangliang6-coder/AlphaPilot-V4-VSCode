@@ -1,37 +1,104 @@
-# （mock-aware 修复）
-from .utils import extract_code, FAKE_ENVIRONMENT
-from .prompts import fix_prompt
-from ....code_executor import run_python
+# -*- coding: utf-8 -*-
+# step_executor/fix_step.py — AlphaPilot OS v3.0
+# ---------------------------------------------------------
+# 架构合规性（Architecture Compliance）
+#
+# ✅ Worker = 真相（Truth Source）
+#    - 所有修复逻辑必须在 Worker 内完成
+#
+# ✅ 协议 = 宪法（Protocol = Constitution）
+#    - fix_step 必须输出 FileOps（唯一合法的文件操作方式）
+#    - 必须支持多文件协议 v3.0
+#
+# 本模块负责：
+# 1. 执行 write_step 生成的整个项目
+# 2. 根据错误信息修复整个项目（多文件）
+# 3. 输出新的 FileOps（覆盖旧文件）
+# ---------------------------------------------------------
+
 from ..doubao_api import call_doubao
+from .prompts import fix_prompt
+from ....code_executor import run_python_project
+from ....worker_config import create_event
+from ....file_ops import parse_fileops_v3
 
 
 def run_fix_step(step, context, events, api_func=None):
     """
-    fix 步骤：根据 test 步骤的错误信息修复代码
-    
-    参数:
-        api_func: 可选的自定义 API 函数，如果不传则使用默认的 call_doubao
+    fix 步骤（官方 + 智能增强版）
+    ---------------------------------------------------------
+    输入：
+        - write_step 的多文件协议文本
+    输出：
+        - 修复后的多文件协议
+        - FileOps（覆盖旧文件）
     """
-    write_outputs = [i["text"] for i in context["intermediate_results"] if i["type"] == "write"]
+
+    # =========================================================
+    # ① 获取 write_step 的多文件协议文本
+    # =========================================================
+    write_outputs = [
+        item["text"]
+        for item in context["intermediate_results"]
+        if item["type"] == "write"
+    ]
+
     if not write_outputs:
-        step["output"] = {"text": "fix：未找到 write 步骤的代码。"}
+        step["output"] = {"text": "fix：未找到 write 步骤生成的代码或文件。"}
         return
 
-    code = extract_code(write_outputs[-1])
-    exec_result = run_python(FAKE_ENVIRONMENT + "\n\n" + code)
+    all_code_context = write_outputs[-1]
+
+    # =========================================================
+    # ② 执行整个项目（多文件执行）
+    # =========================================================
+    exec_result = run_python_project(all_code_context)
 
     if not exec_result["error"]:
         step["output"] = {"text": "fix：代码执行成功，无需修复。"}
         return
 
-    llm_call = api_func if api_func else call_doubao
-    fixed_text = llm_call(fix_prompt(code, exec_result["error"]))
-    fixed_code = extract_code(fixed_text)
+    error_message = exec_result["error"]
 
-    verify = run_python(FAKE_ENVIRONMENT + "\n\n" + fixed_code)
+    # =========================================================
+    # ③ 调用 LLM 修复整个项目（多文件修复）
+    # =========================================================
+    try:
+        llm_call = api_func if api_func else call_doubao
+        fixed_text = llm_call(fix_prompt(all_code_context, error_message))
+    except Exception as e:
+        step["output"] = {"text": f"fix：LLM 调用失败：{e}"}
+        return
 
+    # =========================================================
+    # ④ 解析修复后的多文件协议 → FileOps
+    # =========================================================
+    fixed_file_ops = parse_fileops_v3(fixed_text)
+
+    # =========================================================
+    # ⑤ 写入输出
+    # =========================================================
     step["output"] = {
-        "text": fixed_text
-        + "\n\n---\n\n验证结果：\n"
-        + f"stdout:\n{verify['stdout']}\n\nstderr:\n{verify['stderr']}\n\nerror:\n{verify['error']}"
+        "text": fixed_text,
+        "file_ops": fixed_file_ops,
+        "error_before_fix": error_message
     }
+
+    # =========================================================
+    # ⑥ 写入上下文（供 refine_step 使用）
+    # =========================================================
+    context["intermediate_results"].append({
+        "type": "fix",
+        "text": fixed_text,
+        "file_ops": fixed_file_ops,
+        "error_before_fix": error_message
+    })
+
+    # =========================================================
+    # ⑦ 写入事件流（供 VSCode 实时展示）
+    # =========================================================
+    events.append(create_event("fix_output", {
+        "text": fixed_text,
+        "file_ops": fixed_file_ops,
+        "error_before_fix": error_message
+    }))

@@ -1,178 +1,167 @@
 # -*- coding: utf-8 -*-
 # step_executor/write_step.py
 # ---------------------------------------------------------
-# write 步骤：根据 plan 生成代码（工业级容错 + 流式输出版本）
+# write 步骤：根据 plan 生成代码（v3.0 多文件协议版本）
 # ---------------------------------------------------------
 
-from ..qwen_api import call_qwen, call_qwen_stream
+import re
+from ..qwen_api import call_qwen, call_qwen_stream, call_qwen_with_persona
 from .utils import extract_code
 from .prompts import write_prompt
 from ....worker_config import create_event, stream_chunk, stream_start, stream_end
+from ....file_ops import parse_fileops_v3, create_file_op
 
 
 def run_write_step(step, context, events, task_id=None):
     """
-    write 步骤（工业级容错 + 流式输出）：
-    - 输入：plan 步骤的规划
-    - 输出：生成的 Python 代码 / 诗歌 / 文档等
-    
-    ⭐ 新增：流式输出支持
-    - 通过 task_id 发送 stream_chunk 事件
-    - 实时展示 AI 思考过程 (channel=reasoning)
-    - 实时展示最终产出 (channel=content)
-    
-    容错策略:
-    1. 验证 plan 输出存在且有效
-    2. LLM 流式调用保护
-    3. 代码提取保护（多策略降级）
-    4. 输出保证（即使失败也返回有意义结果）
+    write 步骤（v3.0）：
+    - 支持多文件协议 (# FILE: / # TEST: / # DOC: / # META: / # DEPENDS:)
+    - 自动生成 file_ops
+    - 自动写入 context
+    - 支持 persona / intent
+    - 支持流式输出
     """
 
-    # ===== 第0层：启动流式输出 =====
+    # ===== 0. 流式输出开始 =====
     if task_id:
         try:
-            stream_start(task_id, "✍️ 正在生成内容...", phase="write")
+            stream_start(task_id, "✍️ 正在生成代码...", phase="write")
         except Exception as e:
             print(f"[WARN] stream_start 失败: {e}")
 
-    # ===== 第1层防御：获取并验证 plan 输出 =====
+    # ===== 1. 获取 persona / intent =====
+    persona_config = None
+    intent = "write_code"
+
     try:
-        plan_outputs = [
-            item.get("plan", "")
-            for item in context.get("intermediate_results", [])
-            if item.get("type") == "plan" and item.get("plan")
-        ]
+        meta = context.get("meta", {})
+        persona_type = meta.get("persona", "engineer")
+        intent = meta.get("intent", "write_code")
 
-        if not plan_outputs:
-            error_msg = "write：未找到 plan 步骤的规划内容。"
-            if task_id:
-                stream_chunk(task_id, error_msg, phase="write", channel="reasoning")
-            step["output"] = {
-                "text": error_msg,
-                "code": ""
-            }
-            return
+        from ..personas import get_persona_config
+        persona_config = get_persona_config(persona_type)
 
-        plan_text = plan_outputs[-1]
-        
-        # 验证规划文本有效性
-        if not isinstance(plan_text, str) or not plan_text.strip():
-            error_msg = "write：plan 步骤的规划内容无效。"
-            if task_id:
-                stream_chunk(task_id, error_msg, phase="write", channel="reasoning")
-            step["output"] = {
-                "text": error_msg,
-                "code": ""
-            }
-            return
-            
+        print(f"🎨 write_step 使用人格: {persona_config['name']}")
+        print(f"🧠 意图: {intent}")
+
     except Exception as e:
-        error_msg = f"write：获取规划时发生错误：{str(e)}"
-        if task_id:
-            stream_chunk(task_id, error_msg, phase="write", channel="reasoning")
-        step["output"] = {
-            "text": error_msg,
-            "code": ""
-        }
+        print(f"[WARN] 获取人格失败: {e}")
+        persona_config = None
+
+    # ===== 2. 获取 plan 输出 =====
+    plan_outputs = [
+        item.get("plan", "")
+        for item in context.get("intermediate_results", [])
+        if item.get("type") == "plan"
+    ]
+
+    if not plan_outputs:
+        msg = "write：未找到 plan 步骤的规划内容。"
+        step["output"] = {"text": msg, "code": ""}
         return
 
-    # ===== 第2层防御：流式调用 LLM 生成内容 =====
+    plan_text = plan_outputs[-1]
+
+    # ===== 3. 调用 LLM（支持流式输出）=====
     result = ""
     llm_success = False
-    
+
     try:
         prompt = write_prompt(plan_text)
-        
-        # ⭐ 关键改动：使用流式调用而非阻塞调用
+
         if task_id:
-            # 先发送思考过程
-            reasoning = "让我开始生成内容...\n"
-            stream_chunk(task_id, reasoning, phase="write", channel="reasoning")
-            
-            # 流式模式：逐块接收并转发
-            for chunk in call_qwen_stream(prompt):
-                result += chunk
-                # 实时发送到前端 (channel=content)
-                stream_chunk(task_id, chunk, phase="write", channel="content")
+            stream_chunk(task_id, "开始生成代码...\n", phase="write", channel="reasoning")
+
+            if persona_config:
+                for chunk in call_qwen_with_persona(prompt, persona_config, use_stream=True):
+                    result += chunk
+                    stream_chunk(task_id, chunk, phase="write", channel="content")
+            else:
+                for chunk in call_qwen_stream(prompt):
+                    result += chunk
+                    stream_chunk(task_id, chunk, phase="write", channel="content")
         else:
-            # 非流式模式（向后兼容）
-            result = call_qwen(prompt)
-        
-        # 验证返回值
+            if persona_config:
+                result = call_qwen_with_persona(prompt, persona_config, use_stream=False)
+            else:
+                result = call_qwen(prompt)
+
         if not result:
             raise ValueError("LLM 返回空字符串")
-        
-        if not isinstance(result, str):
-            try:
-                result = str(result)
-            except:
-                raise TypeError(f"LLM 返回非字符串类型: {type(result)}")
-        
+
         llm_success = True
-        
-    except TimeoutError:
-        error_msg = "# LLM 调用超时\n# 无法生成内容"
-        if task_id:
-            stream_chunk(task_id, error_msg, phase="write", channel="reasoning")
-        result = error_msg
-    except Exception as e:
-        error_msg = f"# LLM 调用失败: {str(e)}"
-        if task_id:
-            stream_chunk(task_id, error_msg, phase="write", channel="reasoning")
-        result = error_msg
 
-    # ===== 第3层防御：提取代码块（多策略）=====
-    code = ""
-    
+    except Exception as e:
+        err = f"# LLM 调用失败: {e}"
+        result = err
+        if task_id:
+            stream_chunk(task_id, err, phase="write", channel="reasoning")
+
+    # ===== 4. 提取代码（单文件降级用）=====
+    code = extract_code(result, fallback_strategies=True)
+
+    # ===== 5. 解析多文件协议（核心）=====
     try:
-        if llm_success and result:
-            code = extract_code(result, fallback_strategies=True)
-            
-            # 如果提取失败，但文本看起来像代码
-            if not code and result:
-                if any(kw in result for kw in ['def ', 'class ', 'import ']):
-                    code = result.strip()
-                    print("[INFO] Using full text as code (extraction failed)")
-                    
+        file_ops = parse_fileops_v3(result)
+
+        if not file_ops:
+            print("[WARN] 未检测到多文件协议，降级为单文件模式")
+
+            file_op = create_file_op(
+                action="create",
+                path="main.py",
+                content=code,
+                file_type="file",
+                language="python",
+                reason="单文件降级模式",
+                from_step="write",
+                intent=intent
+            )
+            file_ops = [file_op]
+
+        print(f"✅ write_step 生成 {len(file_ops)} 个 FileOp")
+
+        # ⭐ 写入 context（使用 final_file_ops 作为唯一真相源）
+        if "final_file_ops" not in context:
+            context["final_file_ops"] = []
+        
+        # 追加而非覆盖
+        context["final_file_ops"].extend(file_ops)
+        
+        # 向后兼容：仍然保留 file_ops 字段
+        context["file_ops"] = context["final_file_ops"]
+
     except Exception as e:
-        print(f"[ERROR] Code extraction failed: {e}")
-        code = ""
+        print(f"[ERROR] 解析 FileOps 失败: {e}")
+        file_ops = []
 
-    # 最终保障
-    if not code and result:
-        code = "# 内容提取失败"
-
-    # ===== 第4层防御：写入输出 =====
+    # ===== 6. 写入输出 =====
     step["output"] = {
-        "text": result or "生成失败",
+        "text": result,
         "code": code,
-        "llm_success": llm_success
+        "llm_success": llm_success,
+        "file_ops_count": len(file_ops),
+        "file_ops": file_ops
     }
 
-    # ===== 第5层防御：写入上下文 =====
-    try:
-        context["intermediate_results"].append({
-            "type": "write",
-            "text": result or "",
-            "code": code,
-            "llm_success": llm_success
-        })
-    except Exception as e:
-        print(f"[ERROR] Failed to update context: {e}")
+    # ===== 7. 写入上下文 =====
+    context["intermediate_results"].append({
+        "type": "write",
+        "text": result,
+        "code": code,
+        "file_ops": file_ops
+    })
 
-    # ===== 第6层防御：写入事件流 =====
-    try:
-        events.append(create_event("write_output", {
-            "text": result or "",
-            "code": code,
-            "llm_success": llm_success
-        }))
-    except Exception as e:
-        print(f"[ERROR] Failed to append event: {e}")
-    
-    # ⭐ 结束流式输出
+    # ===== 8. 写入事件流 =====
+    events.append(create_event("write_output", {
+        "text": result,
+        "code": code,
+        "file_ops": file_ops
+    }))
+
+    # ===== 9. 流式输出结束 =====
     if task_id:
         try:
-            stream_end(task_id, phase="write")
+            stream_end(task_id)
         except Exception as e:
             print(f"[WARN] stream_end 失败: {e}")

@@ -3,7 +3,6 @@
 // 严格遵循 ARCHITECTURE_MANIFESTO.md 核心信条
 
 import * as vscode from 'vscode';
-import { TaskPanel } from './panels/taskPanel';
 import { ReactPanel } from './panels/reactPanel';
 import { taskService } from './services/taskService';
 import { websocketService } from './services/websocketService';
@@ -27,6 +26,9 @@ export function activate(context: vscode.ExtensionContext) {
 
   // 初始化服务
   taskService.initialize(context);
+
+  // ⭐ 设置工作区路径（关键：让 Node API 知道文件应该写到哪里）
+  setupWorkspace(context);
 
   // 连接 WebSocket
   connectWebSocket();
@@ -75,7 +77,8 @@ export function activate(context: vscode.ExtensionContext) {
   const openPanelCommand = vscode.commands.registerCommand(
     'alphapilot.openPanel',
     () => {
-      const panel = TaskPanel.show(context.extensionUri);
+      // ⭐ v3.0 迁移：主面板已切换为 ReactPanel
+      const panel = ReactPanel.show(context.extensionUri);
       
       // 如果有当前任务 ID，告诉面板
       const currentTaskId = context.workspaceState.get<string>('current_task_id');
@@ -103,8 +106,8 @@ export function activate(context: vscode.ExtensionContext) {
       }
 
       try {
-        // 显示面板
-        const panel = TaskPanel.show(context.extensionUri);
+        // ⭐ v3.0: 使用 ReactPanel 显示任务进度
+        const panel = ReactPanel.show(context.extensionUri);
 
         // 使用新的 Dispatcher 提交任务
         const selectedModel = context.workspaceState.get<string>('selected_model', 'qwen_generate');
@@ -192,6 +195,32 @@ export function activate(context: vscode.ExtensionContext) {
  * 设置全局事件订阅
  */
 function setupEventSubscriptions(context: vscode.ExtensionContext): void {
+  // ⭐ 监听工作区文件夹变化（实时响应工作区切换）
+  const workspaceWatcher = vscode.workspace.onDidChangeWorkspaceFolders(async (event) => {
+    console.log('📁 工作区文件夹发生变化');
+    
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (workspaceFolders && workspaceFolders.length > 0) {
+      const workspacePath = workspaceFolders[0].uri.fsPath;
+      
+      try {
+        const axios = require('axios');
+        await axios.post(`${NODE_API_BASE_URL}/workspace/set`, {
+          path: workspacePath
+        });
+        
+        console.log(`[AlphaPilot] 🔄 Workspace 已自动更新为: ${workspacePath}`);
+        vscode.window.showInformationMessage(`✅ 工作区已更新: ${workspacePath}`);
+      } catch (error: any) {
+        console.error('[AlphaPilot] ❌ 更新工作区失败:', error.message);
+      }
+    } else {
+      console.warn('[AlphaPilot] ⚠️ 所有工作区已关闭');
+    }
+  });
+  
+  context.subscriptions.push(workspaceWatcher);
+  
   // 监听任务完成
   eventBus.on(EventType.TASK_COMPLETED, ({ taskId, result }) => {
     console.log(`🎉 任务完成: ${taskId}`);
@@ -210,12 +239,69 @@ function setupEventSubscriptions(context: vscode.ExtensionContext): void {
 }
 
 /**
+ * 设置工作区路径（关键：让 Node API 知道文件应该写到哪里）
+ */
+async function setupWorkspace(context: vscode.ExtensionContext): Promise<void> {
+  try {
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    
+    if (workspaceFolders && workspaceFolders.length > 0) {
+      const workspacePath = workspaceFolders[0].uri.fsPath;
+      
+      // 调用 Node API 设置工作区路径
+      const axios = require('axios');
+      await axios.post(`${NODE_API_BASE_URL}/workspace/set`, {
+        path: workspacePath
+      });
+      
+      console.log(`[AlphaPilot] ✅ Workspace 已设置为: ${workspacePath}`);
+    } else {
+      console.warn('[AlphaPilot] ⚠️ 未检测到工作区，FileOps 将写入临时目录');
+    }
+  } catch (error: any) {
+    console.error('[AlphaPilot] ❌ 设置工作区失败:', error.message);
+  }
+}
+
+/**
  * 连接 WebSocket 并监听事件
  */
 async function connectWebSocket() {
   try {
     await websocketService.connect(WS_URL);
     console.log('✅ WebSocket 已连接');
+
+    // ⭐ 监听 task_result 事件，自动执行 FileOps
+    websocketService.on('task_result', async (result: any) => {
+      console.log('\n📡 收到任务完成通知');
+      
+      // 检查是否有 FileOps 需要执行
+      if (result.context?.final_file_ops && result.context.final_file_ops.length > 0) {
+        console.log(`📋 检测到 ${result.context.final_file_ops.length} 个 FileOps，准备执行...`);
+        
+        try {
+          const axios = require('axios');
+          const response = await axios.post(`${NODE_API_BASE_URL}/fileops/execute`, {
+            file_ops: result.context.final_file_ops
+          });
+          
+          if (response.data.success) {
+            console.log(`✅ FileOps 执行成功，生成 ${response.data.files?.length || 0} 个文件`);
+            
+            // 显示通知
+            vscode.window.showInformationMessage(
+              `✅ 已生成 ${response.data.files?.length || 0} 个文件`
+            );
+          } else {
+            console.error('❌ FileOps 执行失败:', response.data.error);
+            vscode.window.showErrorMessage(`FileOps 执行失败: ${response.data.error}`);
+          }
+        } catch (error: any) {
+          console.error('❌ 执行 FileOps 时出错:', error.message);
+          vscode.window.showErrorMessage(`执行 FileOps 失败: ${error.message}`);
+        }
+      }
+    });
 
     // WebSocket 消息现在由 MessageDispatcher 统一处理
     // 这里只保留兼容性代码

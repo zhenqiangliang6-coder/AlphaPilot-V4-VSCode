@@ -1,188 +1,59 @@
 # -*- coding: utf-8 -*-
-# step_executor/refine_step.py
-# ---------------------------------------------------------
-# refine 步骤：执行代码 + 优化代码（工业级容错版本）
-# ---------------------------------------------------------
+# refine_step_v3.py — 稳定版（方向 A）
 
-from ..qwen_api import call_qwen
-from .utils import extract_code, FAKE_ENVIRONMENT
-from .prompts import optimize_prompt
-from ....code_executor import run_python
-from ....worker_config import create_event
+from ....file_ops import parse_fileops_v3, filter_valid_file_ops
+from ....worker_config import stream_start, stream_chunk, stream_end
+from ..qwen_api import call_qwen_with_persona, call_qwen
 
 
-def run_refine_step(step, context, events):
+def run_refine_step(step, context, events, task_id=None):
     """
-    refine 步骤（工业级容错）：
-    - 执行 write 步骤生成的代码
-    - 根据执行结果优化代码
-    - 多层防御机制确保不会崩溃
-    
-    容错策略:
-    1. 输入验证：检查 write 输出是否存在且有效
-    2. 执行保护：捕获代码执行异常，提供降级方案
-    3. LLM 调用保护：处理超时、错误响应、非字符串返回
-    4. 代码提取保护：多策略提取，失败时使用原始代码
-    5. 输出保证：即使部分失败，也返回有意义的结果
+    v3.1.1 refine step（空值保护版）
+    - 使用 filter_valid_file_ops() 过滤内部元数据
+    - 优化代码，但不改变文件结构
+    - 如果模型没有生成新的 file_ops，则保留原始 file_ops
     """
 
-    # ===== 第1层防御：获取并验证 write 步骤的代码 =====
-    try:
-        write_outputs = [
-            item.get("code", "")
-            for item in context.get("intermediate_results", [])
-            if item.get("type") == "write" and item.get("code")
-        ]
+    if task_id:
+        stream_start(task_id, "🔧 正在优化代码...", phase="refine")
 
-        if not write_outputs:
-            step["output"] = {
-                "text": "refine：未找到 write 步骤生成的代码。",
-                "optimized_code": "",
-                "exec_summary": "No code to refine"
-            }
-            return
+    file_ops = context.get("file_ops", [])
 
-        code = write_outputs[-1]
-        
-        # 验证代码有效性
-        if not isinstance(code, str) or not code.strip():
-            step["output"] = {
-                "text": "refine：write 步骤的代码无效（空或非字符串）。",
-                "optimized_code": "",
-                "exec_summary": "Invalid code from write step"
-            }
-            return
-            
-    except Exception as e:
-        step["output"] = {
-            "text": f"refine：获取代码时发生错误：{str(e)}",
-            "optimized_code": "",
-            "exec_summary": f"Error retrieving code: {e}"
-        }
-        return
+    # ⭐ v3.1.1 修复：使用工具函数过滤有效 FileOps
+    valid_file_ops = filter_valid_file_ops(file_ops)
 
-    # ===== 第2层防御：执行代码（带超时和异常捕获）=====
-    exec_summary = ""
-    exec_success = False
-    
-    try:
-        exec_result = run_python(FAKE_ENVIRONMENT + "\n\n" + code)
-        
-        # 验证执行结果
-        if isinstance(exec_result, dict):
-            stdout = exec_result.get('stdout', '')
-            stderr = exec_result.get('stderr', '')
-            error = exec_result.get('error', 'None')
-            
-            exec_summary = (
-                f"stdout:\n{stdout}\n\n"
-                f"stderr:\n{stderr}\n\n"
-                f"error:\n{error}"
-            )
-            
-            # 判断是否执行成功
-            exec_success = (error == 'None' or error is None) and not stderr
-            
-        else:
-            exec_summary = f"Unexpected exec result type: {type(exec_result)}"
-            
-    except TimeoutError:
-        exec_summary = "代码执行超时（超过30秒）"
-    except MemoryError:
-        exec_summary = "代码执行内存溢出"
-    except Exception as e:
-        exec_summary = f"代码执行异常：{type(e).__name__}: {str(e)}"
+    # 构建虚拟项目
+    virtual_project = ""
+    for fo in valid_file_ops:
+        if fo["path"].endswith(".py"):
+            virtual_project += f"# FILE: {fo['path']}\n{fo['content']}\n\n"
 
-    # ===== 第3层防御：调用 LLM 优化代码（带重试和验证）=====
-    optimized_text = None
-    llm_call_success = False
-    
-    try:
-        # 构建优化提示
-        prompt = optimize_prompt(code, exec_summary)
-        
-        # 调用 LLM
-        optimized_text = call_qwen(prompt)
-        
-        # 验证返回值
-        if optimized_text is None:
-            raise ValueError("LLM 返回 None")
-        
-        if not isinstance(optimized_text, str):
-            # 尝试转换
-            try:
-                optimized_text = str(optimized_text)
-            except:
-                raise TypeError(f"LLM 返回非字符串类型: {type(optimized_text)}")
-        
-        if not optimized_text.strip():
-            raise ValueError("LLM 返回空字符串")
-        
-        llm_call_success = True
-        
-    except TimeoutError:
-        print("[WARN] LLM 调用超时，使用原始代码")
-        optimized_text = f"# LLM 调用超时\n# 保留原始代码\n\n{code}"
-    except Exception as e:
-        print(f"[ERROR] LLM 调用失败: {e}")
-        # 降级策略：直接返回原始代码
-        optimized_text = f"# LLM 调用失败: {str(e)}\n# 保留原始代码\n\n{code}"
+    prompt = f"请优化以下 Python 项目代码：\n\n{virtual_project}"
 
-    # ===== 第4层防御：提取优化后的代码（多策略）=====
-    optimized_code = ""
-    
-    try:
-        if llm_call_success and optimized_text:
-            # 使用强化版的 extract_code（支持多策略）
-            optimized_code = extract_code(optimized_text, fallback_strategies=True)
-            
-            # 如果提取失败，但有文本内容，尝试直接使用
-            if not optimized_code and optimized_text:
-                # 检查文本是否看起来像代码
-                if any(kw in optimized_text for kw in ['def ', 'class ', 'import ']):
-                    optimized_code = optimized_text.strip()
-                    print("[INFO] Using full text as code (extraction failed but text looks like code)")
-                    
-    except Exception as e:
-        print(f"[ERROR] Code extraction failed: {e}")
-        optimized_code = ""
+    meta = context.get("meta", {})
+    persona = meta.get("persona_config")
 
-    # 最终保障：如果优化代码为空，使用原始代码
-    if not optimized_code:
-        optimized_code = code
-        print("[INFO] Fallback to original code (optimization failed)")
+    if persona:
+        response = call_qwen_with_persona(prompt, persona, use_stream=False)
+    else:
+        response = call_qwen(prompt)
 
-    # ===== 第5层防御：写入输出（保证至少有一个有效结果）=====
+    # 解析模型输出
+    refined_file_ops = parse_fileops_v3(response)
+
+    # ⭐ 方向 A：如果模型没有生成新的 file_ops，则保留原始 file_ops
+    if refined_file_ops:
+        # ⭐ 更新 final_file_ops（唯一真相源）
+        context["final_file_ops"] = refined_file_ops
+        context["file_ops"] = refined_file_ops
+    else:
+        # 保持原有 file_ops 不变
+        pass
+
     step["output"] = {
-        "text": optimized_text or f"优化失败，保留原始代码",
-        "optimized_code": optimized_code,
-        "exec_summary": exec_summary,
-        "original_code": code,
-        "llm_success": llm_call_success,
-        "exec_success": exec_success
+        "text": "refine 完成",
+        "file_ops": context.get("final_file_ops", [])
     }
 
-    # ===== 第6层防御：写入上下文（供后续步骤使用）=====
-    try:
-        context["intermediate_results"].append({
-            "type": "refine",
-            "original_code": code,
-            "optimized_code": optimized_code,
-            "exec_summary": exec_summary,
-            "llm_success": llm_call_success,
-            "exec_success": exec_success
-        })
-    except Exception as e:
-        print(f"[ERROR] Failed to update context: {e}")
-
-    # ===== 第7层防御：写入事件流（供 VSCode 实时展示）=====
-    try:
-        events.append(create_event("refine_output", {
-            "original_code": code,
-            "optimized_code": optimized_code,
-            "exec_summary": exec_summary,
-            "llm_success": llm_call_success,
-            "exec_success": exec_success
-        }))
-    except Exception as e:
-        print(f"[ERROR] Failed to append event: {e}")
+    if task_id:
+        stream_end(task_id)
