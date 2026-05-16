@@ -2,10 +2,11 @@
 # step_executor/analyze_step.py
 # ---------------------------------------------------------
 # analyze 步骤：分析用户需求，提取关键点
+# - ⭐ v3.0：支持自定义 api_func（用于流式输出）
 # ---------------------------------------------------------
 
-from step_executor.qwen_api import call_qwen
-from step_executor.prompts import analyze_prompt
+from .qwen_api import call_qwen
+from .prompts import analyze_prompt
 from worker_config import create_event
 
 
@@ -14,6 +15,7 @@ def run_analyze_step(step, context, events):
     analyze 步骤：
     - 输入：用户任务描述
     - 输出：需求分析（自然语言）
+    - ⭐ v3.0：支持通过 context['_custom_api_func'] 传入自定义 API 函数
     """
 
     # 1) 获取用户输入
@@ -23,23 +25,26 @@ def run_analyze_step(step, context, events):
         step["output"] = {"text": "analyze：未提供任务描述。"}
         return
 
-    # 2) 调用 LLM 生成分析结果
+    # 2) ⭐ v3.0：选择 API 调用函数
+    api_func = context.get("_custom_api_func", call_qwen)
+
+    # 3) 调用 LLM 生成分析结果
     try:
-        result = call_qwen(analyze_prompt(user_input))
+        result = api_func(analyze_prompt(user_input))
     except Exception as e:
         step["output"] = {"text": f"analyze：LLM 调用失败：{e}"}
         return
 
-    # 3) 写入输出
+    # 4) 写入输出
     step["output"] = {"text": result}
 
-    # 4) 写入上下文（供 plan_step 使用）
+    # 5) 写入上下文（供 plan_step 使用）
     context["intermediate_results"].append({
         "type": "analyze",
         "analysis": result
     })
 
-    # 5) 写入事件流（供 VSCode 实时展示）
+    # 6) 写入事件流（供 VSCode 实时展示）
     events.append(create_event("analyze_output", {
         "analysis": result
     }))

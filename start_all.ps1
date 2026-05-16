@@ -97,11 +97,12 @@ Write-Host "2️⃣ 启动 Workers..." -ForegroundColor Yellow
 $pythonExe = Get-PythonVenvPath
 Write-Host "   🐍 Python: $pythonExe" -ForegroundColor Cyan
 
-# Worker 配置
+# Worker 配置（v3.0 流式输出版）
 $workers = @(
     @{Name="Qwen"; Script="python_worker.agents.qwen.qwen_worker_v2"; EnvId="qwen-worker-1"},
-    @{Name="DeepSeek"; Script="python_worker.agents.deepeek.deepseek_worker_v2"; EnvId="deepseek-worker-1"},
-    @{Name="Doubao"; Script="python_worker.agents.Volcengine.doubao_worker_v2"; EnvId="doubao-worker-1"}
+    @{Name="DeepSeek"; Script="python_worker.agents.deepeek.deepseek_worker_v3"; EnvId="deepseek-worker-1"},
+    @{Name="Doubao"; Script="python_worker.agents.Volcengine.doubao_worker_v3"; EnvId="doubao-worker-1"},
+    @{Name="Local LLM"; Script="python_worker.agents.local_llm.local_worker_v3"; EnvId="local-worker-1"}
 )
 
 foreach ($worker in $workers) {
@@ -150,4 +151,5 @@ Write-Host "   Node API: $(if (Test-PortInUse -Port 3000) { '✅ 运行中' } el
 Write-Host "   Qwen Worker: ✅ 已启动 (新窗口)" -ForegroundColor White
 Write-Host "   DeepSeek Worker: ✅ 已启动 (新窗口)" -ForegroundColor White
 Write-Host "   Doubao Worker: ✅ 已启动 (新窗口)" -ForegroundColor White
+Write-Host "   Local LLM Worker: ✅ 已启动 (新窗口)" -ForegroundColor White
 Write-Host ""

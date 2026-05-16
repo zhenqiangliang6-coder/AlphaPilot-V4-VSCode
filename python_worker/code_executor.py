@@ -21,16 +21,18 @@ import sys
 import io
 import traceback
 import types
+import multiprocessing
+import queue
 
 
 # =========================================================
-# ① 单文件执行器（兼容旧逻辑）
+# ① 单文件执行器（兼容旧逻辑）+ 超时保护
 # =========================================================
-def run_python(code: str) -> dict:
-    """
-    执行单个 Python 代码字符串
-    """
 
+def _execute_code_in_process(code: str, result_queue: multiprocessing.Queue):
+    """
+    在独立进程中执行代码，避免主进程被卡住
+    """
     stdout_buffer = io.StringIO()
     stderr_buffer = io.StringIO()
 
@@ -53,7 +55,56 @@ def run_python(code: str) -> dict:
     result["stdout"] = stdout_buffer.getvalue()
     result["stderr"] = stderr_buffer.getvalue()
 
-    return result
+    result_queue.put(result)
+
+
+def run_python(code: str, timeout: int = 10) -> dict:
+    """
+    执行单个 Python 代码字符串（带超时保护）
+    
+    Args:
+        code: 要执行的 Python 代码
+        timeout: 超时时间（秒），默认 10 秒
+    
+    Returns:
+        dict: 包含 stdout, stderr, error 的结果字典
+    """
+    result_queue = multiprocessing.Queue()
+    
+    # 创建子进程执行代码
+    process = multiprocessing.Process(
+        target=_execute_code_in_process,
+        args=(code, result_queue)
+    )
+    
+    process.start()
+    process.join(timeout=timeout)
+    
+    if process.is_alive():
+        # 超时：强制终止进程
+        process.terminate()
+        process.join(timeout=2)
+        
+        if process.is_alive():
+            process.kill()
+            process.join()
+        
+        return {
+            "stdout": "",
+            "stderr": "",
+            "error": f"⏱️ 代码执行超时（{timeout}秒），可能包含无限循环或阻塞操作"
+        }
+    
+    # 正常完成：从队列获取结果
+    try:
+        result = result_queue.get_nowait()
+        return result
+    except queue.Empty:
+        return {
+            "stdout": "",
+            "stderr": "",
+            "error": "⚠️ 执行进程未返回结果（异常退出）"
+        }
 
 
 # =========================================================

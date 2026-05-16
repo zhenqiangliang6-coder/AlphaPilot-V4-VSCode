@@ -2,11 +2,12 @@
 # step_executor/refine_step.py
 # ---------------------------------------------------------
 # refine 步骤：执行代码 + 优化代码
+# - ⭐ v3.0：支持自定义 api_func（用于流式输出）
 # ---------------------------------------------------------
 
-from step_executor.qwen_api import call_qwen
-from step_executor.utils import extract_code, FAKE_ENVIRONMENT
-from step_executor.prompts import optimize_prompt
+from .qwen_api import call_qwen
+from .utils import extract_code, FAKE_ENVIRONMENT
+from .prompts import optimize_prompt
 from code_executor import run_python
 from worker_config import create_event
 
@@ -16,6 +17,7 @@ def run_refine_step(step, context, events):
     refine 步骤：
     - 执行 write 步骤生成的代码
     - 根据执行结果优化代码
+    - ⭐ v3.0：支持通过 context['_custom_api_func'] 传入自定义 API 函数
     """
 
     # 1) 获取 write 步骤的代码
@@ -44,23 +46,26 @@ def run_refine_step(step, context, events):
         f"error:\n{exec_result['error']}"
     )
 
-    # 3) 调用 LLM 优化代码
+    # 3) ⭐ v3.0：选择 API 调用函数
+    api_func = context.get("_custom_api_func", call_qwen)
+
+    # 4) 调用 LLM 优化代码
     try:
-        optimized_text = call_qwen(optimize_prompt(code, exec_summary))
+        optimized_text = api_func(optimize_prompt(code, exec_summary))
     except Exception as e:
         step["output"] = {"text": f"refine：LLM 调用失败：{e}"}
         return
 
     optimized_code = extract_code(optimized_text)
 
-    # 4) 写入输出
+    # 5) 写入输出
     step["output"] = {
         "text": optimized_text,
         "optimized_code": optimized_code,
         "exec_summary": exec_summary
     }
 
-    # 5) 写入上下文（供后续步骤使用）
+    # 6) 写入上下文（供后续步骤使用）
     context["intermediate_results"].append({
         "type": "refine",
         "original_code": code,
@@ -68,7 +73,7 @@ def run_refine_step(step, context, events):
         "exec_summary": exec_summary
     })
 
-    # 6) 写入事件流（供 VSCode 实时展示）
+    # 7) 写入事件流（供 VSCode 实时展示）
     events.append(create_event("refine_output", {
         "original_code": code,
         "optimized_code": optimized_code,

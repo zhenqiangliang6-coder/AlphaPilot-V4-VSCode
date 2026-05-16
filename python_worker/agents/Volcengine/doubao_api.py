@@ -107,25 +107,46 @@ def call_doubao(prompt: str, image_url: str = None) -> str:
         # 解析响应
         result = response.json()
         
-        # 提取响应内容（根据实际 API 返回结构调整）
-        if "output" in result:
-            output = result["output"]
-            if "text" in output:
-                return output["text"]
-            elif "choices" in output:
-                choices = output["choices"]
-                if choices and len(choices) > 0:
-                    return choices[0].get("message", {}).get("content", "")
+        # ⭐ 提取响应内容（根据火山引擎 Responses API 格式）
+        if "output" in result and isinstance(result["output"], list):
+            output_list = result["output"]
+            if output_list and len(output_list) > 0:
+                first_output = output_list[0]
+                
+                # 尝试从 summary 中提取文本（火山引擎格式）
+                if "summary" in first_output:
+                    summary_list = first_output["summary"]
+                    if summary_list and len(summary_list) > 0:
+                        for item in summary_list:
+                            if item.get("type") == "summary_text":
+                                text_content = item.get("text", "")
+                                if text_content:
+                                    return text_content
+                
+                # 尝试从 content 中提取文本（备用格式）
+                if "content" in first_output:
+                    content_list = first_output["content"]
+                    if content_list and len(content_list) > 0:
+                        text_content = content_list[0].get("text", "")
+                        if text_content:
+                            return text_content
         
-        # 备用提取路径
+        # 备用路径：尝试 choices 格式
         if "choices" in result:
             choices = result["choices"]
             if choices and len(choices) > 0:
                 return choices[0].get("message", {}).get("content", "")
         
-        # 如果都无法提取，返回整个结果（用于调试）
-        return json.dumps(result, ensure_ascii=False)
+        # 如果都无法提取，记录警告并返回空
+        print(f"[WARN] Doubao API 返回格式无法解析: {json.dumps(result, ensure_ascii=False)[:500]}")
+        return ""
         
+    except requests.RequestException as e:
+        print(f"[ERROR] Doubao API 调用失败: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+            print(f"[ERROR] HTTP 状态码: {e.response.status_code}")
+            print(f"[ERROR] 响应内容: {e.response.text[:500]}")
+        raise
     finally:
         session.close()  # 确保关闭 Session
 
@@ -186,6 +207,7 @@ def call_doubao_stream(prompt: str, image_url: str = None):
                 
                 decoded = line.decode('utf-8')
                 
+                # 处理 SSE 格式
                 if decoded.startswith("data: "):
                     data_str = decoded[6:]
                     if data_str.strip() == "[DONE]":
@@ -193,19 +215,47 @@ def call_doubao_stream(prompt: str, image_url: str = None):
                     
                     try:
                         data = json.loads(data_str)
-                        # 根据实际格式提取内容
-                        if "output" in data:
-                            output = data["output"]
-                            if "text" in output:
-                                yield output["text"]
-                            elif "choices" in output:
-                                choices = output["choices"]
-                                if choices:
-                                    delta = choices[0].get("delta", {})
-                                    content = delta.get("content", "")
-                                    if content:
-                                        yield content
+                        
+                        # ⭐ 火山引擎 Responses API 流式格式
+                        if "output" in data and isinstance(data["output"], list):
+                            output_list = data["output"]
+                            if output_list and len(output_list) > 0:
+                                first_output = output_list[0]
+                                
+                                # 尝试从 summary 中提取文本（火山引擎格式）
+                                if "summary" in first_output:
+                                    summary_list = first_output["summary"]
+                                    if summary_list and len(summary_list) > 0:
+                                        for item in summary_list:
+                                            if item.get("type") == "summary_text":
+                                                text_content = item.get("text", "")
+                                                if text_content:
+                                                    yield text_content
+                                
+                                # 尝试从 content 中提取文本（备用格式）
+                                elif "content" in first_output:
+                                    content_list = first_output["content"]
+                                    if content_list and len(content_list) > 0:
+                                        text_content = content_list[0].get("text", "")
+                                        if text_content:
+                                            yield text_content
+                        
+                        # 备用路径：delta 格式
+                        elif "choices" in data:
+                            choices = data["choices"]
+                            if choices:
+                                delta = choices[0].get("delta", {})
+                                content = delta.get("content", "")
+                                if content:
+                                    yield content
+                                    
                     except json.JSONDecodeError:
                         continue
+                        
+    except requests.RequestException as e:
+        print(f"[ERROR] Doubao 流式 API 调用失败: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+            print(f"[ERROR] HTTP 状态码: {e.response.status_code}")
+        raise
     finally:
         session.close()  # 确保关闭 Session

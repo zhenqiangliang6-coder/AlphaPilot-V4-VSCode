@@ -5,7 +5,8 @@ import { Toolbar } from './components/Toolbar';
 import { ModelSelector } from './components/ModelSelector';
 import { MessageList } from './components/MessageList';
 import { ChatInput } from './components/ChatInput';
-import { FileOpsList } from './components/FileOpsList';  // ⭐ v2.7 新增
+import { FileOpsList } from './components/FileOpsList';
+import { StepPanel } from './components/StepPanel';  // ⭐ v3.2 新增
 import { vscodeAPI } from './utils/vscode';
 
 function App() {
@@ -16,13 +17,16 @@ function App() {
     setStreaming, 
     addStep, 
     updateStep,
-    setCurrentPhase  // ⭐ 新增
+    setCurrentPhase
   } = useChatStore();
 
   // ⭐ v2.7 新增：FileOps 状态管理
   const [showFileOps, setShowFileOps] = useState(false);
   const [currentFileOps, setCurrentFileOps] = useState<any[]>([]);
   const [currentTaskIdForFileOps, setCurrentTaskIdForFileOps] = useState<string | null>(null);
+
+  // ⭐ v3.2 新增：StepPanel 侧边栏状态
+  const [showStepPanel, setShowStepPanel] = useState(false);
 
   // 监听来自 Extension 的消息
   useEffect(() => {
@@ -243,11 +247,44 @@ function App() {
 
   return (
     <div className="flex flex-col h-screen bg-vscode-bg text-vscode-fg">
-      <Toolbar />
+      <Toolbar showStepPanel={showStepPanel} setShowStepPanel={setShowStepPanel} />
       <ModelSelector />
       <MessageList />
       <ChatInput />
-      <FileOpsList  // ⭐ v2.7 新增
+
+      {/* ⭐ v3.2 新增：StepPanel 侧边栏 */}
+      {showStepPanel && (
+        <div className="fixed right-0 top-12 h-full w-96 bg-vscode-panel border-l border-vscode-border shadow-2xl z-40 overflow-y-auto animate-slide-in-right">
+          <div className="p-4">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold flex items-center gap-2">
+                <span>📊</span>
+                <span>任务步骤</span>
+              </h3>
+              <button
+                onClick={() => setShowStepPanel(false)}
+                className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-vscode-hover transition-colors"
+              >
+                ✕
+              </button>
+            </div>
+            
+            {/* 显示当前任务的所有步骤 */}
+            {useChatStore.getState().messages
+              .filter(msg => msg.taskId && msg.steps && msg.steps.length > 0)
+              .map(msg => (
+                <StepPanel
+                  key={msg.taskId}
+                  steps={msg.steps || []}
+                  currentPhase={useChatStore.getState().currentPhase}
+                  isStreaming={useChatStore.getState().isStreaming && msg.taskId === useChatStore.getState().currentTaskId}
+                />
+              ))}
+          </div>
+        </div>
+      )}
+
+      <FileOpsList
         show={showFileOps}
         setShow={setShowFileOps}
         fileOps={currentFileOps}

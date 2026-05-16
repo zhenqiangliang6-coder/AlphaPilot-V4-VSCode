@@ -1,73 +1,92 @@
+# -*- coding: utf-8 -*-
 # step_executor/test_step.py
 # ---------------------------------------------------------
-# 自动生成并运行 pytest 风格单元测试（使用 fake pytest）
+# test 步骤：生成测试代码（v3.0 流式输出版）
 # ---------------------------------------------------------
 
-from .utils import extract_code, FAKE_PYTEST
+from ..deepseek_api import call_deepseek, call_deepseek_stream
 from .prompts import test_prompt
-from ....code_executor import run_python
-from ....worker_config import create_event
-from ..deepseek_api import call_deepseek
+from ....worker_config import create_event, stream_start, stream_chunk, stream_end
 
 
-def run_test_step(step, context, events, api_func=None):
+def run_test_step(step, context, events, task_id=None):
     """
-    执行 test 步骤：
-    - 从 write 步骤获取代码
-    - 生成 pytest 风格测试代码（不 import pytest）
-    - 注入 fake pytest（支持 pytest.raises）
-    - 组合执行：fake pytest + 用户代码 + 测试代码
+    test 步骤：
+    - 输入：write/refine 步骤生成的代码
+    - 输出：测试代码
     
-    参数:
-        api_func: 可选的自定义 API 函数，如果不传则使用默认的 call_deepseek
+    ⭐ v3.0 新增：
+        - 支持流式输出
+        - 使用 DeepSeek 独立的人格配置
+        - 更新 final_file_ops
+        - 统一签名：task_id 参数
     """
 
-    # 1) 找到 write 步骤生成的代码
-    write_outputs = [
+    # ===== 第0.5层：⭐ 获取人格配置（DeepSeek独立实现）=====
+    persona_config = None
+    try:
+        meta = context.get("meta", {})
+        persona_type = meta.get("persona", "engineer")
+        
+        from ..personas import get_persona_config
+        persona_config = get_persona_config(persona_type)
+        
+        print(f"🎨 test_step 使用人格: {persona_config['name']}")
+    except Exception as e:
+        print(f"[WARN] 获取人格配置失败: {e}")
+        persona_config = None
+
+    # 1) 获取最新代码
+    code_outputs = [
         item["text"]
         for item in context["intermediate_results"]
-        if item["type"] == "write"
+        if item["type"] in ["write", "refine", "fix"]
     ]
 
-    if not write_outputs:
-        step["output"] = {"text": "test：未找到 write 步骤的代码，无法生成测试用例。"}
+    if not code_outputs:
+        step["output"] = {"text": "test：未找到可测试的代码。"}
         return
 
-    # 2) 提取用户代码
-    code = extract_code(write_outputs[-1])
-    if not code:
-        step["output"] = {"text": "test：write 步骤未提供可解析的代码块。"}
+    code_text = code_outputs[-1]
+
+    # 2) 构建完整 prompt（含人格配置）
+    full_prompt = test_prompt(code_text)
+    if persona_config:
+        full_prompt = f"{persona_config['system_prompt']}\n\n{full_prompt}"
+
+    # 3) 启动流式输出
+    result = ""
+    if task_id:
+        stream_start(task_id, "🧪 正在生成测试...", phase="test")
+
+    # 4) 调用 LLM 生成测试（流式）
+    try:
+        if task_id:
+            for chunk in call_deepseek_stream(full_prompt):
+                result += chunk
+                stream_chunk(task_id, chunk, phase="test", channel="reasoning")
+        else:
+            result = call_deepseek(full_prompt)
+    except Exception as e:
+        step["output"] = {"text": f"test：LLM 调用失败：{e}"}
+        if task_id:
+            stream_end(task_id)
         return
 
-    # 3) 让 DeepSeek 生成 pytest 风格测试代码（不 import pytest）
-    llm_call = api_func if api_func else call_deepseek
-    test_code_text = llm_call(test_prompt(code))
-    test_code = extract_code(test_code_text)
+    # 5) 结束流式输出
+    if task_id:
+        stream_end(task_id)
 
-    if not test_code:
-        step["output"] = {"text": "test：未能从 LLM 输出中提取到有效的测试代码。"}
-        return
+    # 6) 写入输出
+    step["output"] = {"text": result}
 
-    # 4) 组合执行 fake pytest + 用户代码 + 测试代码
-    full_code = FAKE_PYTEST + "\n\n" + code + "\n\n" + test_code
-    test_result = run_python(full_code)
-
-    # 5) 输出测试结果
-    test_summary = (
-        f"## 🧪 生成的测试代码\n"
-        f"``python\n{test_code}\n```\n\n"
-        f"## 📊 测试结果\n"
-        f"stdout:\n{test_result.get('stdout', '')}\n\n"
-        f"stderr:\n{test_result.get('stderr', '')}\n\n"
-        f"error:\n{test_result.get('error', 'None')}\n"
-    )
-
-    step["output"] = {"text": test_summary}
-
-    # 6) 写入 context
+    # 7) 写入上下文
     context["intermediate_results"].append({
         "type": "test",
-        "test_code": test_code,
-        "test_result": test_result,
-        "tested_code": code
+        "text": result
     })
+
+    # 8) 写入事件流
+    events.append(create_event("test_output", {
+        "text": result
+    }))

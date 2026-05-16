@@ -51,6 +51,14 @@ class IntentRouter:
     # ② 普通意图匹配（按优先级）
     # =========================================================
     INTENT_PATTERNS = {
+        # ⭐ 对话/问答意图（高优先级，避免误判为代码生成）
+        "chat": [
+            r"你是谁", r"你是.*谁", r"介绍一下.*自己",
+            r"hello", r"hi\b", r"hey\b",
+            r"what.*are.*you", r"who.*are.*you",
+            r"你好", r"您好", r"哈喽",
+        ],
+
         "fix_code": [
             r"修复.*错误", r"解决.*bug", r"报错", r"无法运行",
             r"fix.*error", r"debug", r"exception", r"crash"
@@ -92,6 +100,7 @@ class IntentRouter:
     # ③ 意图 → 人格
     # =========================================================
     INTENT_TO_PERSONA = {
+        "chat": "conversational",  # ⭐ 对话人格
         "write_code": "engineer",
         "fix_code": "engineer",
         "explain_code": "engineer",
@@ -106,6 +115,7 @@ class IntentRouter:
     # ④ 意图 → 执行链（Execution Chain）
     # =========================================================
     INTENT_TO_CHAIN = {
+        "chat": ["analyze", "write"],  # ⭐ 对话链路（简短）
         "write_code": ["analyze", "plan", "write", "test", "refine"],
         "fix_code": ["analyze", "fix", "test"],
         "explain_code": ["analyze", "write"],

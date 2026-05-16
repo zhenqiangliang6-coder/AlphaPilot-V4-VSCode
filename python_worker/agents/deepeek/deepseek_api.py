@@ -5,6 +5,7 @@
 # ---------------------------------------------------------
 
 import requests
+import json
 import sys
 import os
 from dotenv import load_dotenv
@@ -97,3 +98,61 @@ def call_deepseek(prompt: str, stream: bool = False) -> str:
             raise ValueError(f"DeepSeek API 返回空内容：{data}")
         
         return content
+
+
+def call_deepseek_stream(prompt: str):
+    """
+    流式调用 DeepSeek API（生成器版本）
+    
+    参数:
+        prompt: 提示词字符串
+    
+    返回:
+        generator: 逐块返回生成的文本
+    
+    使用示例:
+        for chunk in call_deepseek_stream("你的提示词"):
+            print(chunk, end='', flush=True)
+    """
+    if not DEEPSEEK_API_KEY:
+        raise ValueError("DEEPSEEK_API_KEY 未设置（请检查 .env 文件）")
+    
+    headers = {
+        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "model": MODEL_NAME,
+        "stream": True,
+        "messages": [
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ]
+    }
+    
+    with requests.post(URL, headers=headers, json=payload, stream=True, timeout=120) as r:
+        r.raise_for_status()
+        for line in r.iter_lines():
+            if not line:
+                continue
+            
+            decoded = line.decode('utf-8')
+            
+            if decoded.startswith("data: "):
+                data_str = decoded[6:]
+                if data_str.strip() == "[DONE]":
+                    break
+                
+                try:
+                    data = json.loads(data_str)
+                    choices = data.get("choices", [])
+                    if choices:
+                        delta = choices[0].get("delta", {})
+                        content = delta.get("content", "")
+                        if content:
+                            yield content
+                except json.JSONDecodeError:
+                    continue

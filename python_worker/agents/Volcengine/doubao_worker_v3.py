@@ -28,7 +28,7 @@ from ...worker_config import (
 from ...planner import llm_decompose_task
 from ...intent_router import IntentRouter
 from .step_executor import execute_step
-from ..qwen.personas import get_persona_config  # ⭐ 复用 Qwen 的人格配置
+from .personas import get_persona_config  # ⭐ 使用豆包自己的人格配置（不依赖 Qwen）
 from ...TaskModel_v2 import TaskModel
 
 

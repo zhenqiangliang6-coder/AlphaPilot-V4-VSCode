@@ -148,6 +148,7 @@ export function activate(context: vscode.ExtensionContext) {
         { label: '通义千问 (Qwen) - 快速响应', value: 'qwen_generate' },
         { label: '深度求索 (DeepSeek) - 平衡性能', value: 'deepseek_generate' },
         { label: '豆包 (Doubao) - 多模态支持', value: 'doubao_generate' },
+        { label: 'AlphaPilot (gemma LLM) - 离线运行', value: 'local_generate' },
       ];
 
       const selected = await vscode.window.showQuickPick(models, {

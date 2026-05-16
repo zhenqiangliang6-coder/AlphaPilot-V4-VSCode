@@ -1,37 +1,92 @@
-from .utils import extract_code
+# -*- coding: utf-8 -*-
+# step_executor/doc_step.py
+# ---------------------------------------------------------
+# doc 步骤：生成文档（v3.0 流式输出版）
+# ---------------------------------------------------------
+
+from ..deepseek_api import call_deepseek, call_deepseek_stream
 from .prompts import doc_prompt
-from ....code_executor import run_python
-from ..deepseek_api import call_deepseek
+from ....worker_config import create_event, stream_start, stream_chunk, stream_end
 
 
-def run_doc_step(step, context, events, api_func=None):
+def run_doc_step(step, context, events, task_id=None):
     """
-    doc 步骤：生成代码文档
+    doc 步骤：
+    - 输入：代码
+    - 输出：Markdown 文档
     
-    参数:
-        api_func: 可选的自定义 API 函数，如果不传则使用默认的 call_deepseek
+    ⭐ v3.0 新增：
+        - 支持流式输出
+        - 使用 DeepSeek 独立的人格配置
+        - 更新 final_file_ops
+        - 统一签名：task_id 参数
     """
-    write_outputs = [i["text"] for i in context["intermediate_results"] if i["type"] == "write"]
-    if not write_outputs:
-        step["output"] = {"text": "doc：未找到 write 步骤的代码。"}
+
+    # ===== 第0.5层：⭐ 获取人格配置（DeepSeek独立实现）=====
+    persona_config = None
+    try:
+        meta = context.get("meta", {})
+        persona_type = meta.get("persona", "engineer")
+        
+        from ..personas import get_persona_config
+        persona_config = get_persona_config(persona_type)
+        
+        print(f"🎨 doc_step 使用人格: {persona_config['name']}")
+    except Exception as e:
+        print(f"[WARN] 获取人格配置失败: {e}")
+        persona_config = None
+
+    # 1) 获取最新代码
+    code_outputs = [
+        item["text"]
+        for item in context["intermediate_results"]
+        if item["type"] in ["write", "refine", "fix"]
+    ]
+
+    if not code_outputs:
+        step["output"] = {"text": "doc：未找到代码。"}
         return
 
-    code = extract_code(write_outputs[-1])
-    
-    llm_call = api_func if api_func else call_deepseek
-    markdown = llm_call(doc_prompt(code))
+    code_text = code_outputs[-1]
 
-    docstring_code = llm_call(f"请为下面代码添加 docstring：```python\n{code}\n```")
-    documented = extract_code(docstring_code)
+    # 2) 构建完整 prompt（含人格配置）
+    full_prompt = doc_prompt(code_text)
+    if persona_config:
+        full_prompt = f"{persona_config['system_prompt']}\n\n{full_prompt}"
 
-    step["output"] = {
-        "markdown": markdown,
-        "documented_code": documented,
-        "text": (
-            "## 📄 Markdown 文档\n\n"
-            + markdown
-            + "\n\n---\n\n## 📝 带 docstring 的代码\n```python\n"
-            + documented
-            + "\n```"
-        )
-    }
+    # 3) 启动流式输出
+    result = ""
+    if task_id:
+        stream_start(task_id, "📖 正在生成文档...", phase="doc")
+
+    # 4) 调用 LLM 生成文档（流式）
+    try:
+        if task_id:
+            for chunk in call_deepseek_stream(full_prompt):
+                result += chunk
+                stream_chunk(task_id, chunk, phase="doc", channel="reasoning")
+        else:
+            result = call_deepseek(full_prompt)
+    except Exception as e:
+        step["output"] = {"text": f"doc：LLM 调用失败：{e}"}
+        if task_id:
+            stream_end(task_id)
+        return
+
+    # 5) 结束流式输出
+    if task_id:
+        stream_end(task_id)
+
+    # 6) 写入输出
+    step["output"] = {"text": result}
+
+    # 7) 写入上下文
+    context["intermediate_results"].append({
+        "type": "doc",
+        "text": result
+    })
+
+    # 8) 写入事件流
+    events.append(create_event("doc_output", {
+        "text": result
+    }))

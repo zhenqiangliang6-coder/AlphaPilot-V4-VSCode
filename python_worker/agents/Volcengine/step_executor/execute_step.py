@@ -48,7 +48,7 @@ STEP_DISPATCHER = {
 }
 
 
-def execute_step(task_id: str, step: dict, events: list, context: dict, api_func=None):
+def execute_step(task_id: str, step: dict, events: list, context: dict):
     """
     v3.0 统一步骤执行入口（官方 + 智能增强版）
     ---------------------------------------------------------
@@ -60,6 +60,10 @@ def execute_step(task_id: str, step: dict, events: list, context: dict, api_func
         - 每个步骤必须输出 step["output"]
         - 每个步骤必须写入 context["intermediate_results"]
         - 每个步骤必须写入事件流 events
+        
+    ⭐ 流式输出支持：
+        - 自动传递 task_id 给所有步骤
+        - 步骤内部通过 stream_chunk 实时推送内容到前端
     """
 
     step_type = step.get("type")
@@ -78,21 +82,15 @@ def execute_step(task_id: str, step: dict, events: list, context: dict, api_func
     sig = inspect.signature(handler)
 
     # =========================================================
-    # ② 执行步骤（支持自定义 API + task_id）
+    # ② 执行步骤（支持 task_id 流式输出）
     # =========================================================
     try:
         if "task_id" in sig.parameters:
             # 支持流式输出的新签名
-            if api_func:
-                handler(step, context, events, task_id=task_id, api_func=api_func)
-            else:
-                handler(step, context, events, task_id=task_id)
+            handler(step, context, events, task_id=task_id)
         else:
-            # 向后兼容旧签名
-            if api_func:
-                handler(step, context, events, api_func=api_func)
-            else:
-                handler(step, context, events)
+            # 向后兼容旧签名（无流式输出）
+            handler(step, context, events)
 
     except Exception as e:
         step["output"] = {"text": f"步骤执行失败：{e}"}
