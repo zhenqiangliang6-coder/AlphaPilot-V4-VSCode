@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 # step_executor/execute_step.py
 # ---------------------------------------------------------
-# 统一步骤调度器（Step Dispatcher）
+# Local LLM Worker v3.0 — 统一步骤调度器（Step Dispatcher）
 # - 根据 step["type"] 调用对应的 run_xxx_step
-# - Worker 不需要知道每个步骤的细节
-# - 新增步骤时只需要在这里注册即可
-# - ⭐ v3.0：支持自定义 api_func（用于流式输出）
+# - ⭐ v3.0：自动检测并传递 task_id（支持流式输出）
+# - ⭐ v3.0：通过 context['_custom_api_func'] 注入自定义 API 函数
+# - 工业级容错 + 与 Qwen Worker v2 完全对齐
 # ---------------------------------------------------------
 
 from .analyze_step import run_analyze_step
@@ -21,7 +21,7 @@ from .docstring_step import run_docstring_step
 
 
 # ---------------------------------------------------------
-# 步骤类型 → 执行函数 的映射表
+# 步骤类型 → 执行函数 的映射表（v3.0 全量）
 # ---------------------------------------------------------
 STEP_DISPATCHER = {
     "analyze": run_analyze_step,
@@ -33,23 +33,25 @@ STEP_DISPATCHER = {
     "fix": run_fix_step,
     "profile": run_profile_step,
     "doc": run_doc_step,
-    "docstring": run_docstring_step,  # ⭐ Local LLM 独有步骤
+
+    # ⭐ v3.0 新增步骤
+    "docstring": run_docstring_step,
 }
 
 
-def execute_step(task_id: str, step: dict, events: list, context: dict, api_func=None):
+def execute_step(task_id: str, step: dict, events: list, context: dict):
     """
-    统一步骤执行入口：
+    v3.0 统一步骤执行入口（与 Qwen Worker v2 完全对齐）：
     - Worker 调用本函数，而不是直接调用 run_xxx_step
     - 根据 step["type"] 自动路由到对应的执行器
-    - ⭐ v3.0：支持传入自定义 api_func（用于流式输出）
+    - ⭐ 自动检测 handler 是否支持 task_id 参数（使用 inspect）
+    - ⭐ 通过 context['_custom_api_func'] 注入自定义 API 函数
     
     参数:
-        task_id: 任务 ID
+        task_id: 任务 ID（用于流式输出）
         step: 步骤定义字典
         events: 事件列表
-        context: 上下文对象
-        api_func: 可选的自定义 API 调用函数（签名：api_func(prompt) -> str）
+        context: 上下文对象（可包含 _custom_api_func）
     """
 
     step_type = step.get("type")
@@ -60,18 +62,23 @@ def execute_step(task_id: str, step: dict, events: list, context: dict, api_func
 
     handler = STEP_DISPATCHER[step_type]
 
-    # ⭐ v3.0：如果提供了自定义 api_func，将其注入到 context 中
-    if api_func is not None:
-        context["_custom_api_func"] = api_func
+    # ⭐ 自动检测 handler 是否支持 task_id 参数（与 Qwen Worker v2 一致）
+    import inspect
+    sig = inspect.signature(handler)
 
-    # 执行步骤
-    handler(step, context, events)
+    try:
+        if "task_id" in sig.parameters:
+            # 支持流式输出的新签名
+            handler(step, context, events, task_id=task_id)
+        else:
+            # 向后兼容旧签名
+            handler(step, context, events)
 
-    # 清理临时注入的 api_func
-    if "_custom_api_func" in context:
-        del context["_custom_api_func"]
+    except Exception as e:
+        step["output"] = {"text": f"步骤执行失败：{e}"}
+        raise e
 
-    # 记录步骤完成事件（供 VSCode 扩展展示）
+    # ⭐ 记录步骤完成事件（供前端展示）
     events.append({
         "event": "step_finished",
         "task_id": task_id,

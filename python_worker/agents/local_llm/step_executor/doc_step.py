@@ -1,23 +1,38 @@
 # -*- coding: utf-8 -*-
 # step_executor/doc_step.py
 # ---------------------------------------------------------
-# doc 步骤：生成文档和 docstring
-# - ⭐ v3.0：支持自定义 api_func（用于流式输出）
+# Local LLM Worker v3.0 — doc 步骤（v3.0 流式输出版本）
+# - ⭐ v3.0：支持流式输出（task_id 参数）
+# - ⭐ 与 Qwen Worker v2 完全对齐
 # ---------------------------------------------------------
 
 from .utils import extract_code
 from .prompts import doc_prompt
 from code_executor import run_python
+from worker_config import create_event, stream_chunk, stream_start, stream_end
 from .qwen_api import call_qwen
 
 
-def run_doc_step(step, context, events):
+def run_doc_step(step, context, events, task_id=None):
     """
-    doc 步骤：
+    doc 步骤（v3.0）：
     - 输入：write 步骤的代码
     - 输出：Markdown 文档和带 docstring 的代码
-    - ⭐ v3.0：支持通过 context['_custom_api_func'] 传入自定义 API 函数
+    - ⭐ v3.0：支持流式输出（通过 task_id 参数）
+    
+    参数:
+        step: 步骤定义
+        context: 上下文对象
+        events: 事件列表
+        task_id: 任务 ID（可选，用于流式输出）
     """
+
+    # ===== 0. 流式输出开始 =====
+    if task_id:
+        try:
+            stream_start(task_id, "📄 正在生成文档...", phase="doc")
+        except Exception as e:
+            print(f"[WARN] stream_start 失败: {e}")
     
     write_outputs = [i["text"] for i in context["intermediate_results"] if i["type"] == "write"]
     if not write_outputs:
@@ -29,8 +44,36 @@ def run_doc_step(step, context, events):
     # ⭐ v3.0：选择 API 调用函数
     api_func = context.get("_custom_api_func", call_qwen)
     
-    markdown = api_func(doc_prompt(code))
+    # 生成 Markdown 文档（⭐ 支持流式输出）
+    markdown = ""
+    llm_success = False
 
+    try:
+        prompt = doc_prompt(code)
+
+        if task_id:
+            # ⭐ 流式输出模式
+            stream_chunk(task_id, "生成 Markdown 文档...\n", phase="doc", channel="reasoning")
+            
+            # 注意：Local LLM 的 call_qwen 目前不支持真正的流式，这里先同步调用
+            markdown = api_func(prompt)
+            stream_chunk(task_id, markdown, phase="doc", channel="content")
+        else:
+            # 同步调用模式
+            markdown = api_func(prompt)
+
+        if not markdown:
+            raise ValueError("LLM 返回空字符串")
+
+        llm_success = True
+
+    except Exception as e:
+        err = f"# LLM 调用失败: {e}"
+        markdown = err
+        if task_id:
+            stream_chunk(task_id, err, phase="doc", channel="reasoning")
+
+    # 生成带 docstring 的代码
     docstring_code = api_func(f"请为下面代码添加 docstring：```python\n{code}\n```")
     documented = extract_code(docstring_code)
 
@@ -43,5 +86,13 @@ def run_doc_step(step, context, events):
             + "\n\n---\n\n## 📝 带 docstring 的代码\n```python\n"
             + documented
             + "\n```"
-        )
+        ),
+        "llm_success": llm_success
     }
+
+    # ===== 7. 流式输出结束 =====
+    if task_id:
+        try:
+            stream_end(task_id)
+        except Exception as e:
+            print(f"[WARN] stream_end 失败: {e}")

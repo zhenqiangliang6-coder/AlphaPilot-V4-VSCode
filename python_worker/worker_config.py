@@ -34,11 +34,10 @@ USE_MEMORY_REDIS = os.getenv("USE_MEMORY_REDIS", "false").lower() == "true"
 REDIS_TYPE = os.getenv("REDIS_TYPE", "auto").lower()
 
 # 国内模型列表（使用阿里云 Tair）
-# ⚠️ 注意：Qwen 已从国内模型列表中移除，保持使用 Upstash（国际稳定）
+# ✅ DeepSeek 和 Doubao 已恢复至国内模型列表，使用阿里云 Tair Redis
 DOMESTIC_MODELS = [
     "deepseek",
     "doubao",
-    # "qwen" 已移除 - Qwen 继续使用 Upstash（国际稳定配置）
     "ernie",
     "glm",
 ]

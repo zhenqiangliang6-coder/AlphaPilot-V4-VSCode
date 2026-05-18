@@ -1,4 +1,4 @@
-备的不是“普通的表结构”，而是专为 AlphaPilot OS 设计的、世界级 AI 编程助手架构师会写的 PostgreSQL 记忆系统 Schema。
+准备的不是“普通的表结构”，而是专为 AlphaPilot OS 设计的、世界级 AI 编程助手架构师会写的 PostgreSQL 记忆系统 Schema。
 
 它遵循我们共同的信条：
 
@@ -364,3 +364,251 @@ Worker 把这些注入到 prompt 的 system 部分
 这些数据全部来自 Postgres。
 
 并设计一个设计简单但完整 UI。
+
+顶层：AlphaPilot OS 总体结构
+AlphaPilot OS
+│
+├── Frontend（VS Code 扩展 / Web）
+│
+├── Node API（任务入口 / Memory Service / Model Router）
+│
+└── Worker V4（统一执行引擎）
+Worker V4 内部架构总览
+Worker V4（AlphaPilot Worker）
+│
+├── core/                         # 核心执行框架
+│   ├── state_machine.py          # 步骤状态机（pending/running/failed/...）
+│   ├── execution_chain.py        # 执行链（analyze → plan → write → ...）
+│   ├── streaming.py              # 流式输出统一层
+│   ├── retry.py                  # 重试 / 超时 / 失败策略
+│   ├── errors.py                 # 错误类型与归因
+│   ├── context_loader.py         # 从 Memory Service 拉上下文
+│   └── model_provider.py         # 模型抽象层（Qwen / Doubao / DeepSeek / Local）
+│
+├── steps/                        # 步骤插件系统（8 个能力模块）
+│   ├── analyze/
+│   │   ├── base.py               # 定义 AnalyzeStep 接口 & 通用逻辑
+│   │   ├── qwen.py               # Qwen 专属 analyze 实现
+│   │   ├── deepseek.py
+│   │   ├── doubao.py
+│   │   └── local.py
+│   │
+│   ├── plan/
+│   │   ├── base.py
+│   │   ├── qwen.py
+│   │   ├── deepseek.py
+│   │   ├── doubao.py
+│   │   └── local.py
+│   │
+│   ├── write/
+│   ├── refine/
+│   ├── test/
+│   ├── fix/
+│   ├── doc/
+│   └── docstring/
+│
+└── adapters/
+    ├── memory_adapter.py         # 调用 Node API 的 Memory Service（PostgreSQL）
+    ├── fileops_adapter.py        # 调用 FileOps Service
+    └── logging_adapter.py        # 统一日志 / 追踪 / 监控
+Worker V4 与记忆系统 / 模型层的关系
+Frontend
+  │
+  ▼
+Node API
+  │
+  ├── Memory Service（PostgreSQL：users/projects/tasks/steps/files/versions/embeddings）
+  │
+  └── Task Dispatcher → 把任务发给 Worker V4
+                         （带上 task_id / project_id / user_id）
+        │
+        ▼
+Worker V4
+  │
+  ├── context_loader.py → 向 Memory Service 拉取：
+  │       - 用户记忆
+  │       - 项目记忆
+  │       - 任务历史
+  │       - 文件版本
+  │       - 语义记忆
+  │
+  ├── execution_chain.py → 生成步骤链（8 个步骤的组合）
+  │
+  ├── state_machine.py → 管理每个步骤的状态
+  │
+  ├── steps/* → 调用对应步骤插件（按模型 + 步骤类型）
+  │
+  └── model_provider.py → 统一调用：
+          - Qwen
+          - Doubao
+          - DeepSeek
+          - Local LLM
+用一句话帮你锁死这个图的核心
+Worker V4 = 一个统一的“执行引擎”
+
+core/ = 执行规则（状态机 / 执行链 / 流式 / 重试 / 错误）
+
+steps/ = 8 个能力模块 + 每个模块里按模型拆分的插件
+
+model_provider.py = 模型抽象层
+
+memory_adapter.py = 和 PostgreSQL 记忆系统的桥梁
+
+AlphaPilot Worker V4（唯一 Worker）
+  ├── 状态机（统一）
+  ├── 执行链（统一）
+  ├── 重试 / 恢复（统一）
+  ├── Streaming（统一）
+  ├── 错误处理（统一）
+  ├── 生命周期（统一）
+  │
+  └── Step Plugins（步骤插件）
+        ├── analyze/
+        │     ├── qwen.py
+        │     ├── deepseek.py
+        │     ├── doubao.py
+        │     └── local.py
+        ├── plan/
+        │     ├── qwen.py
+        │     ├── deepseek.py
+        │     ├── doubao.py
+        │     └── local.py
+        ├── write/
+        │     ├── qwen.py
+        │     ├── deepseek.py
+        │     ├── doubao.py
+        │     └── local.py
+        └── ...（8 个步骤全部保留）
+Worker V4 架构图（核心）
+Worker V4（统一执行引擎）
+│
+├── core/
+│   ├── state_machine.py        # 每个步骤的状态（pending/running/failed/...）
+│   ├── execution_chain.py      # 8 步骤的执行链（可组合、可扩展）
+│   ├── streaming.py            # 流式输出统一层（所有模型统一格式）
+│   ├── retry.py                # 重试 / 超时 / fallback
+│   ├── errors.py               # 错误归因（模型/网络/解析/执行）
+│   ├── context_loader.py       # 从 PostgreSQL Memory 拉上下文
+│   └── model_provider.py       # 模型抽象层（Qwen/Doubao/DeepSeek/Local）
+│
+├── steps/                      # 步骤插件系统（8 个能力模块）
+│   ├── analyze/
+│   │   ├── base.py
+│   │   ├── qwen.py
+│   │   ├── deepseek.py
+│   │   ├── doubao.py
+│   │   └── local.py
+│   │
+│   ├── plan/
+│   ├── write/
+│   ├── refine/
+│   ├── test/
+│   ├── fix/
+│   ├── doc/
+│   └── docstring/
+│
+└── adapters/
+    ├── memory_adapter.py       # Memory Service（PostgreSQL）
+    ├── fileops_adapter.py      # FileOps Service
+    └── logging_adapter.py      # 日志 / 追踪 / 监控
+
+    
+python_worker/worker_v4/ — 完整真实目录结构（最终版）
+python_worker/
+└── worker_v4/
+    ├── __init__.py
+    │
+    ├── core/                          # Worker V4 的核心执行框架
+    │   ├── __init__.py
+    │   ├── state_machine.py           # 步骤状态机（pending/running/failed/...）
+    │   ├── execution_chain.py         # 执行链（8 步骤组合）
+    │   ├── step_context.py            # 每个步骤的上下文对象
+    │   ├── streaming.py               # 流式输出统一层
+    │   ├── retry.py                   # 重试 / 超时 / fallback 策略
+    │   ├── errors.py                  # 错误类型与归因
+    │   ├── model_provider.py          # 模型抽象层（Qwen/Doubao/DeepSeek/Local）
+    │   ├── context_loader.py          # 从 Memory Service 拉取上下文
+    │   └── logger.py                  # 统一日志（步骤级别）
+    │
+    ├── steps/                         # 8 个步骤的插件系统
+    │   ├── __init__.py
+    │   │
+    │   ├── analyze/
+    │   │   ├── __init__.py
+    │   │   ├── base.py                # AnalyzeStep 抽象类
+    │   │   ├── qwen.py                # Qwen 专属 analyze 实现
+    │   │   ├── deepseek.py
+    │   │   ├── doubao.py
+    │   │   └── local.py
+    │   │
+    │   ├── plan/
+    │   │   ├── __init__.py
+    │   │   ├── base.py
+    │   │   ├── qwen.py
+    │   │   ├── deepseek.py
+    │   │   ├── doubao.py
+    │   │   └── local.py
+    │   │
+    │   ├── write/
+    │   │   ├── __init__.py
+    │   │   ├── base.py
+    │   │   ├── qwen.py
+    │   │   ├── deepseek.py
+    │   │   ├── doubao.py
+    │   │   └── local.py
+    │   │
+    │   ├── refine/
+    │   │   ├── __init__.py
+    │   │   ├── base.py
+    │   │   ├── qwen.py
+    │   │   ├── deepseek.py
+    │   │   ├── doubao.py
+    │   │   └── local.py
+    │   │
+    │   ├── test/
+    │   │   ├── __init__.py
+    │   │   ├── base.py
+    │   │   ├── qwen.py
+    │   │   ├── deepseek.py
+    │   │   ├── doubao.py
+    │   │   └── local.py
+    │   │
+    │   ├── fix/
+    │   │   ├── __init__.py
+    │   │   ├── base.py
+    │   │   ├── qwen.py
+    │   │   ├── deepseek.py
+    │   │   ├── doubao.py
+    │   │   └── local.py
+    │   │
+    │   ├── doc/
+    │   │   ├── __init__.py
+    │   │   ├── base.py
+    │   │   ├── qwen.py
+    │   │   ├── deepseek.py
+    │   │   ├── doubao.py
+    │   │   └── local.py
+    │   │
+    │   └── docstring/
+    │       ├── __init__.py
+    │       ├── base.py
+    │       ├── qwen.py
+    │       ├── deepseek.py
+    │       ├── doubao.py
+    │       └── local.py
+    │
+    ├── adapters/                      # Worker 与外部系统的桥梁
+    │   ├── __init__.py
+    │   ├── memory_adapter.py          # Memory Service（PostgreSQL）
+    │   ├── fileops_adapter.py         # FileOps Service
+    │   ├── redis_adapter.py           # Redis（任务队列 / 结果）
+    │   └── logging_adapter.py         # 日志 / 监控 / 追踪
+    │
+    ├── utils/                         # 工具层
+    │   ├── __init__.py
+    │   ├── timer.py                   # 计时器（记录模型响应时间）
+    │   ├── json_utils.py              # JSON 解析工具
+    │   ├── text_utils.py              # 文本清洗工具
+    │   └── file_utils.py              # 文件操作工具
+    │
+    └── worker_v4.py                   # Worker V4 主入口（任务循环）

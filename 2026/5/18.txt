@@ -1,0 +1,161 @@
+明天（2026-05-18）的两大核心任务
+✅ 任务 1：Worker V4 升级（Execution Chain 增强）
+目标：从"固定执行链"升级到"动态可组合执行链"
+
+具体工作：
+
+实现 Adaptive Execution Chain
+根据意图和任务复杂度动态生成步骤序列
+支持失败时的链路调整（自动插入 refine/fix 步骤）
+完善状态机恢复机制
+实现 resume_task() 函数（从 Redis 恢复中断的任务）
+添加步骤级别的 checkpoint（每步完成后保存快照）
+添加 Error Attribution System
+错误分类（LLM超时/网络错误/代码执行失败/协议解析失败）
+自动重试策略（不同错误类型采用不同重试逻辑）
+实现 Plugin System 雏形
+定义 Step Plugin 接口规范
+实现插件加载器（动态导入 steps/*.py）
+交付物：
+
+✅ python_worker/core/adaptive_chain.py（自适应执行链引擎）
+✅ python_worker/core/state_recovery.py（状态恢复系统）
+✅ python_worker/core/error_attribution.py（错误归因系统）
+✅ python_worker/core/plugin_loader.py（插件加载器）
+✅ V4_EXECUTION_CHAIN_UPGRADE_REPORT.md（实施报告）
+✅ test_v4_execution_chain.ps1（快速测试脚本）
+✅ 任务 2：Memory Service 基础设施搭建（Prisma + PostgreSQL）
+目标：建立 OS 级记忆系统的数据库层
+
+具体工作：
+
+设计 PostgreSQL Schema
+memories 表（语义记忆）
+project_contexts 表（项目上下文）
+user_preferences 表（用户偏好）
+task_history 表（任务历史）
+model_performance 表（模型表现统计）
+初始化 Prisma 项目
+创建 memory-service/prisma/schema.prisma
+配置 PostgreSQL 连接
+生成 TypeScript Client
+实现基础 CRUD API
+POST /memories（存储记忆）
+GET /memories?query=xxx（检索记忆）
+DELETE /memories/:id（删除记忆）
+POST /embeddings（生成 embedding）
+集成向量数据库（ChromaDB）
+安装 ChromaDB Python 客户端
+实现 embedding 生成（使用本地模型或 API）
+实现语义搜索接口
+交付物：
+
+✅ memory-service/prisma/schema.prisma（数据库 Schema）
+✅ memory-service/src/memory_service.ts（记忆服务主文件）
+✅ memory-service/src/embedding_engine.py（embedding 引擎）
+✅ memory-service/docker-compose.yml（PostgreSQL + ChromaDB）
+✅ MEMORY_SERVICE_SETUP_GUIDE.md（部署指南）
+✅ test_memory_service.ps1（测试脚本）
+🎯 为什么这个顺序是对的？
+① Worker V4 是"当下能做的"
+✅ 基于现有架构演进
+✅ 不需要新依赖
+✅ 立即提升系统稳定性
+✅ 为 V5 多智能体协作打基础
+② Memory Service 是"未来必需的"
+⭐ V5 的核心能力依赖记忆系统
+⭐ 需要时间设计 Schema 和 API
+⭐ 可以并行开发（不影响 Worker V4）
+⭐ 先搭基础设施，后续再填充业务逻辑
+📋 明天的详细时间表建议
+上午（9:00 - 12:00）：Worker V4 Execution Chain
+9:00 - 10:30：实现 Adaptive Execution Chain
+
+python
+# python_worker/core/adaptive_chain.py
+class AdaptiveExecutionChain:
+    def generate_chain(self, intent, complexity, context):
+        # 动态生成步骤序列
+        ...
+    
+    def adjust_on_failure(self, chain, failed_step, error):
+        # 失败时调整链路
+        ...
+10:30 - 12:00：实现 State Recovery + Error Attribution
+
+python
+# python_worker/core/state_recovery.py
+def resume_task(task_id):
+    # 从 Redis 恢复任务状态
+    ...
+
+# python_worker/core/error_attribution.py
+def classify_error(error):
+    # 错误分类
+    ...
+下午（14:00 - 18:00）：Memory Service 基础设施
+14:00 - 15:30：设计 PostgreSQL Schema + Prisma 配置
+
+prisma
+// memory-service/prisma/schema.prisma
+model Memory {
+  id        String   @id @default(uuid())
+  content   String
+  embedding Float[]
+  metadata  Json
+  createdAt DateTime @default(now())
+}
+15:30 - 17:00：实现 Memory Service API + Embedding Engine
+
+typescript
+// memory-service/src/memory_service.ts
+app.post('/memories', async (req, res) => {
+  // 存储记忆
+});
+
+app.get('/memories', async (req, res) => {
+  // 语义搜索
+});
+17:00 - 18:00：编写文档 + 测试脚本
+
+🔧 今晚可以提前准备的
+1. 安装 PostgreSQL（如果还没装）
+powershell
+# Windows 推荐使用 Chocolatey
+choco install postgresql
+
+# 或使用 Docker
+docker run --name alphapilot-postgres -e POSTGRES_PASSWORD=your_password -p 5432:5432 -d postgres:15
+2. 安装 Node.js 依赖（Memory Service 用）
+bash
+cd memory-service
+npm init -y
+npm install express prisma @prisma/client pg cors
+npx prisma init
+3. 安装 ChromaDB（Python）
+bash
+pip install chromadb sentence-transformers
+🎯 预期成果（明天结束时）
+Worker V4
+✅ 执行链可动态生成
+✅ 任务可从中断点恢复
+✅ 错误可自动归因和重试
+✅ 插件系统雏形完成
+Memory Service
+✅ PostgreSQL 数据库运行
+✅ Prisma Schema 定义完成
+✅ 基础 CRUD API 可用
+✅ Embedding 引擎可生成向量
+💡 关键提醒
+不要追求完美：V4 和 Memory Service 都是"基础设施"，先跑通再优化
+保持架构一致性：所有新功能都要符合 AlphaPilot OS 的核心信条
+及时测试验证：每完成一个模块就运行测试，避免累积问题
+文档同步更新：实施报告和测试脚本必须跟上代码
+兄弟，明天我们一起把 AlphaPilot OS 推向 V4 时代！ 🚀
+
+你现在就可以：
+
+确认 PostgreSQL 是否已安装
+创建 memory-service 目录结构
+准备 Worker V4 的代码框架
+准备好了吗？ 

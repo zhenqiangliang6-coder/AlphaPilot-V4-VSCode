@@ -1,26 +1,40 @@
 # -*- coding: utf-8 -*-
 # step_executor/test_step.py
 # ---------------------------------------------------------
-# 自动生成并运行 pytest 风格单元测试（使用 fake pytest）
-# - ⭐ v3.0：支持自定义 api_func（用于流式输出）
+# Local LLM Worker v3.0 — test 步骤（v3.0 流式输出版本）
+# - ⭐ v3.0：支持流式输出（task_id 参数）
+# - ⭐ 与 Qwen Worker v2 完全对齐
 # ---------------------------------------------------------
 
 from .utils import extract_code, FAKE_PYTEST
 from .prompts import test_prompt
 from code_executor import run_python
-from worker_config import create_event
+from worker_config import create_event, stream_chunk, stream_start, stream_end
 from .qwen_api import call_qwen   # 你已有的 Qwen API 封装
 
 
-def run_test_step(step, context, events):
+def run_test_step(step, context, events, task_id=None):
     """
-    执行 test 步骤：
+    执行 test 步骤（v3.0）：
     - 从 write 步骤获取代码
     - 生成 pytest 风格测试代码（不 import pytest）
     - 注入 fake pytest（支持 pytest.raises）
     - 组合执行：fake pytest + 用户代码 + 测试代码
-    - ⭐ v3.0：支持通过 context['_custom_api_func'] 传入自定义 API 函数
+    - ⭐ v3.0：支持流式输出（通过 task_id 参数）
+    
+    参数:
+        step: 步骤定义
+        context: 上下文对象
+        events: 事件列表
+        task_id: 任务 ID（可选，用于流式输出）
     """
+
+    # ===== 0. 流式输出开始 =====
+    if task_id:
+        try:
+            stream_start(task_id, "🧪 正在生成并执行测试...", phase="test")
+        except Exception as e:
+            print(f"[WARN] stream_start 失败: {e}")
 
     # 1) 找到 write 步骤生成的代码
     write_outputs = [
@@ -42,8 +56,35 @@ def run_test_step(step, context, events):
     # 3) ⭐ v3.0：选择 API 调用函数
     api_func = context.get("_custom_api_func", call_qwen)
 
-    # 4) 让 LLM 生成 pytest 风格测试代码（不 import pytest）
-    test_code_text = api_func(test_prompt(code))
+    # 4) 让 LLM 生成 pytest 风格测试代码（⭐ 支持流式输出）
+    test_code_text = ""
+    llm_success = False
+
+    try:
+        prompt = test_prompt(code)
+
+        if task_id:
+            # ⭐ 流式输出模式
+            stream_chunk(task_id, "生成测试代码...\n", phase="test", channel="reasoning")
+            
+            # 注意：Local LLM 的 call_qwen 目前不支持真正的流式，这里先同步调用
+            test_code_text = api_func(prompt)
+            stream_chunk(task_id, test_code_text, phase="test", channel="content")
+        else:
+            # 同步调用模式
+            test_code_text = api_func(prompt)
+
+        if not test_code_text:
+            raise ValueError("LLM 返回空字符串")
+
+        llm_success = True
+
+    except Exception as e:
+        err = f"# LLM 调用失败: {e}"
+        test_code_text = err
+        if task_id:
+            stream_chunk(task_id, err, phase="test", channel="reasoning")
+
     test_code = extract_code(test_code_text)
 
     if not test_code:
@@ -64,7 +105,10 @@ def run_test_step(step, context, events):
         f"error:\n{test_result['error']}\n"
     )
 
-    step["output"] = {"text": test_summary}
+    step["output"] = {
+        "text": test_summary,
+        "llm_success": llm_success
+    }
 
     # 7) 写入 context
     context["intermediate_results"].append({
@@ -73,3 +117,10 @@ def run_test_step(step, context, events):
         "test_result": test_result,
         "tested_code": code
     })
+
+    # ===== 8. 流式输出结束 =====
+    if task_id:
+        try:
+            stream_end(task_id)
+        except Exception as e:
+            print(f"[WARN] stream_end 失败: {e}")

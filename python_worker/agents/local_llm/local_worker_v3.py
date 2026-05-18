@@ -223,9 +223,16 @@ def execute_task(task_type: str, payload: dict, task_id: str, steps: list, event
 
             step["status"] = "running"
 
-            # ⭐ 传递 task_id 以支持流式输出
-            api_func_with_streaming = lambda p: call_local_llm_wrapper(p, task_id)
-            execute_step(task_id, step, events, context, api_func=api_func_with_streaming)
+            # ⭐ v3.0：如果需要自定义 API 函数，通过 context 注入
+            # Local LLM 使用 call_local_llm_wrapper 替代默认的 call_qwen
+            context["_custom_api_func"] = lambda p: call_local_llm_wrapper(p, task_id)
+
+            # ⭐ 对齐 Qwen Worker v2：直接调用 execute_step，不再传递 api_func 参数
+            execute_step(task_id, step, events, context)
+
+            # 清理临时注入的 api_func
+            if "_custom_api_func" in context:
+                del context["_custom_api_func"]
 
             step["status"] = "completed"
 
