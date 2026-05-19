@@ -101,3 +101,97 @@ git remote remove origin
 结语
 
 本指南适用于所有未来项目。严格按照此流程执行，可确保仓库干净、版本可控、结构专业
+AlphaPilot OS — GitHub 国内稳定推送（SSH 版）完整指南
+这是你以后在国内稳定推送 GitHub 代码的标准流程。
+一次配置，永久稳定。
+
+1. 生成 SSH Key（只需一次）
+在 PowerShell 执行：
+
+Code
+ssh-keygen -t ed25519 -C "your_email@example.com"
+当出现：
+
+Code
+Enter file in which to save the key (C:\Users\你的用户名/.ssh/id_ed25519):
+直接按回车。
+
+当出现：
+
+Code
+Enter passphrase (empty for no passphrase):
+两次都直接回车（不设置密码）。
+
+生成的文件：
+
+Code
+C:\Users\你的用户名\.ssh\id_ed25519
+C:\Users\你的用户名\.ssh\id_ed25519.pub
+2. 把公钥加入 GitHub（只需一次）
+查看公钥：
+
+Code
+cat C:\Users\你的用户名\.ssh\id_ed25519.pub
+复制整行内容。
+
+打开：
+
+https://github.com/settings/keys
+
+点击：
+
+New SSH key → 粘贴公钥 → 保存
+
+3. 把仓库远程地址改为 SSH（只需一次）
+进入你的项目目录：
+
+Code
+cd D:\Copilot_Alphapilot\Copilot_Alphapilot
+执行：
+
+Code
+git remote set-url origin git@github.com:zhenqiangliang6-coder/AlphaPilot-Backend.git
+4. 测试 SSH 是否成功（只需一次）
+Code
+ssh -T git@github.com
+第一次会提示：
+
+Code
+Are you sure you want to continue connecting (yes/no/[fingerprint]):
+输入：
+
+Code
+yes
+成功标志：
+
+Code
+Hi zhenqiangliang6-coder! You've successfully authenticated, but GitHub does not provide shell access.
+5. 以后每天推代码（永久流程）
+每次开机后，只需要三步：
+
+Code
+cd D:\Copilot_Alphapilot\Copilot_Alphapilot
+git add .
+git commit -m "描述"
+git push
+SSH 通道会保证：
+
+不 timeout
+
+不 reset
+
+不卡住
+
+不掉线
+
+永远稳定
+
+6. 常见问题（你以后可能会遇到）
+🔹 push 显示 Everything up-to-date
+说明没有新提交，正常。
+
+🔹 push 秒完成
+说明 SSH 工作正常。
+
+🔹 你换电脑时
+只需要重新生成 SSH key 并加入 GitHub。

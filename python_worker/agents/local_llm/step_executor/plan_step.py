@@ -6,7 +6,7 @@
 # - ⭐ 与 Qwen Worker v2 完全对齐
 # ---------------------------------------------------------
 
-from .qwen_api import call_qwen
+from ..local_api import call_local_llm
 from .prompts import plan_prompt
 from worker_config import create_event, stream_chunk, stream_start, stream_end
 
@@ -46,7 +46,7 @@ def run_plan_step(step, context, events, task_id=None):
     analysis = analyze_outputs[-1]
 
     # 2) ⭐ v3.0：选择 API 调用函数
-    api_func = context.get("_custom_api_func", call_qwen)
+    api_func = context.get("_custom_api_func", call_local_llm)
 
     # 3) 调用 LLM 生成规划（⭐ 支持流式输出）
     result = ""

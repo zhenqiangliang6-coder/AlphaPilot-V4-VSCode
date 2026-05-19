@@ -6,7 +6,7 @@
 # - ⭐ 与 Qwen Worker v2 完全对齐
 # ---------------------------------------------------------
 
-from .qwen_api import call_qwen
+from ..local_api import call_local_llm
 from .prompts import analyze_prompt
 from worker_config import create_event, stream_chunk, stream_start, stream_end
 
@@ -40,7 +40,7 @@ def run_analyze_step(step, context, events, task_id=None):
         return
 
     # 2) ⭐ v3.0：选择 API 调用函数
-    api_func = context.get("_custom_api_func", call_qwen)
+    api_func = context.get("_custom_api_func",call_local_llm)
 
     # 3) 调用 LLM 生成分析结果（⭐ 支持流式输出）
     result = ""

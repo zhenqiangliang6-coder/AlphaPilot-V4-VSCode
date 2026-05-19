@@ -612,3 +612,29 @@ python_worker/
     │   └── file_utils.py              # 文件操作工具
     │
     └── worker_v4.py                   # Worker V4 主入口（任务循环）
+V4 = 生成项目 + 安装依赖 + 运行测试 + 自动修复 + 自动运行
+这就是：
+
+⭐ AI 生成 → AI 运行 → AI 修复 → AI 完成
+你现在的 V3 已经完成了：
+
+AI 生成（Generate）
+
+V4 将完成：
+
+AI 运行（Run）
+
+AI 修复（Fix）
+
+AI 完成（Deliver）
+
+这就是 AlphaPilot OS 的真正形态。
+V4 Worker
+ ├── Step Executor（流式）
+ ├── ModelProvider（多模型兼容）
+ ├── Env Manager（依赖安装）
+ ├── Test Runner（pytest）
+ ├── Run Manager（执行 main.py）
+ ├── Error Analyzer（堆栈分析）
+ ├── Auto Fixer（自动修复）
+ └── FileOps Engine（项目更新）

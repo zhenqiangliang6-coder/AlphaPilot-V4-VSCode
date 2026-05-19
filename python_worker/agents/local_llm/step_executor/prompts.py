@@ -1,17 +1,15 @@
+
 # -*- coding: utf-8 -*-
 # step_executor/prompts.py
 # ---------------------------------------------------------
-# 所有步骤类型的 prompt 模板
+# 所有步骤类型的 prompt 模板（本地 LLM + 多文件协议版）
 # ---------------------------------------------------------
 
 __all__ = [
-    # 核心步骤 prompt
     "analyze_prompt",
     "plan_prompt",
     "write_prompt",
     "refine_prompt",
-    
-    # 扩展步骤 prompt
     "test_prompt",
     "fix_prompt",
     "profile_prompt",
@@ -22,15 +20,6 @@ __all__ = [
 
 
 def analyze_prompt(user_input: str) -> str:
-    """
-    analyze 步骤的 prompt：分析用户需求
-    
-    参数:
-        user_input: 用户输入的自然语言任务描述
-    
-    返回:
-        str: 用于调用 LLM 的完整 prompt
-    """
     return f"""
 请分析下面的任务描述，并提取关键需求点：
 
@@ -49,15 +38,6 @@ def analyze_prompt(user_input: str) -> str:
 
 
 def plan_prompt(analysis: str) -> str:
-    """
-    plan 步骤的 prompt：根据分析结果生成代码结构规划
-    
-    参数:
-        analysis: analyze 步骤的分析结果
-    
-    返回:
-        str: 用于调用 LLM 的完整 prompt
-    """
     return f"""
 下面是对任务的分析结果，请根据这些内容生成代码结构规划：
 
@@ -77,28 +57,35 @@ def plan_prompt(analysis: str) -> str:
 
 def write_prompt(plan: str) -> str:
     """
-    write 步骤的 prompt：根据规划生成代码
+    Multi‑File Protocol v3.2 — 对齐 persona system_prompt 的 ### 格式
     
-    参数:
-        plan: plan 步骤的规划内容
-    
-    返回:
-        str: 用于调用 LLM 的完整 prompt
+    ⭐ v3.2.2 修复版：统一使用 ### 分隔符格式,避免与 persona system_prompt 冲突
     """
-    return f"""
-请根据下面的代码规划生成完整的 Python 代码：
+    return f"""你现在处于 AlphaPilot OS v3.2 环境。
+
+请严格按照以下"多文件输出协议"生成代码：
+
+==========================
+### <相对路径>
+<代码内容>
+
+### <测试文件路径>
+<测试代码内容>
+
+### <文档路径>
+<文档内容>
+==========================
 
 【代码规划】：
 {plan}
 
-要求：
-1. 输出完整的 Python 代码（保持 ```python 格式）
-2. 代码必须可运行
-3. 变量命名清晰
-4. 逻辑结构与规划一致
-5. 不要包含解释性文字，只输出代码
-6. 输出必须是合法 Python 代码，不要包含解释性文字
-"""
+**重要提醒**:
+1. 必须使用 `###` 作为文件分隔符
+2. 不要输出任何解释、思考过程或元描述
+3. 直接输出代码文件内容
+4. 每个文件以 `### 文件名` 开头
+
+现在 please directly output code file:"""
 
 
 def refine_prompt(code: str, exec_summary: str) -> str:
@@ -240,7 +227,7 @@ def doc_prompt(code: str) -> str:
 3. 类的文档（如果有类）
 4. 使用示例代码
 5. 注意事项
-6. 输出必须是合法 Markdown 文档，不要包含解释性文字
+6. 输出必须是合法 Python 代码，不要包含解释性文字
 """
 
 

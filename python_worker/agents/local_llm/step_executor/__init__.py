@@ -30,7 +30,7 @@ from .execute_step import execute_step
 # 工具函数 & 常量
 # ---------------------------------------------------------
 from .utils import extract_code, FAKE_PYTEST, FAKE_ENVIRONMENT
-from .qwen_api import call_qwen
+
 
 # ---------------------------------------------------------
 # Prompt 模板（10 个）

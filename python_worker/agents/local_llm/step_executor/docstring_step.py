@@ -9,7 +9,8 @@
 from .utils import extract_code
 from .prompts import docstring_prompt
 from worker_config import create_event, stream_chunk, stream_start, stream_end
-from .qwen_api import call_qwen
+from ..local_api import call_local_llm
+
 
 
 def run_docstring_step(step, context, events, task_id=None):
@@ -41,7 +42,7 @@ def run_docstring_step(step, context, events, task_id=None):
     code = extract_code(write_outputs[-1])
     
     # ⭐ v3.0：选择 API 调用函数
-    api_func = context.get("_custom_api_func", call_qwen)
+    api_func = context.get("_custom_api_func", call_local_llm)
     
     # 生成带 docstring 的代码（⭐ 支持流式输出）
     docstring_text = ""

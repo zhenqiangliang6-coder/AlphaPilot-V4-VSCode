@@ -10,7 +10,8 @@ from .utils import extract_code, FAKE_ENVIRONMENT
 from .prompts import fix_prompt
 from code_executor import run_python
 from worker_config import create_event, stream_chunk, stream_start, stream_end
-from .qwen_api import call_qwen
+from ..local_api import call_local_llm
+
 
 
 def run_fix_step(step, context, events, task_id=None):
@@ -47,7 +48,7 @@ def run_fix_step(step, context, events, task_id=None):
         return
 
     # ⭐ v3.0：选择 API 调用函数
-    api_func = context.get("_custom_api_func", call_qwen)
+    api_func = context.get("_custom_api_func", call_local_llm)
 
     # 调用 LLM 修复代码（⭐ 支持流式输出）
     fixed_text = ""

@@ -14,6 +14,8 @@ import threading
 import traceback
 import requests
 from typing import Dict, Any, Optional
+from dataclasses import dataclass
+from typing import List, Callable
 
 # 确保 python_worker 根目录在 sys.path 中
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -41,6 +43,7 @@ from agents.local_llm.personas import PERSONA_CONFIGS, get_persona_config
 from intent_router import IntentRouter
 from agents.local_llm.step_executor import execute_step
 from agents.local_llm.local_api import call_local_llm
+from file_ops import create_file_op
 
 # 为了代码能跑通，这里需要初始化 redis 客户端
 redis = create_redis_client()
@@ -75,22 +78,135 @@ INTENT_CHAINS = {
 }
 
 
-def build_execution_chain(intent: str, prompt: str = "") -> list:
+# =========================================================
+# 能力层（Behavioral Ability）接口与本地适配器（占位实现）
+# =========================================================
+
+
+@dataclass
+class FileOp:
+    op_type: str
+    path: str
+    content: Optional[str] = None
+    mode: Optional[str] = "text"
+    meta: Dict[str, Any] = None
+
+
+@dataclass
+class FileOpsResult:
+    file_ops: List[FileOp]
+    raw_output: str
+    diagnostics: Optional[Dict[str, Any]] = None
+
+
+@dataclass
+class ValidationResult:
+    ok: bool
+    errors: List[str]
+
+
+@dataclass
+class ApplyResult:
+    success: bool
+    applied: List[FileOp]
+    failed: List[Dict[str, Any]]
+
+
+class StreamHooks:
+    def __init__(self, start: Callable = None, chunk: Callable = None, end: Callable = None, error: Callable = None):
+        self.start = start
+        self.chunk = chunk
+        self.end = end
+        self.error = error
+
+
+class LocalLLMAdapter:
+    """本地模型适配器（包装现有 call_local_llm）
+    占位实现：stream=True/False 的封装，供能力层调用。
     """
-    根据意图和提示词复杂度选择执行链
-    
-    ⭐ 智能判断：对于简单的代码生成任务，使用简化链路
+
+    def call(self, prompt: str, stream: bool = False, task_id: str = None):
+        # 直接调用现有实现；后续可替换为更复杂的重试/超时逻辑
+        return call_local_llm(prompt, stream=stream, task_id=task_id)
+
+
+class LocalWorkerAbility:
+    """能力契约实现（行为层）。
+    目前提供简单包装，behavioural contract 在此定义，具体实现可逐步增强。
     """
-    # 默认链路
-    chain = INTENT_CHAINS.get(intent, BASE_CHAIN)
+
+    def __init__(self, adapter: LocalLLMAdapter = None):
+        self.adapter = adapter or LocalLLMAdapter()
+
+    def generate_multi_file(self, prompt: str, task_id: str = None, opts: dict = None) -> FileOpsResult:
+        raw = self.adapter.call(prompt, stream=False, task_id=task_id)
+        # 占位解析：不尝试重写复杂解析逻辑，返回 raw 输出供上层或 write_step 解析
+        return FileOpsResult(file_ops=[], raw_output=raw, diagnostics={"note": "parsing deferred to write_step"})
+
+    def stream_generate(self, prompt: str, task_id: str, hooks: StreamHooks = None, opts: dict = None):
+        # 简单的流封装：调用 adapter.call(stream=True)；实际流回调由 adapter 内部触发（如果支持）
+        return self.adapter.call(prompt, stream=True, task_id=task_id)
+
+    def validate_fileops(self, fileops: List[FileOp], workspace_root: str) -> ValidationResult:
+        # 简单校验：路径安全与后缀白名单
+        errors = []
+        allowed = {".py", ".md", ".txt", ".json", ".yml", ".yaml"}
+        for f in fileops:
+            p = os.path.normpath(f.path)
+            if os.path.isabs(p) or p.startswith(".."):
+                errors.append(f"非法路径: {f.path}")
+            _, ext = os.path.splitext(p)
+            if ext and ext not in allowed:
+                errors.append(f"不允许的后缀: {f.path}")
+        return ValidationResult(ok=(len(errors) == 0), errors=errors)
+
+    def apply_fileops(self, fileops: List[FileOp], workspace_root: str, options: dict = None) -> ApplyResult:
+        applied = []
+        failed = []
+        for f in fileops:
+            try:
+                abspath = os.path.join(workspace_root, f.path)
+                dirpath = os.path.dirname(abspath)
+                if not os.path.exists(dirpath):
+                    os.makedirs(dirpath, exist_ok=True)
+                # 简单写入（覆盖）
+                with open(abspath, "w", encoding="utf-8") as fh:
+                    fh.write(f.content or "")
+                applied.append(f)
+            except Exception as e:
+                failed.append({"file": f.path, "error": str(e)})
+        return ApplyResult(success=(len(failed) == 0), applied=applied, failed=failed)
+
+# 工厂函数
+def get_local_worker_ability() -> LocalWorkerAbility:
+    return LocalWorkerAbility()
+
+
+
+def build_execution_chain(intent: str, prompt: str = None) -> list:
+    """
+    v3.2.1 修复：强制 Local Worker 只执行 write 步骤
     
-    # ⭐ 智能简化：如果提示词很短且包含简单关键词，使用简化链路
-    simple_keywords = ["写一个", "实现一个", "创建一个", "排序", "函数", "工具"]
-    is_simple_task = (
-        len(prompt) < 50 and  # 提示词很短
-        any(kw in prompt for kw in simple_keywords) and  # 包含简单关键词
-        intent == "write_code"  # 是代码生成任务
-    )
+    ⭐ 核心原则：
+    - Local Worker 能力有限，禁止复杂执行链
+    - 只执行 write，避免 test/refine/fix 导致的崩溃
+    - Qwen Worker 保持原有逻辑不变
+    """
+    
+    # ⭐ 关键修复：检测是否为 Local Worker
+    worker_id = os.environ.get("WORKER_ID", "")
+    is_local_worker = "local" in worker_id.lower() or "gemma" in worker_id.lower()
+    
+    if is_local_worker:
+        # Local Worker：只执行 write
+        print(f"\n💡 Local Worker 模式：强制使用简化执行链 [write]")
+        return ["write"]
+    
+    # Qwen Worker：保持原有逻辑
+    chain = INTENT_CHAINS.get(intent, DEFAULT_ENGINEERING_STEPS)
+    
+    # 智能简化：简单任务减少步骤
+    is_simple_task = detect_simple_task(prompt)
     
     if is_simple_task:
         print(f"\n💡 检测到简单任务，使用简化执行链: write → test")
@@ -196,6 +312,15 @@ def execute_task(task_type: str, payload: dict, task_id: str, steps: list, event
         "persona_config": persona_config,
         "execution_chain": execution_chain,
     }
+    
+    # ⭐ v3.2.2 关键修复：将用户原始 prompt 存入 context，供 write_step 使用
+    context["user_query"] = prompt
+
+    # 注入能力实例（行为契约实现），上层步骤可通过 context['_ability'] 使用
+    try:
+        context["_ability"] = get_local_worker_ability()
+    except Exception:
+        context["_ability"] = None
 
     print("\n🧠 Local LLM Worker v3.0 决策：")
     print(f"  意图: {intent}")
@@ -310,6 +435,13 @@ def main_loop():
             # 执行任务
             result = execute_task(task_type, payload, task_id, steps, events, context)
 
+            # write_step 负责生成并注入 final_file_ops（包含严格的自然语言解析），此处不再重复解析
+
+            # ⭐ v3.2.1 修复：清理 context 中无法序列化的对象
+            if "_ability" in context:
+                del context["_ability"]
+                print("[INFO] 已清理 context['_ability'] (LocalWorkerAbility 不可序列化)")
+
             # 写回成功结果
             result_key = f"task_result:{task_id}"
             result_data = TaskModel.create_task_result_success(
@@ -355,6 +487,10 @@ def main_loop():
 
         except Exception as e:
             is_cancelled = "取消" in str(e) or "cancel" in str(e).lower()
+
+            # ⭐ v3.2.1 修复：清理 context 中无法序列化的对象（错误分支）
+            if "_ability" in context:
+                del context["_ability"]
 
             if is_cancelled:
                 error_result = TaskModel.create_task_result_error(

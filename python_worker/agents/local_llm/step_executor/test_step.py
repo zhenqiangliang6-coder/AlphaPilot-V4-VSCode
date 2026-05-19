@@ -10,7 +10,8 @@ from .utils import extract_code, FAKE_PYTEST
 from .prompts import test_prompt
 from code_executor import run_python
 from worker_config import create_event, stream_chunk, stream_start, stream_end
-from .qwen_api import call_qwen   # 你已有的 Qwen API 封装
+from ..local_api import call_local_llm
+  # 你已有的 local_api 封装
 
 
 def run_test_step(step, context, events, task_id=None):
@@ -54,7 +55,7 @@ def run_test_step(step, context, events, task_id=None):
         return
 
     # 3) ⭐ v3.0：选择 API 调用函数
-    api_func = context.get("_custom_api_func", call_qwen)
+    api_func = context.get("_custom_api_func", call_local_llm)
 
     # 4) 让 LLM 生成 pytest 风格测试代码（⭐ 支持流式输出）
     test_code_text = ""
@@ -67,7 +68,7 @@ def run_test_step(step, context, events, task_id=None):
             # ⭐ 流式输出模式
             stream_chunk(task_id, "生成测试代码...\n", phase="test", channel="reasoning")
             
-            # 注意：Local LLM 的 call_qwen 目前不支持真正的流式，这里先同步调用
+            # 注意：Local LLM 的 call_local_llm 目前不支持真正的流式，这里先同步调用
             test_code_text = api_func(prompt)
             stream_chunk(task_id, test_code_text, phase="test", channel="content")
         else:

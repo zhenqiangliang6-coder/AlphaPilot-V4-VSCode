@@ -10,7 +10,8 @@ from .utils import extract_code
 from .prompts import doc_prompt
 from code_executor import run_python
 from worker_config import create_event, stream_chunk, stream_start, stream_end
-from .qwen_api import call_qwen
+from ..local_api import call_local_llm
+
 
 
 def run_doc_step(step, context, events, task_id=None):
@@ -42,7 +43,7 @@ def run_doc_step(step, context, events, task_id=None):
     code = extract_code(write_outputs[-1])
     
     # ⭐ v3.0：选择 API 调用函数
-    api_func = context.get("_custom_api_func", call_qwen)
+    api_func = context.get("_custom_api_func", call_local_llm)
     
     # 生成 Markdown 文档（⭐ 支持流式输出）
     markdown = ""
