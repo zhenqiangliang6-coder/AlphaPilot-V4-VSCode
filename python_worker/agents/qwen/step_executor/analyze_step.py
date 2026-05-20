@@ -70,12 +70,13 @@ def run_analyze_step(step, context, events, task_id=None):
         step["output"] = {"text": error_msg}
         return
 
-    # ===== 第2层防御：流式调用 LLM 生成分析结果（带人格配置）=====
+    # ===== 第2层防御：流式调用 LLM 生成分析结果（带人格配置 + ⭐ v3.5 上下文记忆）=====
     result = ""
     llm_success = False
     
     try:
-        prompt = analyze_prompt(user_input)
+        # ⭐ v3.5 修改：传递 context 给 analyze_prompt，注入记忆
+        prompt = analyze_prompt(user_input, context=context)
         
         # ⭐ v2.6 关键改动：使用带人格配置的流式调用
         if task_id:

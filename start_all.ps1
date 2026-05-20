@@ -19,6 +19,43 @@ Write-Host "💻 PowerShell 版本: $($PSVersionTable.PSVersion.ToString())" -Fo
 Write-Host ""
 
 # -------------------------------
+# ⭐ 0. 清除 Python 缓存（确保加载最新代码）
+# -------------------------------
+Write-Host "0️ 清除 Python 缓存..." -ForegroundColor Yellow
+
+try {
+    # 查找并删除所有 __pycache__ 目录
+    $pycacheDirs = Get-ChildItem -Path $PSScriptRoot -Recurse -Filter '__pycache__' -Directory -ErrorAction SilentlyContinue
+    
+    if ($pycacheDirs.Count -gt 0) {
+        foreach ($dir in $pycacheDirs) {
+            Remove-Item -Path $dir.FullName -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        Write-Host "   ✅ 已清除 $($pycacheDirs.Count) 个 __pycache__ 目录" -ForegroundColor Green
+    } else {
+        Write-Host "   ℹ️ 未找到 __pycache__ 目录" -ForegroundColor Cyan
+    }
+    
+    # 查找并删除所有 .pyc 文件
+    $pycFiles = Get-ChildItem -Path $PSScriptRoot -Recurse -Filter '*.pyc' -File -ErrorAction SilentlyContinue
+    
+    if ($pycFiles.Count -gt 0) {
+        foreach ($file in $pycFiles) {
+            Remove-Item -Path $file.FullName -Force -ErrorAction SilentlyContinue
+        }
+        Write-Host "   ✅ 已清除 $($pycFiles.Count) 个 .pyc 文件" -ForegroundColor Green
+    } else {
+        Write-Host "   ℹ️ 未找到 .pyc 文件" -ForegroundColor Cyan
+    }
+    
+    Write-Host "   🎉 Python 缓存清理完成，将加载最新代码" -ForegroundColor Green
+} catch {
+    Write-Host "   ️ 清除缓存时出错: $_" -ForegroundColor Yellow
+}
+
+Write-Host ""
+
+# -------------------------------
 # 辅助函数：检查端口是否被占用
 # -------------------------------
 function Test-PortInUse {

@@ -19,5 +19,9 @@
     "ioredis": "^5.10.1",
     "socket.io": "^4.7.0",
     "uuid": "^13.0.0"
+  },
+  "devDependencies": {
+    "@prisma/client": "^6.19.3",
+    "prisma": "^6.19.3"
   }
 }

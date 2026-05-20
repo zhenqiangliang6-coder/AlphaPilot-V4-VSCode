@@ -2,7 +2,10 @@
 # step_executor/prompts.py
 # ---------------------------------------------------------
 # 所有步骤类型的 prompt 模板（v3.0 执行链版）
+# ⭐ v3.5 新增：上下文记忆注入功能
 # ---------------------------------------------------------
+
+import json
 
 __all__ = [
     # 核心步骤 prompt
@@ -21,11 +24,92 @@ __all__ = [
 
     # ⭐ v2.8 新增
     "optimize_prompt_v28",
+    
+    # ⭐ v3.5 新增：上下文记忆注入
+    "inject_memory_context",
 ]
 
 
-def analyze_prompt(user_input: str) -> str:
-    return f"""
+def inject_memory_context(context: dict) -> str:
+    """
+    ⭐ v3.5 新增：将上下文记忆注入到 system prompt
+    
+    Args:
+        context: 完整的任务上下文（包含 memory 字段）
+        
+    Returns:
+        格式化后的记忆上下文字符串，如果没有记忆则返回空字符串
+    """
+    if not context or "memory" not in context:
+        return ""
+    
+    memory = context["memory"]
+    parts = []
+    
+    # 1. 项目上下文
+    project_ctx = memory.get("project_context", {})
+    if project_ctx:
+        parts.append("\n\n【项目信息】")
+        if project_ctx.get("name"):
+            parts.append(f"- 项目名称: {project_ctx['name']}")
+        if project_ctx.get("tech_stack"):
+            tech_stack_str = json.dumps(project_ctx["tech_stack"], ensure_ascii=False)
+            parts.append(f"- 技术栈: {tech_stack_str}")
+        if project_ctx.get("metadata"):
+            metadata_str = json.dumps(project_ctx["metadata"], ensure_ascii=False)
+            parts.append(f"- 元数据: {metadata_str}")
+    
+    # 2. 用户偏好
+    memory_ctx = memory.get("memory_context", {})
+    user_prefs = memory_ctx.get("user_preferences", {})
+    if user_prefs:
+        parts.append("\n\n【用户偏好】")
+        for key, value in user_prefs.items():
+            parts.append(f"- {key}: {value}")
+    
+    # 3. 项目规则（最重要，放在前面）
+    project_memories = memory_ctx.get("project_memories", [])
+    if project_memories:
+        parts.append("\n\n【项目规则】⭐ 必须严格遵守")
+        for mem in sorted(project_memories, key=lambda x: x.get("importance", 0), reverse=True):
+            importance_star = "⭐" * mem.get("importance", 3)
+            parts.append(f"- {importance_star} {mem['content']}")
+    
+    # 4. 相似任务参考
+    similar_tasks = memory_ctx.get("similar_tasks", [])
+    if similar_tasks:
+        parts.append("\n\n【相似任务参考】")
+        for i, task in enumerate(similar_tasks[:3], 1):
+            parts.append(f"{i}. 任务: {task['prompt'][:100]}...")
+            if task.get("result_summary"):
+                parts.append(f"   结果: {task['result_summary'][:100]}...")
+            # 如果有步骤输出，展示关键信息
+            if task.get("steps"):
+                for step in task["steps"][:1]:
+                    if step.get("output"):
+                        output_preview = str(step["output"])[:150]
+                        parts.append(f"   关键输出: {output_preview}...")
+    
+    # 5. 最近任务历史
+    recent_tasks = memory_ctx.get("recent_tasks", [])
+    if recent_tasks:
+        parts.append("\n\n【最近任务历史】")
+        for i, task in enumerate(recent_tasks[:3], 1):
+            parts.append(f"{i}. {task['prompt'][:80]}...")
+            if task.get("result_summary"):
+                parts.append(f"   结果: {task['result_summary'][:80]}...")
+    
+    return "\n".join(parts)
+
+
+def analyze_prompt(user_input: str, context: dict = None) -> str:
+    """
+    ⭐ v3.5 修改：支持上下文记忆注入
+    """
+    memory_context = inject_memory_context(context) if context else ""
+    
+    return f"""{memory_context}
+
 请分析下面的任务描述，并提取关键需求点：
 
 【用户任务描述】：
@@ -60,11 +144,17 @@ def plan_prompt(analysis: str) -> str:
 """
 
 
-def write_prompt(plan: str) -> str:
+def write_prompt(plan: str, context: dict = None) -> str:
     """
+    ⭐ v3.5 修改：write 步骤的 prompt，支持上下文记忆注入
+    
     write 步骤的 prompt：根据规划生成代码（多文件协议 v3.0）
     """
-    return f"""你现在处于 AlphaPilot OS v3.0 环境。
+    memory_context = inject_memory_context(context) if context else ""
+    
+    return f"""{memory_context}
+
+你现在处于 AlphaPilot OS v3.0 环境。
 
 请严格按照以下"多文件输出协议"生成代码：
 

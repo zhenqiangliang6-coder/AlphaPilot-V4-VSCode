@@ -60,13 +60,14 @@ def write_prompt(plan: str) -> str:
     Multi‑File Protocol v3.2 — 对齐 persona system_prompt 的 ### 格式
     
     ⭐ v3.2.2 修复版：统一使用 ### 分隔符格式,避免与 persona system_prompt 冲突
+    ⭐ v3.2.3 新增：要求 Gemma 4B 输出 ASCII 文件树（无需前端改动）
     """
     return f"""你现在处于 AlphaPilot OS v3.2 环境。
 
 请严格按照以下"多文件输出协议"生成代码：
 
 ==========================
-### <相对路径>
+### <relative path>
 <代码内容>
 
 ### <测试文件路径>
@@ -74,6 +75,9 @@ def write_prompt(plan: str) -> str:
 
 ### <文档路径>
 <文档内容>
+
+### FILE_TREE
+<ASCII 文件树结构>
 ==========================
 
 【代码规划】：
@@ -84,6 +88,23 @@ def write_prompt(plan: str) -> str:
 2. 不要输出任何解释、思考过程或元描述
 3. 直接输出代码文件内容
 4. 每个文件以 `### 文件名` 开头
+5. **必须在最后输出 ASCII 文件树**（使用 ### FILE_TREE 分隔符）
+
+**ASCII 文件树格式示例**:
+```
+### FILE_TREE
+project/
+├── calculator.py
+├── tests/
+│   ── test_calculator.py
+└── README.md
+```
+
+**文件树规则**:
+- 使用 ├─ 和 └─ 符号表示层级关系
+- 文件夹后面加 /
+- 缩进使用 4 个空格
+- 只展示生成的文件，不要展示无关文件
 
 现在 please directly output code file:"""
 

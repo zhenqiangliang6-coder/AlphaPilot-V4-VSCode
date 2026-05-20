@@ -6,9 +6,24 @@ import { clearChat, cancelTask } from '../utils/vscode';
 interface ToolbarProps {
   showStepPanel: boolean;
   setShowStepPanel: (show: boolean) => void;
+  showTaskHistory: boolean;
+  setShowTaskHistory: (show: boolean) => void;
+  showFileVersion: boolean;
+  setShowFileVersion: (show: boolean) => void;
+  showProjectMemory: boolean;
+  setShowProjectMemory: (show: boolean) => void;
 }
 
-export const Toolbar: React.FC<ToolbarProps> = ({ showStepPanel, setShowStepPanel }) => {
+export const Toolbar: React.FC<ToolbarProps> = ({ 
+  showStepPanel, 
+  setShowStepPanel,
+  showTaskHistory,
+  setShowTaskHistory,
+  showFileVersion,
+  setShowFileVersion,
+  showProjectMemory,
+  setShowProjectMemory
+}) => {
   const { currentTaskId, isStreaming, messages } = useChatStore();
 
   return (
@@ -40,6 +55,45 @@ export const Toolbar: React.FC<ToolbarProps> = ({ showStepPanel, setShowStepPane
         >
           <span>📊</span>
           <span>步骤</span>
+        </button>
+
+        {/* ⭐ v3.5+ 新增：任务历史按钮 */}
+        <button
+          onClick={() => setShowTaskHistory(!showTaskHistory)}
+          title="查看任务历史"
+          className={`px-3 py-1.5 text-xs rounded-lg transition-all flex items-center gap-2 ${
+            showTaskHistory 
+              ? 'bg-purple-500/20 text-purple-400 border border-purple-500/50' 
+              : 'hover:bg-vscode-list-hover text-vscode-fg-muted hover:text-vscode-fg'
+          }`}
+        >
+          <span>📋</span>
+          <span>历史</span>
+        </button>
+
+        {/* ⭐ v3.5+ 新增：文件版本按钮（暂时禁用，待后续集成） */}
+        <button
+          onClick={() => setShowFileVersion(!showFileVersion)}
+          disabled={true}  // TODO: 需要与文件系统集成
+          title="查看文件版本（开发中）"
+          className={`px-3 py-1.5 text-xs rounded-lg transition-all flex items-center gap-2 opacity-50 cursor-not-allowed`}
+        >
+          <span>📄</span>
+          <span>版本</span>
+        </button>
+
+        {/* ⭐ v3.5+ 新增：项目记忆按钮 */}
+        <button
+          onClick={() => setShowProjectMemory(!showProjectMemory)}
+          title="查看项目记忆"
+          className={`px-3 py-1.5 text-xs rounded-lg transition-all flex items-center gap-2 ${
+            showProjectMemory 
+              ? 'bg-green-500/20 text-green-400 border border-green-500/50' 
+              : 'hover:bg-vscode-list-hover text-vscode-fg-muted hover:text-vscode-fg'
+          }`}
+        >
+          <span>🧠</span>
+          <span>记忆</span>
         </button>
 
         {/* 清空对话 */}

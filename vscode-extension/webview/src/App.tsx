@@ -7,6 +7,9 @@ import { MessageList } from './components/MessageList';
 import { ChatInput } from './components/ChatInput';
 import { FileOpsList } from './components/FileOpsList';
 import { StepPanel } from './components/StepPanel';  // ⭐ v3.2 新增
+import { TaskHistoryPanel } from './components/TaskHistoryPanel';  // ⭐ v3.5+ 新增
+import { FileVersionPanel } from './components/FileVersionPanel';  // ⭐ v3.5+ 新增
+import { ProjectMemoryPanel } from './components/ProjectMemoryPanel';  // ⭐ v3.5+ 新增
 import { vscodeAPI } from './utils/vscode';
 
 function App() {
@@ -27,6 +30,15 @@ function App() {
 
   // ⭐ v3.2 新增：StepPanel 侧边栏状态
   const [showStepPanel, setShowStepPanel] = useState(false);
+
+  // ⭐ v3.5+ 新增：任务历史、文件版本、项目记忆面板状态
+  const [showTaskHistory, setShowTaskHistory] = useState(false);
+  const [showFileVersion, setShowFileVersion] = useState(false);
+  const [showProjectMemory, setShowProjectMemory] = useState(false);
+  const [selectedFileId, setSelectedFileId] = useState<number | null>(null);
+  const [selectedFilePath, setSelectedFilePath] = useState<string>('');
+  const [selectedProjectId, setSelectedProjectId] = useState<number>(1);  // 默认项目 ID
+  const [selectedProjectName, setSelectedProjectName] = useState<string>('Default Project');
 
   // 监听来自 Extension 的消息
   useEffect(() => {
@@ -247,7 +259,16 @@ function App() {
 
   return (
     <div className="flex flex-col h-screen bg-vscode-bg text-vscode-fg">
-      <Toolbar showStepPanel={showStepPanel} setShowStepPanel={setShowStepPanel} />
+      <Toolbar 
+        showStepPanel={showStepPanel} 
+        setShowStepPanel={setShowStepPanel}
+        showTaskHistory={showTaskHistory}
+        setShowTaskHistory={setShowTaskHistory}
+        showFileVersion={showFileVersion}
+        setShowFileVersion={setShowFileVersion}
+        showProjectMemory={showProjectMemory}
+        setShowProjectMemory={setShowProjectMemory}
+      />
       <ModelSelector />
       <MessageList />
       <ChatInput />
@@ -282,6 +303,29 @@ function App() {
               ))}
           </div>
         </div>
+      )}
+
+      {/* ⭐ v3.5+ 新增：任务历史面板 */}
+      {showTaskHistory && (
+        <TaskHistoryPanel onClose={() => setShowTaskHistory(false)} />
+      )}
+
+      {/* ⭐ v3.5+ 新增：文件版本面板 */}
+      {showFileVersion && selectedFileId && (
+        <FileVersionPanel 
+          fileId={selectedFileId}
+          filePath={selectedFilePath}
+          onClose={() => setShowFileVersion(false)}
+        />
+      )}
+
+      {/* ⭐ v3.5+ 新增：项目记忆面板 */}
+      {showProjectMemory && (
+        <ProjectMemoryPanel 
+          projectId={selectedProjectId}
+          projectName={selectedProjectName}
+          onClose={() => setShowProjectMemory(false)}
+        />
       )}
 
       <FileOpsList

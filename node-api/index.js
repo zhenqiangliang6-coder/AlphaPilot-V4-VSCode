@@ -19,6 +19,13 @@ const { Redis } = require("@upstash/redis");
 const { FileOpsHandler } = require('./fileOpsHandler');
 
 // =========================
+// ⭐ 2. Import Memory Service (v3.1 新增)
+// =========================
+const memoryService = require('./services/memoryService');
+
+console.log('✅ Memory Service 已加载');
+
+// =========================
 // 2. 启动 Express & Socket.io 服务器
 // =========================
 const app = express();
@@ -181,6 +188,43 @@ app.post('/task/submit', async (req, res) => {
             finalPayload = payload;
         }
 
+        // ⭐ v3.1 新增：记录任务到 Memory Service
+        let userId = meta.user_id || 'default-user';
+        let projectId = meta.project_id || null;
+        let prompt = finalPayload.prompt || JSON.stringify(finalPayload);
+        
+        let context = null;  // ⭐ v3.5 新增：上下文记忆
+        
+        try {
+            // 创建或获取用户
+            const user = await memoryService.getOrCreateUser(userId, `User-${userId}`, {});
+            
+            // 如果有项目 ID，创建或获取项目
+            let project = null;
+            if (projectId) {
+                project = await memoryService.getOrCreateProject(user.id, `Project-${projectId}`, '', {});
+            }
+            
+            // 创建任务记录
+            await memoryService.createTask(task_id, user.id, project?.id || null, prompt, model, source);
+            
+            console.log(`   🧠 [Memory] 任务已记录: ${task_id}`);
+            
+            // ⭐ v3.5 新增：加载 Worker 上下文记忆
+            if (project) {
+                context = await memoryService.loadContextForWorker(task_id);
+                console.log(`   🧠 [Memory] 上下文已加载:`);
+                console.log(`      - 项目名称: ${context.project_context?.name || 'N/A'}`);
+                console.log(`      - 项目记忆数: ${context.memory_context?.project_memories?.length || 0}`);
+                console.log(`      - 用户偏好数: ${context.memory_context?.user_preferences?.length || 0}`);
+            } else {
+                console.log(`   ⚠️ [Memory] 无项目关联，跳过上下文加载`);
+            }
+        } catch (memoryError) {
+            // ⭐ 降级策略：记忆系统失败不影响任务提交
+            console.error(`   ⚠️ [Memory] 记录任务失败（不影响主流程）:`, memoryError.message);
+        }
+
         // ⭐ 构建 TaskModel v2 格式
         const task = {
             task_id,
@@ -190,7 +234,8 @@ app.post('/task/submit', async (req, res) => {
             model,
             stream,
             timestamp: Date.now(),
-            status: "pending"
+            status: "pending",
+            context: context || undefined  // ⭐ v3.5 新增：注入上下文记忆
         };
 
         console.log("\n📤 推入 Redis 队列（v2 标准格式 + 模型无关）");
@@ -251,6 +296,66 @@ app.post('/task/notify/:task_id', async (req, res) => {
         }
         
         console.log(JSON.stringify(result, null, 2));
+
+        // ⭐ v3.1 新增：更新任务状态到 Memory Service
+        try {
+            const status = result.status || 'done';
+            const summary = result.summary || result.result_summary || '';
+            
+            await memoryService.updateTaskStatus(task_id, status, summary);
+            
+            console.log(`   🧠 [Memory] 任务状态已更新: ${status}`);
+            
+            // ⭐ 记录步骤执行结果（如果有）
+            if (result.steps && Array.isArray(result.steps)) {
+                for (const step of result.steps) {
+                    try {
+                        await memoryService.createTaskStep(
+                            task_id,
+                            step.step_type || step.type,
+                            step.input || {}
+                        );
+                        
+                        // 如果步骤有输出，更新步骤状态
+                        if (step.output) {
+                            const dbStep = await memoryService.getTaskSteps(task_id);
+                            const lastStep = dbStep[dbStep.length - 1];
+                            if (lastStep) {
+                                await memoryService.updateTaskStep(
+                                    lastStep.id,
+                                    step.status || 'done',
+                                    step.output
+                                );
+                            }
+                        }
+                    } catch (stepError) {
+                        console.error(`   ⚠️ [Memory] 记录步骤失败:`, stepError.message);
+                    }
+                }
+            }
+            
+            // ⭐ 记录 FileOps（如果有）
+            if (result.context?.final_file_ops && Array.isArray(result.context.final_file_ops)) {
+                for (const fileOp of result.context.final_file_ops) {
+                    try {
+                        await memoryService.recordFileOp(
+                            task_id,
+                            null, // step_id 暂时为空，后续可以关联
+                            fileOp.op,
+                            fileOp.path,
+                            fileOp.role || 'main',
+                            fileOp.reason || '',
+                            fileOp.from_step || ''
+                        );
+                    } catch (fileOpError) {
+                        console.error(`   ⚠️ [Memory] 记录 FileOp 失败:`, fileOpError.message);
+                    }
+                }
+            }
+        } catch (memoryError) {
+            // ⭐ 降级策略：记忆系统失败不影响通知流程
+            console.error(`   ⚠️ [Memory] 更新任务状态失败（不影响主流程）:`, memoryError.message);
+        }
 
         // ⭐ 通过 WebSocket 推送给订阅的前端
         if (taskSubscriptions.has(task_id)) {
@@ -332,7 +437,206 @@ app.post('/task/stream_error/:task_id', (req, res) => {
 });
 
 // =========================
-// 8. 路由：设置工作区路径（VSCode 扩展调用）
+// 8. 路由：流式输出（Worker → Node API → WebSocket）⭐ v3.5+ 新增
+// =========================
+
+app.post('/task/stream_start/:task_id', (req, res) => {
+    const { task_id } = req.params;
+    const { title, phase } = req.body;
+    
+    console.log(`\n🌊 [Stream] stream_start: ${task_id}`);
+    if (title) console.log(`   标题: ${title}`);
+    if (phase) console.log(`   阶段: ${phase}`);
+    
+    // 通过 WebSocket 广播给所有订阅者
+    io.emit('stream_start', {
+        task_id,
+        title: title || 'AI 正在生成...',
+        phase: phase || null,
+        timestamp: Date.now()
+    });
+    
+    res.json({ status: "ok" });
+});
+
+app.post('/task/stream_chunk/:task_id', (req, res) => {
+    const { task_id } = req.params;
+    const { content, phase, channel } = req.body;
+    
+    // 通过 WebSocket 广播给所有订阅者
+    io.emit('stream_chunk', {
+        task_id,
+        chunk: content || '',
+        phase: phase || null,
+        channel: channel || 'content',  // reasoning / content
+        timestamp: Date.now()
+    });
+    
+    res.json({ status: "ok" });
+});
+
+app.post('/task/stream_error/:task_id', (req, res) => {
+    const { task_id } = req.params;
+    const { message } = req.body;
+    
+    console.log(`\n❌ [Stream] stream_error: ${task_id} - ${message}`);
+    
+    // 通过 WebSocket 广播给所有订阅者
+    io.emit('stream_error', {
+        task_id,
+        message: message || '未知错误',
+        timestamp: Date.now()
+    });
+    
+    res.json({ status: "ok" });
+});
+
+app.post('/task/stream_end/:task_id', (req, res) => {
+    const { task_id } = req.params;
+    
+    console.log(`\n✅ [Stream] stream_end: ${task_id}`);
+    
+    // 通过 WebSocket 广播给所有订阅者
+    io.emit('stream_end', {
+        task_id,
+        timestamp: Date.now()
+    });
+    
+    res.json({ status: "ok" });
+});
+
+// =========================
+// 9. 路由：任务历史查询（v3.5+ 新增）⭐
+// =========================
+
+app.get('/tasks/history', async (req, res) => {
+    try {
+        const { user_id, project_id, limit = 20, offset = 0 } = req.query;
+        
+        console.log(`\n📋 [History] 查询任务历史`);
+        console.log(`   用户: ${user_id || '全部'}`);
+        console.log(`   项目: ${project_id || '全部'}`);
+        console.log(`   限制: ${limit}, 偏移: ${offset}`);
+        
+        // 构建查询条件
+        const where = {};
+        if (user_id) where.user_id = parseInt(user_id);
+        if (project_id) where.project_id = parseInt(project_id);
+        
+        const tasks = await memoryService.prisma.task.findMany({
+            where,
+            orderBy: { created_at: 'desc' },
+            take: parseInt(limit),
+            skip: parseInt(offset),
+            include: {
+                user: { select: { id: true, name: true } },
+                project: { select: { id: true, name: true } },
+                steps: {
+                    orderBy: { created_at: 'asc' },
+                    select: {
+                        id: true,
+                        step_type: true,
+                        status: true,
+                        output: true,
+                        created_at: true,
+                        finished_at: true
+                    }
+                }
+            }
+        });
+        
+        const total = await memoryService.prisma.task.count({ where });
+        
+        console.log(`   ✅ 找到 ${tasks.length} 个任务 (总计: ${total})`);
+        
+        res.json({
+            success: true,
+            data: tasks,
+            pagination: {
+                total,
+                limit: parseInt(limit),
+                offset: parseInt(offset),
+                hasMore: (parseInt(offset) + parseInt(limit)) < total
+            }
+        });
+    } catch (error) {
+        console.error('❌ 查询任务历史失败:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// =========================
+// 10. 路由：文件版本查询（v3.5+ 新增）⭐
+// =========================
+
+app.get('/files/:fileId/versions', async (req, res) => {
+    try {
+        const { fileId } = req.params;
+        const { limit = 10 } = req.query;
+        
+        console.log(`\n📄 [Versions] 查询文件版本: ${fileId}`);
+        
+        const versions = await memoryService.prisma.fileVersion.findMany({
+            where: { file_id: parseInt(fileId) },
+            orderBy: { created_at: 'desc' },  // ⭐ 修改为 created_at
+            take: parseInt(limit),
+            include: {
+                task: {
+                    select: {
+                        id: true,
+                        prompt: true,
+                        created_at: true
+                    }
+                }
+            }
+        });
+        
+        console.log(`   ✅ 找到 ${versions.length} 个版本`);
+        
+        res.json({
+            success: true,
+            data: versions
+        });
+    } catch (error) {
+        console.error('❌ 查询文件版本失败:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// =========================
+// 11. 路由：项目记忆查询（v3.5+ 新增）⭐
+// =========================
+
+app.get('/projects/:projectId/memories', async (req, res) => {
+    try {
+        const { projectId } = req.params;
+        const { type, limit = 20 } = req.query;
+        
+        console.log(`\n🧠 [Memories] 查询项目记忆: ${projectId}`);
+        
+        const where = { project_id: parseInt(projectId) };
+        if (type) where.memory_type = type;
+        
+        const memories = await memoryService.prisma.memory.findMany({  // ⭐ 修改为 memory
+            where,
+            orderBy: { importance: 'desc' },
+            take: parseInt(limit)
+        });
+        
+        console.log(`   ✅ 找到 ${memories.length} 条记忆`);
+        
+        res.json({
+            success: true,
+            data: memories
+        });
+    } catch (error) {
+        console.error('❌ 查询项目记忆失败:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// =========================
+// 12. 路由：工作区路径设置（VSCode 扩展调用）
 // =========================
 app.post('/workspace/set', (req, res) => {
     const { path } = req.body;
@@ -348,7 +652,7 @@ app.post('/workspace/set', (req, res) => {
 });
 
 // =========================
-// 9. 路由：FileOps 执行（VSCode 扩展调用）
+// 13. 路由：FileOps 执行（VSCode 扩展调用）
 // =========================
 app.post('/fileops/execute', async (req, res) => {
     const { file_ops } = req.body;
@@ -378,7 +682,7 @@ app.post('/fileops/execute', async (req, res) => {
 });
 
 // =========================
-// 9. 工具函数：过滤内部元数据
+// 14. 工具函数：过滤内部元数据
 // =========================
 /**
  * 过滤掉内部元数据操作（v3.1.1）
@@ -394,7 +698,7 @@ function filterInternalOps(fileOps) {
 }
 
 // =========================
-// 9. 工具函数：根据任务类型获取队列名称（✅ 符合架构信条）
+// 15. 工具函数：根据任务类型获取队列名称（✅ 符合架构信条）
 // =========================
 function getWorkerQueueByType(taskType) {
     const TYPE_QUEUE_MAP = {
@@ -411,7 +715,7 @@ function getWorkerQueueByType(taskType) {
 }
 
 // =========================
-// 10. 工具函数：根据模型名称获取队列名称（保留用于向后兼容）
+// 16. 工具函数：根据模型名称获取队列名称（保留用于向后兼容）
 // =========================
 function getWorkerQueue(modelOrType) {
     const WORKER_QUEUE_MAP = {
@@ -435,7 +739,7 @@ function getWorkerQueue(modelOrType) {
 }
 
 // =========================
-// 10. 启动服务
+// 17. 启动服务
 // =========================
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {

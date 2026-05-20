@@ -1,0 +1,244 @@
+// prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+  engineType = "library"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// =======================
+/// 基础枚举 & 公共类型
+/// =======================
+
+enum TaskStatus {
+  pending
+  running
+  done
+  failed
+}
+
+enum StepType {
+  analyze
+  plan
+  write
+  refine
+  test
+  fix
+  doc
+  docstring
+}
+
+enum FileOpType {
+  create
+  update
+  delete
+}
+
+enum FileRole {
+  main
+  test
+  doc
+  config
+  meta
+}
+
+enum OwnerType {
+  user
+  project
+  task
+  file
+  doc
+  memory
+}
+
+enum MemoryType {
+  preference
+  rule
+  summary
+  pattern
+}
+
+/// =======================
+/// 用户层（User Memory）
+/// =======================
+
+model User {
+  id          Int       @id @default(autoincrement())
+  external_id String?   @unique
+  name        String?
+  preferences Json      @default("{}")
+  created_at  DateTime  @default(now())
+  updated_at  DateTime  @updatedAt
+
+  projects Project[]
+  tasks    Task[]
+  memories Memory[]
+}
+
+/// =======================
+/// 项目层（Project Memory）
+/// =======================
+
+model Project {
+  id         Int       @id @default(autoincrement())
+  user_id    Int?
+  user       User?     @relation(fields: [user_id], references: [id], onDelete: SetNull)
+  name       String
+  root_path  String?
+  repo_url   String?
+  tech_stack Json      @default("{}")
+  metadata   Json      @default("{}")
+  created_at DateTime  @default(now())
+  updated_at DateTime  @updatedAt
+
+  tasks  Task[]
+  files  File[]
+  memories Memory[]
+}
+
+/// =======================
+/// 任务层（Task Memory）
+/// =======================
+
+model Task {
+  id             String      @id // UUID（由你在代码里生成）
+  user_id        Int?
+  project_id     Int?
+  user           User?       @relation(fields: [user_id], references: [id], onDelete: SetNull)
+  project        Project?    @relation(fields: [project_id], references: [id], onDelete: SetNull)
+  source         String?
+  model          String?
+  prompt         String?
+  status         TaskStatus  @default(pending)
+  result_summary String?
+  created_at     DateTime    @default(now())
+  finished_at    DateTime?
+
+  steps      TaskStep[]
+  file_ops   TaskFileOp[]
+  versions   FileVersion[]
+  memories   Memory[]
+  // embeddings Embedding[]  // 暂时注释，待 pgvector 安装后启用
+}
+
+/// =======================
+/// 执行链层（Step Memory）
+/// =======================
+
+model TaskStep {
+  id          Int        @id @default(autoincrement())
+  task_id     String
+  task        Task       @relation(fields: [task_id], references: [id], onDelete: Cascade)
+  step_type   StepType
+  status      TaskStatus @default(pending)
+  input       Json?
+  output      Json?
+  created_at  DateTime   @default(now())
+  finished_at DateTime?
+
+  file_ops  TaskFileOp[]
+  versions  FileVersion[]
+}
+
+/// =======================
+/// FileOps 层（FileOps Memory）
+/// =======================
+
+model TaskFileOp {
+  id        Int        @id @default(autoincrement())
+  task_id   String
+  step_id   Int?
+  task      Task       @relation(fields: [task_id], references: [id], onDelete: Cascade)
+  step      TaskStep?  @relation(fields: [step_id], references: [id], onDelete: SetNull)
+  op        FileOpType
+  path      String
+  role      FileRole?
+  reason    String?
+  from_step String?
+  created_at DateTime  @default(now())
+}
+
+/// =======================
+/// 文件层（File Identity）
+/// =======================
+
+model File {
+  id                Int           @id @default(autoincrement())
+  project_id        Int
+  project           Project       @relation(fields: [project_id], references: [id], onDelete: Cascade)
+  path              String
+  current_version_id Int?
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  versions FileVersion[]
+}
+
+/// =======================
+/// 文件版本层（Version Memory）
+/// =======================
+
+model FileVersion {
+  id         Int        @id @default(autoincrement())
+  file_id    Int
+  task_id    String?
+  step_id    Int?
+  file       File       @relation(fields: [file_id], references: [id], onDelete: Cascade)
+  task       Task?      @relation(fields: [task_id], references: [id], onDelete: SetNull)
+  step       TaskStep?  @relation(fields: [step_id], references: [id], onDelete: SetNull)
+  content    String
+  hash       String?
+  created_at DateTime   @default(now())
+}
+
+/// =======================
+/// 长期记忆层（Long-term Memory）
+/// =======================
+
+model Memory {
+  id           Int         @id @default(autoincrement())
+  owner_type   OwnerType
+  // 使用多个可选字段来关联不同类型的 owner
+  user_id      Int?
+  project_id   Int?
+  task_id      String?
+  file_id      Int?
+  memory_type  MemoryType
+  content      String
+  importance   Int         @default(1)
+  created_at   DateTime    @default(now())
+
+  // 物理外键关系
+  user    User?    @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "Memory_user_fk")
+  project Project? @relation(fields: [project_id], references: [id], onDelete: Cascade, map: "Memory_project_fk")
+  task    Task?    @relation(fields: [task_id], references: [id], onDelete: Cascade, map: "Memory_task_fk")
+  // file    File?    @relation(fields: [file_id], references: [id], onDelete: Cascade, map: "Memory_file_fk")
+}
+
+// =======================
+// 语义记忆层（Semantic Memory / pgvector）
+// 注意：需要先安装 pgvector 扩展才能启用此表
+// 安装命令: CREATE EXTENSION IF NOT EXISTS vector;
+// =======================
+
+// model Embedding {
+//   id         Int        @id @default(autoincrement())
+//   owner_type OwnerType
+//   // 使用多个可选字段来关联不同类型的 owner
+//   user_id    Int?
+//   project_id Int?
+//   task_id    String?
+//   file_id    Int?
+//   // 这里用 Unsupported("vector")，需要在数据库里手动启用 pgvector 扩展
+//   vector     Unsupported("vector")?
+//   metadata   Json?
+//   created_at DateTime   @default(now())
+// 
+//   // 物理外键关系
+//   task Task? @relation(fields: [task_id], references: [id], onDelete: Cascade, map: "Embedding_task_fk")
+// }

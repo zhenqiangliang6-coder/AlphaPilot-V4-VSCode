@@ -638,3 +638,51 @@ V4 Worker
  ├── Error Analyzer（堆栈分析）
  ├── Auto Fixer（自动修复）
  └── FileOps Engine（项目更新）
+1. V4 的核心目标
+V4 的目标不是让模型直接生成代码，而是：
+
+构建一个可扩展、可插拔、可调度的执行框架（Execution Framework）
+
+所有功能都变成 Step 插件，Worker 只负责调度。
+
+2. V4 的三大核心组件
+（1）Step 插件接口（Step Plugin Interface）
+每个 Step 都必须实现统一接口：
+
+name
+
+input_schema
+
+output_schema
+
+run()
+
+这样 Worker 就能统一调度所有 Step。
+
+（2）Execution Engine（执行引擎）
+负责：
+
+加载 Step
+
+校验输入
+
+执行 run()
+
+捕获错误
+
+输出统一格式
+
+这是 V4 的大脑。
+
+（3）Step Registry（插件注册表）
+负责：
+
+注册所有 Step
+
+通过名字找到 Step 类
+
+Worker 通过 Registry 调用 Step
+
+3. V4 的第一个 Step：GenerateFile
+这是第一个真正的 Step，用来测试整个框架是否能跑通。
+

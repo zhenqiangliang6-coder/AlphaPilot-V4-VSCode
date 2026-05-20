@@ -238,6 +238,25 @@ def main_loop():
             
             # ⭐ 初始化 final_file_ops（唯一真相源）
             context["final_file_ops"] = []
+            
+            # ⭐ v3.5 新增：加载并注入上下文记忆
+            task_context = task.get("context", None)
+            if task_context:
+                print("\n🧠 [Memory] 检测到上下文记忆，正在注入...")
+                context["memory"] = task_context
+                
+                # 打印上下文摘要
+                project_ctx = task_context.get("project_context", {})
+                memory_ctx = task_context.get("memory_context", {})
+                
+                print(f"   - 项目: {project_ctx.get('name', 'N/A')}")
+                print(f"   - 技术栈: {json.dumps(project_ctx.get('tech_stack', {}), ensure_ascii=False)}")
+                print(f"   - 用户偏好: {len(memory_ctx.get('user_preferences', {}))} 项")
+                print(f"   - 项目记忆: {len(memory_ctx.get('project_memories', []))} 条")
+                print(f"   - 相似任务: {len(memory_ctx.get('similar_tasks', []))} 个")
+                print(f"   ✅ 上下文注入完成")
+            else:
+                print("\n⚠️ [Memory] 未检测到上下文记忆，使用默认配置")
 
             # 执行任务
             result = execute_task(task_type, payload, task_id, steps, events, context)

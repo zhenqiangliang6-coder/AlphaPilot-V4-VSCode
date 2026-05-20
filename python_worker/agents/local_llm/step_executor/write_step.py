@@ -34,6 +34,54 @@ except ImportError as e:
         return {}
 
 
+def extract_ascii_tree(text: str) -> str:
+    """
+    从 LLM 输出中提取 ASCII 文件树
+    
+    参数:
+        text: LLM 完整输出文本
+    
+    返回:
+        str: ASCII 文件树字符串，如果未找到则返回空字符串
+    
+    示例:
+        >>> extract_ascii_tree("### FILE_TREE\nproject/\n├── file.py")
+        "project/\n├── file.py"
+    """
+    if not text:
+        return ""
+
+    # 查找 ### FILE_TREE 分隔符
+    pattern = r'###\s*FILE_TREE\s*\n(.*?)(?:\n###|\Z)'
+    match = re.search(pattern, text, re.DOTALL)
+    
+    if match:
+        tree_content = match.group(1).strip()
+        print(f"[INFO] 成功提取 ASCII 文件树 ({len(tree_content)} 字符)")
+        return tree_content
+    
+    # 降级方案：尝试匹配常见的 ASCII 树格式（如果没有显式标记）
+    tree_pattern = re.compile(
+        r"(?:^|\n)"          # 开始或换行
+        r"("                 # 捕获组
+        r"(?:[\w./\-]+\s*\n)??" # 可选的根目录名称
+        r"(?:(?:[│├└─\s]+[\w.\-]+\s*\n?)+)" # 树状结构主体
+        r")",                # 结束捕获组
+        re.MULTILINE
+    )
+    
+    match = tree_pattern.search(text)
+    if match:
+        tree_content = match.group(1).strip()
+        # 简单验证：至少包含一个树状连接符
+        if any(char in tree_content for char in ['├', '└', '│']):
+            print(f"[INFO] 成功提取 ASCII 文件树 (自动检测格式, {len(tree_content)} 字符)")
+            return tree_content
+
+    print("[WARN] 未找到 ASCII 文件树")
+    return ""
+
+
 def parse_nl_fileops_enhanced(text: str) -> list:
     """增强版自然语言多文件解析器（模块级别函数）。
 
@@ -274,6 +322,24 @@ def run_write_step(step, context, events, task_id=None):
         if file_ops:
             context["final_file_ops"] = file_ops
             print(f"[SUCCESS] write_step 生成 {len(file_ops)} 个 FileOps")
+            
+            # ⭐ v3.2.3 新增：解析并展示 ASCII 文件树
+            ascii_tree = extract_ascii_tree(result)
+            if ascii_tree:
+                print("\n 生成的文件结构:")
+                print(ascii_tree)
+                print()
+                
+                # 将 ASCII 树添加到 events 中，供前端展示
+                if task_id:
+                    try:
+                        event = create_event(
+                            "file_tree",
+                            {"ascii_tree": ascii_tree, "file_count": len(file_ops)}
+                        )
+                        events.append(event)
+                    except Exception as e:
+                        print(f"[WARN] 创建 file_tree 事件失败: {e}")
         else:
             # 降级：单文件模式
             if code:
@@ -410,6 +476,24 @@ def run_write_step(step, context, events, task_id=None):
         if file_ops:
             context["final_file_ops"] = file_ops
             print(f"[SUCCESS] write_step 生成 {len(file_ops)} 个 FileOps")
+            
+            # ⭐ v3.2.3 新增：解析并展示 ASCII 文件树
+            ascii_tree = extract_ascii_tree(result)
+            if ascii_tree:
+                print("\n 生成的文件结构:")
+                print(ascii_tree)
+                print()
+                
+                # 将 ASCII 树添加到 events 中，供前端展示
+                if task_id:
+                    try:
+                        event = create_event(
+                            "file_tree",
+                            {"ascii_tree": ascii_tree, "file_count": len(file_ops)}
+                        )
+                        events.append(event)
+                    except Exception as e:
+                        print(f"[WARN] 创建 file_tree 事件失败: {e}")
             
             if task_id:
                 event = create_event(
