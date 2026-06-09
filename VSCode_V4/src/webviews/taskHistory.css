@@ -1,0 +1,255 @@
+/* src/webviews/taskHistory.css */
+
+:root {
+    --color-success: #4ec9b0;
+    --color-pending: #dcdcaa;
+    --color-error: #f48771;
+    --color-text-secondary: #858585;
+    --color-border: var(--vscode-editorGroup-border);
+    --color-hover: var(--vscode-list-hoverBackground);
+}
+
+body {
+    margin: 0;
+    padding: 0;
+    font-family: var(--vscode-font-family);
+    color: var(--vscode-foreground);
+    background-color: var(--vscode-editor-background);
+}
+
+#root {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    overflow: hidden;
+}
+
+.header {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--color-border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background-color: var(--vscode-editorGroupHeader-tabsBackground);
+}
+
+.title {
+    font-weight: 600;
+    font-size: 13px;
+}
+
+.controls {
+    display: flex;
+    gap: 6px;
+}
+
+.icon-btn {
+    padding: 4px 8px;
+    background-color: var(--vscode-button-secondaryBackground);
+    color: var(--vscode-button-secondaryForeground);
+    border: none;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 12px;
+    transition: background-color 200ms;
+}
+
+.icon-btn:hover {
+    background-color: var(--vscode-button-secondaryHoverBackground);
+}
+
+.icon-btn.danger:hover {
+    background-color: #d13438;
+}
+
+.search-box {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--color-border);
+}
+
+.search-box input {
+    width: 100%;
+    padding: 6px 8px;
+    background-color: var(--vscode-input-background);
+    color: var(--vscode-input-foreground);
+    border: 1px solid var(--vscode-input-border);
+    border-radius: 3px;
+    font-size: 12px;
+    box-sizing: border-box;
+}
+
+.search-box input:focus {
+    outline: none;
+    border-color: var(--vscode-focusBorder);
+}
+
+.content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px;
+}
+
+.history-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.history-item {
+    padding: 10px;
+    background-color: var(--vscode-list-background);
+    border: 1px solid var(--color-border);
+    border-left: 3px solid var(--color-pending);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 200ms;
+}
+
+.history-item:hover {
+    background-color: var(--color-hover);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.history-item.status-done {
+    border-left-color: var(--color-success);
+}
+
+.history-item.status-error {
+    border-left-color: var(--color-error);
+}
+
+.item-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 8px;
+}
+
+.item-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+}
+
+.status-icon {
+    font-size: 16px;
+    font-weight: bold;
+    min-width: 20px;
+}
+
+.history-item.status-done .status-icon {
+    color: var(--color-success);
+}
+
+.history-item.status-error .status-icon {
+    color: var(--color-error);
+}
+
+.history-item.status-pending .status-icon {
+    color: var(--color-pending);
+    animation: bounce 1s infinite;
+}
+
+@keyframes bounce {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+.item-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.item-title {
+    font-size: 12px;
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-bottom: 4px;
+}
+
+.item-type {
+    font-size: 11px;
+    color: var(--color-text-secondary);
+}
+
+.item-time {
+    font-size: 11px;
+    color: var(--color-text-secondary);
+    margin-left: 8px;
+    white-space: nowrap;
+}
+
+.item-actions {
+    display: flex;
+    gap: 6px;
+    justify-content: flex-end;
+}
+
+.action-btn {
+    padding: 3px 8px;
+    background-color: var(--vscode-button-secondaryBackground);
+    color: var(--vscode-button-secondaryForeground);
+    border: none;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 11px;
+    transition: background-color 150ms;
+}
+
+.action-btn:hover {
+    background-color: var(--vscode-button-secondaryHoverBackground);
+}
+
+.action-btn.secondary {
+    background-color: transparent;
+    border: 1px solid var(--color-border);
+}
+
+.action-btn.secondary:hover {
+    background-color: var(--color-hover);
+}
+
+.action-btn.danger-action:hover {
+    background-color: #d13438;
+}
+
+.empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 300px;
+    color: var(--color-text-secondary);
+}
+
+.empty-icon {
+    font-size: 48px;
+    margin-bottom: 12px;
+    opacity: 0.5;
+}
+
+.empty-text {
+    font-size: 13px;
+    text-align: center;
+}
+
+/* 纯粹的滚动条样式 */
+.content::-webkit-scrollbar {
+    width: 8px;
+}
+
+.content::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.content::-webkit-scrollbar-thumb {
+    background-color: var(--vscode-scrollbarSlider-background);
+    border-radius: 4px;
+}
+
+.content::-webkit-scrollbar-thumb:hover {
+    background-color: var(--vscode-scrollbarSlider-hoverBackground);
+}
