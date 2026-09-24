@@ -2,6 +2,7 @@
 # deepseek_api.py
 # ---------------------------------------------------------
 # DeepSeek API 调用封装（火山引擎 Ark 平台）
+# - ⭐ v2.7 超时时间调整到 300 秒（LLM 处理较慢）
 # ---------------------------------------------------------
 
 import requests
@@ -55,7 +56,7 @@ def call_deepseek(prompt: str, stream: bool = False) -> str:
     if stream:
         # 流式模式
         full_text = ""
-        with requests.post(URL, headers=headers, json=payload, stream=True, timeout=120) as r:
+        with requests.post(URL, headers=headers, json=payload, stream=True, timeout=300) as r:
             r.raise_for_status()
             for line in r.iter_lines():
                 if not line:
@@ -82,7 +83,7 @@ def call_deepseek(prompt: str, stream: bool = False) -> str:
         return full_text
     else:
         # 非流式模式
-        r = requests.post(URL, headers=headers, json=payload, timeout=120)
+        r = requests.post(URL, headers=headers, json=payload, timeout=300)
         r.raise_for_status()
         data = r.json()
         
@@ -133,7 +134,7 @@ def call_deepseek_stream(prompt: str):
         ]
     }
     
-    with requests.post(URL, headers=headers, json=payload, stream=True, timeout=120) as r:
+    with requests.post(URL, headers=headers, json=payload, stream=True, timeout=300) as r:
         r.raise_for_status()
         for line in r.iter_lines():
             if not line:

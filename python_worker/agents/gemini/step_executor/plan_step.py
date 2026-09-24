@@ -1,20 +1,37 @@
 # -*- coding: utf-8 -*-
 # step_executor/plan_step.py
 # ---------------------------------------------------------
-# plan 步骤：生成代码结构规划
+# plan 步骤：生成代码结构规划（Gemini 版 — 流式输出 + 人格配置）
 # ---------------------------------------------------------
 
-from step_executor.qwen_api import call_qwen
-from step_executor.prompts import plan_prompt
-from worker_config import create_event
+from ..gemini_api import call_gemini, call_gemini_stream, call_gemini_with_persona
+from .prompts import plan_prompt
+from ....worker_config import create_event, stream_chunk, stream_start, stream_end
 
 
-def run_plan_step(step, context, events):
+def run_plan_step(step, context, events, task_id=None):
     """
-    plan 步骤：
+    plan 步骤（Gemini 版）：
     - 输入：analyze 步骤的分析结果
     - 输出：代码结构规划（自然语言 + 伪代码）
     """
+
+    # ===== 启动流式输出 =====
+    if task_id:
+        try:
+            stream_start(task_id, "📋 Gemini 正在制定执行计划...", phase="plan")
+        except Exception as e:
+            print(f"[WARN] stream_start 失败: {e}")
+
+    # ===== 获取人格配置 =====
+    persona_config = None
+    try:
+        meta = context.get("meta", {})
+        persona_type = meta.get("persona", "engineer")
+        from ..personas import get_persona_config
+        persona_config = get_persona_config(persona_type)
+    except Exception as e:
+        print(f"[WARN] 获取人格配置失败: {e}")
 
     # 1) 获取 analyze 步骤的输出
     analyze_outputs = [
@@ -29,12 +46,27 @@ def run_plan_step(step, context, events):
 
     analysis = analyze_outputs[-1]
 
-    # 2) 调用 LLM 生成规划
+    # 2) 调用 LLM 生成规划（流式 + 人格）
+    result = ""
     try:
-        result = call_qwen(plan_prompt(analysis))
+        prompt = plan_prompt(analysis)
+        
+        if task_id:
+            if persona_config:
+                for chunk in call_gemini_with_persona(prompt, persona_config, use_stream=True):
+                    result += chunk
+                    stream_chunk(task_id, chunk, phase="plan", channel="reasoning")
+            else:
+                for chunk in call_gemini_stream(prompt):
+                    result += chunk
+                    stream_chunk(task_id, chunk, phase="plan", channel="reasoning")
+        else:
+            if persona_config:
+                result = call_gemini_with_persona(prompt, persona_config, use_stream=False)
+            else:
+                result = call_gemini(prompt)
     except Exception as e:
-        step["output"] = {"text": f"plan：LLM 调用失败：{e}"}
-        return
+        result = f"plan：LLM 调用失败：{e}"
 
     # 3) 写入输出
     step["output"] = {"text": result}
@@ -49,3 +81,10 @@ def run_plan_step(step, context, events):
     events.append(create_event("plan_output", {
         "plan": result
     }))
+
+    # ⭐ 结束流式输出
+    if task_id:
+        try:
+            stream_end(task_id)
+        except Exception as e:
+            print(f"[WARN] stream_end 失败: {e}")

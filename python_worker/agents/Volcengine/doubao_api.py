@@ -4,6 +4,7 @@
 # 火山引擎豆包大模型 API 调用封装
 # - 支持多模态输入（图片 + 文本）
 # - Responses API 格式
+# - ⭐ v2.7 超时时间调整到 300 秒（LLM 处理较慢）
 # ---------------------------------------------------------
 
 import requests
@@ -101,7 +102,7 @@ def call_doubao(prompt: str, image_url: str = None) -> str:
     
     try:
         # 发送请求
-        response = session.post(BASE_URL, headers=headers, json=payload, timeout=120)
+        response = session.post(BASE_URL, headers=headers, json=payload, timeout=300)
         response.raise_for_status()
         
         # 解析响应
@@ -198,7 +199,7 @@ def call_doubao_stream(prompt: str, image_url: str = None):
     session = _create_session_with_retry()
     
     try:
-        with session.post(BASE_URL, headers=headers, json=payload, stream=True, timeout=120) as response:
+        with session.post(BASE_URL, headers=headers, json=payload, stream=True, timeout=300) as response:
             response.raise_for_status()
             
             for line in response.iter_lines():

@@ -6,6 +6,7 @@
 # - Persona Engine：执行链人格（engineer/creator/conversational）
 # - Execution Chain：analyze → plan → write → refine → test → fix → doc → docstring → profile
 # - FileOps：多文件协议 v3.0（FILE/TEST/DOC/META/DEPENDS）
+# - ⭐ Memory Integration：记忆中枢集成（任务前注入上下文，任务后保存洞察）
 # - 与现有 step_executor 完全兼容（最小侵入升级）
 # ---------------------------------------------------------
 
@@ -29,6 +30,18 @@ from ...intent_router import IntentRouter
 from .step_executor import execute_step
 from .personas import get_persona_config
 from ...TaskModel_v2 import TaskModel
+
+# ⭐ 记忆集成层（延迟导入，避免循环依赖）
+try:
+    from ...memory_integration import (
+        build_memory_context,
+        enhance_prompt_with_memory,
+        save_task_memories
+    )
+    MEMORY_ENABLED = True
+except ImportError as e:
+    print(f"[WARN] 记忆集成层导入失败: {e}")
+    MEMORY_ENABLED = False
 
 
 # =========================================================
@@ -123,6 +136,7 @@ def execute_task(task_type: str, payload: dict, task_id: str, steps: list, event
     Qwen Worker v3.0 统一入口：
     - 只处理 qwen_generate 任务
     - Intent Router + Persona + Execution Chain
+    - ⭐ Memory Integration：任务前注入记忆上下文
     - 多步骤执行 + FileOps 全链路
     """
     if task_type != "qwen_generate":
@@ -131,6 +145,21 @@ def execute_task(task_type: str, payload: dict, task_id: str, steps: list, event
     prompt = payload.get("prompt", "")
     if not prompt:
         raise ValueError("prompt 不能为空")
+
+    # ⭐ 记忆集成：任务开始前构建记忆上下文
+    user_id = payload.get("user_id", "default_user")
+    memory_ctx = None
+    original_prompt = prompt
+    
+    if MEMORY_ENABLED:
+        try:
+            memory_ctx = build_memory_context(user_id, task_id, prompt)
+            if memory_ctx.has_memory:
+                # 增强提示词
+                prompt = enhance_prompt_with_memory(prompt, memory_ctx)
+                print(f"\n🧠 [MEMORY] 已为任务 {task_id} 注入记忆上下文")
+        except Exception as e:
+            print(f"\n⚠️ [MEMORY] 记忆注入失败，继续执行: {e}")
 
     # 1) 意图识别 + 人格选择
     intent, persona_type, _ = IntentRouter.detect_intent(prompt)
@@ -145,12 +174,15 @@ def execute_task(task_type: str, payload: dict, task_id: str, steps: list, event
         "persona": persona_type,
         "persona_config": persona_config,
         "execution_chain": execution_chain,
+        "has_memory": memory_ctx.has_memory if memory_ctx else False,  # ⭐ 记录是否有记忆注入
     }
 
     print("\n🧠 Qwen Worker v3.0 决策：")
     print(f"  意图: {intent}")
     print(f"  人格: {persona_config['name']} ({persona_config['icon']})")
     print(f"  执行链: {' → '.join(execution_chain)}")
+    if memory_ctx and memory_ctx.has_memory:
+        print(f"  🧠 [MEMORY] 已注入记忆上下文 ({len(memory_ctx.memory_context)} 字符)")
 
     # 3) 如果外部未传入 steps，则根据执行链动态生成
     if not steps:
@@ -202,9 +234,17 @@ def main_loop():
     print(f"📡 Qwen Worker v3.0 监听队列: {queue_name}")
 
     while True:
+        # ⭐ 初始化变量，避免异常处理时未定义
+        task_id = None
+        task_type = None
+        started_at = None
+        retry_count = 0
+        steps = []
+        events = []
+        context = create_empty_context()
+        result_key = None
+        
         try:
-            result_key = None
-
             task_json = redis.rpop(queue_name)
             if not task_json:
                 time.sleep(2)
@@ -241,6 +281,30 @@ def main_loop():
 
             # 执行任务
             result = execute_task(task_type, payload, task_id, steps, events, context)
+
+            # ⭐ 记忆集成：任务完成后保存洞察
+            if MEMORY_ENABLED:
+                try:
+                    # 构建任务结果摘要
+                    task_result = {
+                        "status": "success",
+                        "content": result[:500] if result else "",  # 取前500字符
+                        "steps": steps
+                    }
+                    
+                    # 保存记忆
+                    save_task_memories(
+                        user_id=user_id,
+                        task_id=task_id,
+                        result=task_result,
+                        context={
+                            "preferred_language": payload.get("language", "Python"),
+                            "task_type": task_type,
+                            "intent": context.get("meta", {}).get("intent", "unknown")
+                        }
+                    )
+                except Exception as e:
+                    print(f"\n⚠️ [MEMORY] 保存任务记忆失败: {e}")
 
             # 写回成功结果
             result_key = f"task_result:{task_id}"

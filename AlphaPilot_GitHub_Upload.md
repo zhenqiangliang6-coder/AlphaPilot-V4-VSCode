@@ -195,3 +195,121 @@ SSH 通道会保证：
 
 🔹 你换电脑时
 只需要重新生成 SSH key 并加入 GitHub。
+
+专业、清晰、可复用、适合放进你项目文档的 Git 回滚操作手册。
+这是你刚才成功回到纯 V3（d5c943a）的完整流程，已经整理成正式文档格式。
+
+📘 Git 回滚操作手册（适用于恢复历史版本 / 回到 V3）
+📌 适用场景
+当你需要：
+
+回到某个历史版本（如 V4 出现前的纯 V3）
+
+撤销错误修改
+
+恢复到稳定版本
+
+查看项目的完整历史时间线
+
+本手册提供完整、可复用的 Git 回滚流程。
+
+1️⃣ 查看完整提交历史（找到目标版本）
+使用以下命令查看所有 commit（包含分支、标签、HEAD 指向）：
+
+Code
+git log --oneline --graph --decorate --all
+示例输出（关键部分）：
+
+Code
+* 964f8d0 (HEAD -> main, origin/main) Initial commit for VSCode V4
+* ac58d8d 描述V3.5+ UI 测试
+* d5c943a 修改4B模型正确运行
+* 04990b9 描述local_v3修改
+* cec895c 你的提交信息
+* 189564d 初始化项目：添加 .gitignore 并提交全部文件
+在这里，我们选择回滚到：
+
+Code
+d5c943a 修改4B模型正确运行
+这是纯 V3 的黄金版本。
+
+2️⃣ 尝试切换到目标版本（可能失败）
+Code
+git checkout d5c943a
+如果出现以下错误：
+
+Code
+error: Your local changes to the following files would be overwritten by checkout:
+...
+Please commit your changes or stash them before you switch branches.
+说明当前目录有未提交修改，需要先处理。
+
+3️⃣ 丢弃所有本地修改（恢复干净状态）
+如果你确认当前修改不需要保留（如 V4 残留文件），执行：
+
+恢复所有文件到最新提交状态
+Code
+git restore .
+强制丢弃所有修改
+Code
+git reset --hard
+输出示例：
+
+Code
+HEAD is now at 964f8d0 Initial commit for VSCode V4
+表示当前工作区已干净，可以安全切换版本。
+
+4️⃣ 切换到目标历史版本（成功）
+Code
+git checkout d5c943a
+成功后会看到：
+
+Code
+HEAD is now at d5c943a 修改4B模型正确运行
+并提示：
+
+Code
+You are in 'detached HEAD' state.
+这表示你已经成功回到历史版本（纯 V3）。
+
+5️⃣（可选）为历史版本创建一个新分支（推荐）
+为了长期保存纯 V3，建议创建一个新分支：
+
+Code
+git switch -c v3-clean
+以后随时切换：
+
+Code
+git switch v3-clean
+📌 完整命令清单（可直接复制）
+Code
+git log --oneline --graph --decorate --all
+
+git checkout d5c943a
+# 如果报错，执行：
+git restore .
+git reset --hard
+
+git checkout d5c943a
+
+# 可选：创建纯 V3 分支
+git switch -c v3-clean
+🎉 最终效果
+执行完以上步骤后，你将成功：
+
+回到 V4 出现前的纯 V3
+
+清除所有 V4 残留
+
+恢复到稳定、干净、可运行的版本
+
+保留完整历史，不破坏 main 分支
+
+如果你愿意，我可以继续帮你写：
+
+Git 分支管理最佳实践（V3 / V4 并行开发）
+
+如何把 v3-clean 推送到 GitHub 保存
+
+如何从 V3 再升级到 V4（安全路线）
+

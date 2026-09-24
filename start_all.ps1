@@ -56,6 +56,109 @@ function Get-PythonVenvPath {
 }
 
 # -------------------------------
+# ⭐ 0. 启动记忆中枢（Docker PostgreSQL + pgvector）
+# -------------------------------
+Write-Host "🧠 启动 AlphaPilot 记忆中枢..." -ForegroundColor Magenta
+
+$memoryDbPort = 5432
+$containerName = "alphapilot-memory-hub"
+
+# 检查 Docker 是否运行
+$dockerRunning = $false
+try {
+    $dockerInfo = docker info 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        $dockerRunning = $true
+        Write-Host "   ✅ Docker 服务正常" -ForegroundColor Green
+    }
+} catch {
+    Write-Host "   ⚠️ Docker 未运行，跳过记忆中枢启动" -ForegroundColor Yellow
+}
+
+if ($dockerRunning) {
+    # 检查容器是否已存在
+    $existingContainer = docker ps -a --filter "name=$containerName" --format "{{.Names}}" 2>$null
+    
+    if ($existingContainer -eq $containerName) {
+        # 检查容器是否正在运行
+        $runningContainer = docker ps --filter "name=$containerName" --format "{{.Names}}" 2>$null
+        if ($runningContainer -eq $containerName) {
+            Write-Host "   ✅ 记忆中枢已在运行" -ForegroundColor Green
+        } else {
+            Write-Host "   🔄 启动已存在的记忆中枢容器..." -ForegroundColor Yellow
+            docker start $containerName | Out-Null
+            Start-Sleep -Seconds 3
+        }
+    } else {
+        # 启动新的容器
+        Write-Host "   🐳 启动 PostgreSQL + pgvector 容器..." -ForegroundColor Cyan
+        
+        # 查找 docker-compose.yml 文件
+        $dockerComposePath = Join-Path $PSScriptRoot "..\docker-compose.yml"
+        if (-not (Test-Path $dockerComposePath)) {
+            $dockerComposePath = Join-Path $PSScriptRoot "docker-compose.yml"
+        }
+        
+        if (Test-Path $dockerComposePath) {
+            # 使用 docker-compose 启动
+            docker-compose -f $dockerComposePath up -d | Out-Null
+            Write-Host "   🔄 等待数据库就绪..." -ForegroundColor Cyan
+            Start-Sleep -Seconds 5
+            
+            # 验证是否启动成功
+            $healthCheck = docker inspect --format "{{.State.Health.Status}}" $containerName 2>$null
+            if ($healthCheck -eq "healthy") {
+                Write-Host "   ✅ 记忆中枢启动成功！" -ForegroundColor Green
+            } else {
+                Write-Host "   ⚠️ 记忆中枢可能仍在启动中，请手动检查" -ForegroundColor Yellow
+            }
+        } else {
+            Write-Host "   ❌ 未找到 docker-compose.yml 文件" -ForegroundColor Red
+        }
+    }
+    
+    # ⭐ 阶段 2：即时更新（启动时维护记忆）
+    Write-Host "   🔄 执行记忆维护（衰减、剪枝、合并）..." -ForegroundColor Cyan
+    
+    $pythonExe = Get-PythonVenvPath
+    $memoryMaintenanceScript = @"
+import sys
+sys.path.insert(0, '$PSScriptRoot')
+try:
+    from python_worker.memory_service import get_memory_service
+    service = get_memory_service()
+    
+    # 1. 激活度衰减（模拟遗忘曲线）
+    print("   - 执行激活度衰减...")
+    service.decay_activation_scores()
+    
+    # 2. 自动剪枝（清理无用记忆）
+    print("   - 执行记忆剪枝...")
+    service.prune_memories()
+    
+    print("   ✅ 记忆维护完成")
+    service.close()
+except Exception as e:
+    print(f"   ⚠️ 记忆维护失败: {e}")
+"@
+    
+    try {
+        # 执行记忆维护脚本
+        $tempScriptPath = Join-Path $env:TEMP "alphapilot_memory_maintenance.py"
+        $memoryMaintenanceScript | Out-File -FilePath $tempScriptPath -Encoding UTF8 -Force
+        
+        & $pythonExe $tempScriptPath 2>&1 | Out-Null
+        
+        Remove-Item $tempScriptPath -Force -ErrorAction SilentlyContinue
+        Write-Host "   ✅ 记忆维护完成" -ForegroundColor Green
+    } catch {
+        Write-Host "   ⚠️ 记忆维护失败，将在下次启动时重试" -ForegroundColor Yellow
+    }
+}
+
+Write-Host ""
+
+# -------------------------------
 # 1. 检查 Node API
 # -------------------------------
 Write-Host "1️⃣ 检查 Node API..." -ForegroundColor Yellow
@@ -88,7 +191,41 @@ if (Test-PortInUse -Port $nodeApiPort) {
 }
 
 # -------------------------------
-# 2. 启动 Workers
+# 2. 启动 AlphaPilot International Proxy
+# -------------------------------
+Write-Host ""
+Write-Host "1.5️⃣ 启动 AlphaPilot International Proxy..." -ForegroundColor Yellow
+
+$proxyPort = 8000
+$proxyPath = "d:\alphapilot-international-proxy"
+
+if (Test-PortInUse -Port $proxyPort) {
+    Write-Host "   ✅ AlphaPilot Proxy 已在运行 (端口 $proxyPort)" -ForegroundColor Green
+} else {
+    Write-Host "   ⚠️ AlphaPilot Proxy 未运行，正在启动..." -ForegroundColor Yellow
+    
+    # 检查代理目录是否存在
+    if (Test-Path $proxyPath) {
+        $shellCommand = if (Get-Command pwsh -ErrorAction SilentlyContinue) { "pwsh" } else { "powershell" }
+        
+        Start-Process $shellCommand -ArgumentList "-NoExit", "-Command", "cd '$proxyPath'; uvicorn main:app --host 0.0.0.0 --port 8000" -WindowStyle Normal
+        Write-Host "   🔄 等待 AlphaPilot Proxy 启动..." -ForegroundColor Cyan
+        Start-Sleep -Seconds 3
+        
+        # 验证是否启动成功
+        if (Test-PortInUse -Port $proxyPort) {
+            Write-Host "   ✅ AlphaPilot Proxy 启动成功" -ForegroundColor Green
+        } else {
+            Write-Host "   ⚠️ AlphaPilot Proxy 可能仍在启动中，请手动检查" -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "   ❌ 代理目录不存在: $proxyPath" -ForegroundColor Red
+        Write-Host "   💡 请先克隆 AlphaPilot Proxy 项目到该目录" -ForegroundColor Yellow
+    }
+}
+
+# -------------------------------
+# 3. 启动 Workers
 # -------------------------------
 Write-Host ""
 Write-Host "2️⃣ 启动 Workers..." -ForegroundColor Yellow
@@ -100,6 +237,7 @@ Write-Host "   🐍 Python: $pythonExe" -ForegroundColor Cyan
 # Worker 配置（v3.0 流式输出版）
 $workers = @(
     @{Name="Qwen"; Script="python_worker.agents.qwen.qwen_worker_v2"; EnvId="qwen-worker-1"},
+    @{Name="Gemini"; Script="python_worker.agents.gemini.gemini_worker_v2"; EnvId="gemini-worker-1"},
     @{Name="DeepSeek"; Script="python_worker.agents.deepeek.deepseek_worker_v3"; EnvId="deepseek-worker-1"},
     @{Name="Doubao"; Script="python_worker.agents.Volcengine.doubao_worker_v3"; EnvId="doubao-worker-1"},
     @{Name="Local LLM"; Script="python_worker.agents.local_llm.local_worker_v3"; EnvId="local-worker-1"}
@@ -129,7 +267,7 @@ foreach ($worker in $workers) {
 }
 
 # -------------------------------
-# 3. 完成
+# 4. 完成
 # -------------------------------
 Write-Host ""
 Write-Host "✅ 所有服务已启动!" -ForegroundColor Green
@@ -147,8 +285,11 @@ Write-Host ""
 
 # 显示服务状态摘要
 Write-Host "📊 服务状态摘要:" -ForegroundColor Magenta
+Write-Host "   🧠 记忆中枢: $(if ($dockerRunning -and (docker ps --filter "name=$containerName" --format "{{.Names}}" 2>$null) -eq $containerName) { '✅ 运行中' } else { '❌ 未运行' })" -ForegroundColor White
 Write-Host "   Node API: $(if (Test-PortInUse -Port 3000) { '✅ 运行中' } else { '❌ 未运行' })" -ForegroundColor White
+Write-Host "   AlphaPilot Proxy: $(if (Test-PortInUse -Port 8000) { '✅ 运行中' } else { '❌ 未运行' })" -ForegroundColor White
 Write-Host "   Qwen Worker: ✅ 已启动 (新窗口)" -ForegroundColor White
+Write-Host "   Gemini Worker: ✅ 已启动 (新窗口)" -ForegroundColor White
 Write-Host "   DeepSeek Worker: ✅ 已启动 (新窗口)" -ForegroundColor White
 Write-Host "   Doubao Worker: ✅ 已启动 (新窗口)" -ForegroundColor White
 Write-Host "   Local LLM Worker: ✅ 已启动 (新窗口)" -ForegroundColor White

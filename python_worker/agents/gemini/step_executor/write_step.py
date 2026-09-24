@@ -1,21 +1,38 @@
 # -*- coding: utf-8 -*-
 # step_executor/write_step.py
 # ---------------------------------------------------------
-# write 步骤：根据 plan 生成代码
+# write 步骤：根据 plan 生成代码（Gemini 版 — 流式输出 + 人格配置）
 # ---------------------------------------------------------
 
-from step_executor.qwen_api import call_qwen
-from step_executor.utils import extract_code
-from step_executor.prompts import write_prompt
-from worker_config import create_event
+from ..gemini_api import call_gemini, call_gemini_stream, call_gemini_with_persona
+from .utils import extract_code
+from .prompts import write_prompt
+from ....worker_config import create_event, stream_chunk, stream_start, stream_end
 
 
-def run_write_step(step, context, events):
+def run_write_step(step, context, events, task_id=None):
     """
-    write 步骤：
+    write 步骤（Gemini 版）：
     - 输入：plan 步骤的规划
     - 输出：生成的 Python 代码
     """
+
+    # ===== 启动流式输出 =====
+    if task_id:
+        try:
+            stream_start(task_id, "✍️ Gemini 正在生成代码...", phase="write")
+        except Exception as e:
+            print(f"[WARN] stream_start 失败: {e}")
+
+    # ===== 获取人格配置 =====
+    persona_config = None
+    try:
+        meta = context.get("meta", {})
+        persona_type = meta.get("persona", "engineer")
+        from ..personas import get_persona_config
+        persona_config = get_persona_config(persona_type)
+    except Exception as e:
+        print(f"[WARN] 获取人格配置失败: {e}")
 
     # 1) 获取 plan 步骤的输出
     plan_outputs = [
@@ -30,12 +47,27 @@ def run_write_step(step, context, events):
 
     plan_text = plan_outputs[-1]
 
-    # 2) 调用 LLM 生成代码
+    # 2) 调用 LLM 生成代码（流式 + 人格）
+    result = ""
     try:
-        result = call_qwen(write_prompt(plan_text))
+        prompt = write_prompt(plan_text)
+        
+        if task_id:
+            if persona_config:
+                for chunk in call_gemini_with_persona(prompt, persona_config, use_stream=True):
+                    result += chunk
+                    stream_chunk(task_id, chunk, phase="write", channel="code")
+            else:
+                for chunk in call_gemini_stream(prompt):
+                    result += chunk
+                    stream_chunk(task_id, chunk, phase="write", channel="code")
+        else:
+            if persona_config:
+                result = call_gemini_with_persona(prompt, persona_config, use_stream=False)
+            else:
+                result = call_gemini(prompt)
     except Exception as e:
-        step["output"] = {"text": f"write：LLM 调用失败：{e}"}
-        return
+        result = f"write：LLM 调用失败：{e}"
 
     # 3) 提取代码块
     code = extract_code(result)
@@ -58,3 +90,10 @@ def run_write_step(step, context, events):
         "text": result,
         "code": code
     }))
+
+    # ⭐ 结束流式输出
+    if task_id:
+        try:
+            stream_end(task_id)
+        except Exception as e:
+            print(f"[WARN] stream_end 失败: {e}")

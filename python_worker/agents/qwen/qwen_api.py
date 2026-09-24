@@ -3,6 +3,7 @@
 # ---------------------------------------------------------
 # Qwen API 调用封装（支持流式输出 + 人格配置）
 # - 保持原有配置（已验证稳定可用）
+# - ⭐ v2.7 超时时间调整到 300 秒（LLM 处理较慢）
 # ---------------------------------------------------------
 
 import requests
@@ -36,7 +37,7 @@ def call_qwen(prompt: str) -> str:
         "input": {"prompt": prompt}
     }
     
-    r = requests.post(url, headers=headers, json=body, timeout=30)
+    r = requests.post(url, headers=headers, json=body, timeout=300)
     r.raise_for_status()
     data = r.json()
     return data["output"]["text"]
@@ -79,7 +80,7 @@ def call_qwen_stream(prompt: str) -> Generator[str, None, None]:
             url, 
             headers=headers, 
             json=body, 
-            timeout=60,
+            timeout=300,
             stream=True
         )
         response.raise_for_status()
@@ -171,7 +172,7 @@ def _call_qwen_blocking_internal(prompt: str) -> str:
     }
     
     try:
-        r = requests.post(url, headers=headers, json=body, timeout=60)
+        r = requests.post(url, headers=headers, json=body, timeout=300)
         r.raise_for_status()
         data = r.json()
         return data["output"]["text"]
@@ -201,7 +202,7 @@ def _call_qwen_stream_internal(prompt: str) -> Generator[str, None, None]:
             url, 
             headers=headers, 
             json=body, 
-            timeout=120,
+            timeout=300,
             stream=True
         )
         response.raise_for_status()

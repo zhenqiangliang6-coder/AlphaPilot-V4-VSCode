@@ -269,7 +269,17 @@ redis = _LazyRedis()
 
 NODE_API_URL = os.getenv("NODE_API_URL", "http://localhost:3000")
 DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 WORKER_ID = os.getenv("WORKER_ID", "qwen-worker-1")
+
+# =========================
+# ⭐ Gemini 代理配置（AlphaPilot International Proxy）
+# =========================
+GEMINI_PROXY_URL = os.getenv("GEMINI_PROXY_URL", "http://localhost:8000")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_TIMEOUT = int(os.getenv("GEMINI_TIMEOUT", "300"))
+GEMINI_MAX_OUTPUT_TOKENS = int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "8192"))
+GEMINI_TEMPERATURE = float(os.getenv("GEMINI_TEMPERATURE", "0.7"))
 
 # =========================
 # ⭐ 新增：按模型类型隔离队列（符合多智能体架构）

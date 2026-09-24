@@ -1,55 +1,49 @@
 # -*- coding: utf-8 -*-
-# agents/local_llm/local_worker_v3.py
+# gemini_worker_v2.py
 # ---------------------------------------------------------
-# Local LLM Worker v3.0
-# - 基于 Qwen Worker v3.0 架构
-# - 支持 LM Studio 本地模型
+# Gemini Worker v3.0 — 世界级执行链架构版（Google Gemini 原生接口）
+# - Intent Router：意图识别
+# - Persona Engine：执行链人格（engineer/creator/conversational）
+# - Execution Chain：analyze → plan → write → refine → test → fix → doc → docstring → profile
+# - FileOps：多文件协议 v3.0（FILE/TEST/DOC/META/DEPENDS）
+# - ⭐ Memory Integration：记忆中枢集成（任务前注入上下文，任务后保存洞察）
+# - ⭐ Google Gemini 原生接口（通过 AlphaPilot International Proxy）
+# - 与现有 step_executor 完全兼容（最小侵入升级）
 # ---------------------------------------------------------
 
-import sys
-import os
-import time
 import json
-import threading
+import time
 import traceback
 import requests
-from typing import Dict, Any, Optional
-from dataclasses import dataclass
-from typing import List, Callable
 
-# 确保 python_worker 根目录在 sys.path 中
-current_dir = os.path.dirname(os.path.abspath(__file__))
-python_worker_dir = os.path.abspath(os.path.join(current_dir, '..', '..'))
-if python_worker_dir not in sys.path:
-    sys.path.insert(0, python_worker_dir)
-
-# 绝对导入（避免相对导入超出顶层包的问题）
-from worker_config import (
-    NODE_API_URL,
+from ...worker_config import (
+    redis,
     WORKER_ID,
-    create_redis_client,
-    get_worker_queue,
+    create_empty_context,
     check_stop_flag,
     clear_stop_flag,
-    create_empty_context,
-    stream_start,
-    stream_chunk,
-    stream_end,
-    stream_error,
-    create_event,
+    get_worker_queue,
+    NODE_API_URL,
 )
-from TaskModel_v2 import TaskModel
-from agents.local_llm.personas import PERSONA_CONFIGS, get_persona_config
-from intent_router import IntentRouter
-from agents.local_llm.step_executor import execute_step
-from agents.local_llm.local_api import call_local_llm
-from file_ops import create_file_op
 
-# 为了代码能跑通，这里需要初始化 redis 客户端
-redis = create_redis_client()
+from ...planner import llm_decompose_task
+from ...intent_router import IntentRouter
+from .step_executor import execute_step
+from .personas import get_persona_config
+from ...TaskModel_v2 import TaskModel
 
-# DLQ 名称
-DLQ_NAME = "dlq"
+# ⭐ 记忆集成层（延迟导入，避免循环依赖）
+try:
+    from ...memory_integration import (
+        build_memory_context,
+        enhance_prompt_with_memory,
+        save_task_memories
+    )
+    MEMORY_ENABLED = True
+except ImportError as e:
+    print(f"[WARN] 记忆集成层导入失败: {e}")
+    MEMORY_ENABLED = False
+
 
 # =========================================================
 # v3.0：执行链定义（按意图动态裁剪）
@@ -58,157 +52,22 @@ DLQ_NAME = "dlq"
 BASE_CHAIN = ["analyze", "plan", "write", "refine", "test", "fix", "doc", "docstring", "profile"]
 
 INTENT_CHAINS = {
-    # ⭐ 完整工程链路（复杂任务）
     "write_code": ["analyze", "plan", "write", "refine", "test", "fix", "doc", "docstring"],
-    
-    # ⭐ 简化代码生成链路（简单任务，如排序函数、工具函数）
-    "simple_code": ["write", "test"],
-    
-    # 文档生成
     "generate_doc": ["analyze", "plan", "write", "doc", "docstring"],
-    
-    # 代码解释
     "explain_code": ["analyze", "plan", "doc"],
-    
-    # 创意写作
     "creative_writing": ["analyze", "plan", "write", "refine"],
-    
-    # 闲聊
     "chat": ["analyze", "write"],
 }
 
-
-# =========================================================
-# 能力层（Behavioral Ability）接口与本地适配器（占位实现）
-# =========================================================
+# ⭐ 非核心步骤（异常时降级而非中断）
+NON_CRITICAL_STEPS = {"doc", "docstring", "profile"}
 
 
-@dataclass
-class FileOp:
-    op_type: str
-    path: str
-    content: Optional[str] = None
-    mode: Optional[str] = "text"
-    meta: Dict[str, Any] = None
-
-
-@dataclass
-class FileOpsResult:
-    file_ops: List[FileOp]
-    raw_output: str
-    diagnostics: Optional[Dict[str, Any]] = None
-
-
-@dataclass
-class ValidationResult:
-    ok: bool
-    errors: List[str]
-
-
-@dataclass
-class ApplyResult:
-    success: bool
-    applied: List[FileOp]
-    failed: List[Dict[str, Any]]
-
-
-class StreamHooks:
-    def __init__(self, start: Callable = None, chunk: Callable = None, end: Callable = None, error: Callable = None):
-        self.start = start
-        self.chunk = chunk
-        self.end = end
-        self.error = error
-
-
-class LocalLLMAdapter:
-    """本地模型适配器（包装现有 call_local_llm）
-    占位实现：stream=True/False 的封装，供能力层调用。
+def build_execution_chain(intent: str) -> list:
     """
-
-    def call(self, prompt: str, stream: bool = False, task_id: str = None):
-        # 直接调用现有实现；后续可替换为更复杂的重试/超时逻辑
-        return call_local_llm(prompt, stream=stream, task_id=task_id)
-
-
-class LocalWorkerAbility:
-    """能力契约实现（行为层）。
-    目前提供简单包装，behavioural contract 在此定义，具体实现可逐步增强。
+    根据意图选择执行链；未知意图使用默认 BASE_CHAIN。
     """
-
-    def __init__(self, adapter: LocalLLMAdapter = None):
-        self.adapter = adapter or LocalLLMAdapter()
-
-    def generate_multi_file(self, prompt: str, task_id: str = None, opts: dict = None) -> FileOpsResult:
-        raw = self.adapter.call(prompt, stream=False, task_id=task_id)
-        # 占位解析：不尝试重写复杂解析逻辑，返回 raw 输出供上层或 write_step 解析
-        return FileOpsResult(file_ops=[], raw_output=raw, diagnostics={"note": "parsing deferred to write_step"})
-
-    def stream_generate(self, prompt: str, task_id: str, hooks: StreamHooks = None, opts: dict = None):
-        # 简单的流封装：调用 adapter.call(stream=True)；实际流回调由 adapter 内部触发（如果支持）
-        return self.adapter.call(prompt, stream=True, task_id=task_id)
-
-    def validate_fileops(self, fileops: List[FileOp], workspace_root: str) -> ValidationResult:
-        # 简单校验：路径安全与后缀白名单
-        errors = []
-        allowed = {".py", ".md", ".txt", ".json", ".yml", ".yaml"}
-        for f in fileops:
-            p = os.path.normpath(f.path)
-            if os.path.isabs(p) or p.startswith(".."):
-                errors.append(f"非法路径: {f.path}")
-            _, ext = os.path.splitext(p)
-            if ext and ext not in allowed:
-                errors.append(f"不允许的后缀: {f.path}")
-        return ValidationResult(ok=(len(errors) == 0), errors=errors)
-
-    def apply_fileops(self, fileops: List[FileOp], workspace_root: str, options: dict = None) -> ApplyResult:
-        applied = []
-        failed = []
-        for f in fileops:
-            try:
-                abspath = os.path.join(workspace_root, f.path)
-                dirpath = os.path.dirname(abspath)
-                if not os.path.exists(dirpath):
-                    os.makedirs(dirpath, exist_ok=True)
-                # 简单写入（覆盖）
-                with open(abspath, "w", encoding="utf-8") as fh:
-                    fh.write(f.content or "")
-                applied.append(f)
-            except Exception as e:
-                failed.append({"file": f.path, "error": str(e)})
-        return ApplyResult(success=(len(failed) == 0), applied=applied, failed=failed)
-
-# 工厂函数
-def get_local_worker_ability() -> LocalWorkerAbility:
-    return LocalWorkerAbility()
-
-
-
-def build_execution_chain(intent: str, prompt: str = None) -> list:
-    """
-    v3.2.1 修复：强制 Local Worker 只执行 write 步骤
-    
-    ⭐ 核心原则：
-    - Local Worker 能力有限，禁止复杂执行链
-    - 只执行 write，避免 test/refine/fix 导致的崩溃
-    - Qwen Worker 保持原有逻辑不变
-    """
-    
-    # ⭐ 关键修复：检测是否为 Local Worker
-    worker_id = os.environ.get("WORKER_ID", "")
-    is_local_worker = "local" in worker_id.lower() or "gemma" in worker_id.lower()
-    
-    if is_local_worker:
-        # Local Worker：只执行 write
-        print(f"\n💡 Local Worker 模式：强制使用简化执行链 [write]")
-        return ["write"]
-    
-    # Qwen Worker：保持原有逻辑
-    # ⭐ 修复：使用 BASE_CHAIN 替代未定义的 DEFAULT_ENGINEERING_STEPS
-    chain = INTENT_CHAINS.get(intent, BASE_CHAIN)
-    
-    # ⭐ 修复：移除对未定义函数 detect_simple_task 的调用
-    # 简单任务使用默认执行链
-    return chain
+    return INTENT_CHAINS.get(intent, BASE_CHAIN)
 
 
 # =========================================================
@@ -278,28 +137,41 @@ def create_steps_from_chain(execution_chain: list, prompt: str, persona: str, in
 
 def execute_task(task_type: str, payload: dict, task_id: str, steps: list, events: list, context: dict):
     """
-    Local LLM Worker v3.0 统一入口：
-    - 处理 local_generate 任务
+    Gemini Worker v3.0 统一入口：
+    - 只处理 gemini_generate 任务
     - Intent Router + Persona + Execution Chain
+    - ⭐ Memory Integration：任务前注入记忆上下文
+    - ⭐ 非核心步骤异常降级处理
     - 多步骤执行 + FileOps 全链路
-    - 支持流式输出
     """
-    
-    # ⭐ 标准任务：local_generate
-    if task_type != "local_generate":
+    if task_type != "gemini_generate":
         raise ValueError(f"不支持的任务类型：{task_type}")
 
     prompt = payload.get("prompt", "")
-    
     if not prompt:
         raise ValueError("prompt 不能为空")
+
+    # ⭐ 记忆集成：任务开始前构建记忆上下文
+    user_id = payload.get("user_id", "default_user")
+    memory_ctx = None
+    original_prompt = prompt
+    
+    if MEMORY_ENABLED:
+        try:
+            memory_ctx = build_memory_context(user_id, task_id, prompt)
+            if memory_ctx.has_memory:
+                # 增强提示词
+                prompt = enhance_prompt_with_memory(prompt, memory_ctx)
+                print(f"\n🧠 [MEMORY] 已为任务 {task_id} 注入记忆上下文")
+        except Exception as e:
+            print(f"\n⚠️ [MEMORY] 记忆注入失败，继续执行: {e}")
 
     # 1) 意图识别 + 人格选择
     intent, persona_type, _ = IntentRouter.detect_intent(prompt)
     persona_config = get_persona_config(persona_type)
 
-    # 2) 构建执行链（⭐ 传入 prompt 以支持智能简化）
-    execution_chain = build_execution_chain(intent, prompt)
+    # 2) 构建执行链
+    execution_chain = build_execution_chain(intent)
 
     # 写入 meta
     context["meta"] = {
@@ -307,21 +179,16 @@ def execute_task(task_type: str, payload: dict, task_id: str, steps: list, event
         "persona": persona_type,
         "persona_config": persona_config,
         "execution_chain": execution_chain,
+        "has_memory": memory_ctx.has_memory if memory_ctx else False,  # ⭐ 记录是否有记忆注入
+        "model": "gemini",  # ⭐ 标识模型类型
     }
-    
-    # ⭐ v3.2.2 关键修复：将用户原始 prompt 存入 context，供 write_step 使用
-    context["user_query"] = prompt
 
-    # 注入能力实例（行为契约实现），上层步骤可通过 context['_ability'] 使用
-    try:
-        context["_ability"] = get_local_worker_ability()
-    except Exception:
-        context["_ability"] = None
-
-    print("\n🧠 Local LLM Worker v3.0 决策：")
+    print("\n🧠 Gemini Worker v3.0 决策：")
     print(f"  意图: {intent}")
     print(f"  人格: {persona_config['name']} ({persona_config['icon']})")
     print(f"  执行链: {' → '.join(execution_chain)}")
+    if memory_ctx and memory_ctx.has_memory:
+        print(f"  🧠 [MEMORY] 已注入记忆上下文 ({len(memory_ctx.memory_context)} 字符)")
 
     # 3) 如果外部未传入 steps，则根据执行链动态生成
     if not steps:
@@ -330,11 +197,10 @@ def execute_task(task_type: str, payload: dict, task_id: str, steps: list, event
 
     # 4) Planner 兜底（可选）
     if not steps:
-        # TODO: 实现 LLM 任务分解
-        print("⚠️ 未实现 LLM 任务分解，跳过 Planner 步骤")
-        pass
+        plan_steps = llm_decompose_task(prompt)
+        steps.extend(plan_steps)
 
-    # 5) 逐步执行（带取消检查 + 状态管理）
+    # 5) 逐步执行（带取消检查 + 状态管理 + 非核心步骤降级）
     for step in steps:
         try:
             if check_stop_flag(task_id):
@@ -344,21 +210,26 @@ def execute_task(task_type: str, payload: dict, task_id: str, steps: list, event
 
             step["status"] = "running"
 
-            # ⭐ v3.0：如果需要自定义 API 函数，通过 context 注入
-            # Local LLM 使用 call_local_llm_wrapper 替代默认的 call_qwen
-            context["_custom_api_func"] = lambda p: call_local_llm_wrapper(p, task_id)
-
-            # ⭐ 对齐 Qwen Worker v2：直接调用 execute_step，不再传递 api_func 参数
+            # 交给通用 step_executor.execute_step
             execute_step(task_id, step, events, context)
 
-            # 清理临时注入的 api_func
-            if "_custom_api_func" in context:
-                del context["_custom_api_func"]
+            # ⭐ 检查是否为降级状态（非核心步骤）
+            if step.get("status") == "warning":
+                print(f"⚠️ 步骤 {step['type']} 已降级处理，继续执行...")
+                continue
 
             step["status"] = "completed"
 
         except Exception as step_error:
             msg = str(step_error)
+            
+            # ⭐ 非核心步骤异常降级
+            if step.get("type") in NON_CRITICAL_STEPS and "取消" not in msg:
+                print(f"⚠️ [Gemini Worker] 非核心步骤 '{step['type']}' 执行失败，降级处理: {step_error}")
+                step["status"] = "warning"
+                step["output"] = {"text": f"⚠️ {step['type']} 步骤执行失败（已降级）: {step_error}"}
+                continue
+            
             if "取消" in msg or "cancel" in msg.lower():
                 step["status"] = "failed"
                 step["output"] = {"text": "任务已被用户取消"}
@@ -372,23 +243,14 @@ def execute_task(task_type: str, payload: dict, task_id: str, steps: list, event
     return last_output.get("text", "")
 
 
-def call_local_llm_wrapper(prompt: str, task_id: str = None) -> str:
-    """
-    Local LLM API 调用包装器（支持流式输出）
-    """
-    from .local_api import call_local_llm
-    return call_local_llm(prompt, stream=True, task_id=task_id)
-
-
 # =========================================================
 # 主循环：从 Redis 取任务 → 执行 → 写回结果
 # =========================================================
 
 def main_loop():
-    dlq_key = DLQ_NAME
-    # 使用 get_worker_queue 替代 QUEUE_NAME
-    queue_name = get_worker_queue("local_generate")
-    print(f"📡 Local LLM Worker v3.0 监听队列: {queue_name}")
+    dlq_key = "dlq"
+    queue_name = get_worker_queue("gemini_generate")
+    print(f"📡 Gemini Worker v3.0 监听队列: {queue_name}")
 
     while True:
         # ⭐ 初始化变量，避免异常处理时未定义
@@ -400,6 +262,8 @@ def main_loop():
         events = []
         context = create_empty_context()
         result_key = None
+        task = None
+        user_id = "default_user"
         
         try:
             task_json = redis.rpop(queue_name)
@@ -417,9 +281,10 @@ def main_loop():
             task_id = task["task_id"]
             task_type = task.get("task_type") or task.get("type")
             payload = task["payload"]
+            user_id = payload.get("user_id", "default_user")
 
-            # 只处理 local_ 开头的任务
-            if task_type and not task_type.startswith("local_"):
+            # 只处理 gemini_generate
+            if task_type and not task_type.startswith("gemini_"):
                 redis.lpush(queue_name, task_json)
                 print(f"⚠️ 收到不匹配的任务类型: {task_type}，已放回队列")
                 time.sleep(1)
@@ -439,12 +304,29 @@ def main_loop():
             # 执行任务
             result = execute_task(task_type, payload, task_id, steps, events, context)
 
-            # write_step 负责生成并注入 final_file_ops（包含严格的自然语言解析），此处不再重复解析
-
-            # ⭐ v3.2.1 修复：清理 context 中无法序列化的对象
-            if "_ability" in context:
-                del context["_ability"]
-                print("[INFO] 已清理 context['_ability'] (LocalWorkerAbility 不可序列化)")
+            # ⭐ 记忆集成：任务完成后保存洞察
+            if MEMORY_ENABLED:
+                try:
+                    # 构建任务结果摘要
+                    task_result = {
+                        "status": "success",
+                        "content": result[:500] if result else "",  # 取前500字符
+                        "steps": steps
+                    }
+                    
+                    # 保存记忆
+                    save_task_memories(
+                        user_id=user_id,
+                        task_id=task_id,
+                        result=task_result,
+                        context={
+                            "preferred_language": payload.get("language", "Python"),
+                            "task_type": task_type,
+                            "intent": context.get("meta", {}).get("intent", "unknown")
+                        }
+                    )
+                except Exception as e:
+                    print(f"\n⚠️ [MEMORY] 保存任务记忆失败: {e}")
 
             # 写回成功结果
             result_key = f"task_result:{task_id}"
@@ -491,10 +373,6 @@ def main_loop():
 
         except Exception as e:
             is_cancelled = "取消" in str(e) or "cancel" in str(e).lower()
-
-            # ⭐ v3.2.1 修复：清理 context 中无法序列化的对象（错误分支）
-            if "_ability" in context:
-                del context["_ability"]
 
             if is_cancelled:
                 error_result = TaskModel.create_task_result_error(
@@ -579,8 +457,9 @@ def main_loop():
 
 
 if __name__ == "__main__":
-    print("\n🚀 Local LLM Worker v3.0 已启动")
+    print("\n🚀 Gemini Worker v3.0 已启动（Google Gemini 原生接口）")
     print(f"   · Worker ID: {WORKER_ID}")
     print(f"   · Node API: 已连接")
+    print(f"   · API 接口: Google Gemini 原生 (via AlphaPilot Proxy)")
     print(f"   · 正在监听任务队列...\n")
     main_loop()
