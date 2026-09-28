@@ -6,7 +6,8 @@ const models = [
   { value: 'qwen_generate', label: '通义千问 (Qwen)', desc: '快速响应' },
   { value: 'deepseek_generate', label: '深度求索 (DeepSeek)', desc: '平衡性能' },
   { value: 'doubao_generate', label: '豆包 (Doubao)', desc: '多模态支持' },
-  { value: 'local_generate', label: 'AlphaPilot (gemma LLM)', desc: '离线运行' }
+  { value: 'local_generate', label: 'AlphaPilot (gemma LLM)', desc: '离线运行' },
+  { value: 'maas_generate', label: '腾讯 MaaS (混元)', desc: '云端备用' }
 ];
 
 export const ModelSelector: React.FC = () => {

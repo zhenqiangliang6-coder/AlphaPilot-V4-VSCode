@@ -281,6 +281,7 @@ WORKER_QUEUE_MAP = {
     "deepseek": "task_queue:deepseek", 
     "doubao": "task_queue:doubao",
     "local": "task_queue:local",  # ⭐ Local LLM Worker
+    "maas": "task_queue:maas",  # ⭐ 腾讯 MaaS (TokenHub)
     # 未来扩展
     "claude": "task_queue:claude",
     "gemini": "task_queue:gemini",

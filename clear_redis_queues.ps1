@@ -37,6 +37,7 @@ $queues = @(
     "task_queue:deepseek",
     "task_queue:doubao",
     "task_queue:local",
+    "task_queue:maas",
     "task_queue:openai",
     "task_queue:claude",
     "task_queue:gemini"

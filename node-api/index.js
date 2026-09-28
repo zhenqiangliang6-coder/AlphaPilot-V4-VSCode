@@ -168,7 +168,8 @@ app.post('/task/submit', async (req, res) => {
                 "qwen_generate": "qwen-turbo",
                 "deepseek_generate": "deepseek-chat",
                 "doubao_generate": "doubao-pro",
-                "local_generate": "local-gemma4b"  // ⭐ Local LLM 模型
+                "local_generate": "local-gemma4b",  // ⭐ Local LLM 模型
+                "maas_generate": "maas-hy4-preview"  // ⭐ 腾讯 MaaS (TokenHub)
             };
             model = MODEL_TYPE_MAP[type] || "qwen-turbo";
         }
@@ -706,6 +707,7 @@ function getWorkerQueueByType(taskType) {
         "deepseek_generate": "task_queue:deepseek",
         "doubao_generate": "task_queue:doubao",
         "local_generate": "task_queue:local",  // ⭐ Local LLM Worker
+        "maas_generate": "task_queue:maas",  // ⭐ 腾讯 MaaS (TokenHub)
         "openai_generate": "task_queue:openai",
         "claude_generate": "task_queue:claude",
         "gemini_generate": "task_queue:gemini",
@@ -723,6 +725,7 @@ function getWorkerQueue(modelOrType) {
         "deepseek": "task_queue:deepseek",
         "doubao": "task_queue:doubao",
         "local": "task_queue:local",  // ⭐ Local LLM Worker
+        "maas": "task_queue:maas",  // ⭐ 腾讯 MaaS (TokenHub)
         "gpt": "task_queue:openai",
         "claude": "task_queue:claude",
         "gemini": "task_queue:gemini",
