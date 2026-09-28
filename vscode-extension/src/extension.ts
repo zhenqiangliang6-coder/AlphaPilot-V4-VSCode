@@ -149,6 +149,7 @@ export function activate(context: vscode.ExtensionContext) {
         { label: '深度求索 (DeepSeek) - 平衡性能', value: 'deepseek_generate' },
         { label: '豆包 (Doubao) - 多模态支持', value: 'doubao_generate' },
         { label: 'AlphaPilot (gemma LLM) - 离线运行', value: 'local_generate' },
+        { label: '腾讯 MaaS (混元) - 云端备用', value: 'maas_generate' },
       ];
 
       const selected = await vscode.window.showQuickPick(models, {
