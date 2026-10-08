@@ -2,6 +2,54 @@
 
 记录项目中的重要变更与里程碑，便于回溯与审计。
 
+## 2026-10-09 🎯 工业级稳定性里程碑
+
+> **"今天我们把 AlphaPilot 从能跑推到了跑不错"**
+> 
+> 今天的工作是一次系统级的"免疫系统"建设——不只是修 bug，而是让 AlphaPilot 具备了自我纠错和自我清理的能力。
+
+### 发现与诊断过程
+
+1. **端到端测试失败**：运行测试任务后，文件内容被 JSON 包裹污染（`auth.py` 里是 JSON dump、`test_api.py` 里是 `{"test_api.py": {"content": "..."}}`）
+2. **逐级排查**：Worker 生产 → Redis 存储 → Node.js 推送 → VSCode 扩展 → Node.js `/fileops/execute` → FileOpsHandler 写盘
+3. **定位根因**：管道没有 bug，但 `parse_fileops_v3` 不会检测 LLM 输出的 JSON 包裹格式，导致 JSON 协议被当成文件内容写入
+
+### 实施的四个修复（P0-P3）
+
+| 优先级 | 修复 | 影响 |
+|--------|------|------|
+| 🔴 P0 | `_unwrap_json_content()` 自动检测并提取 JSON 包裹中的纯代码 | 终结 JSON 污染文件 |
+| 🟡 P1 | `intent_router` 去 Python 化 | 解除语言绑定的第一步 |
+| 🟡 P2 | 工作区扫描扩展到 20+ 文件类型 | 为多语言项目做准备 |
+| 🟡 P3 | Redis 缓存追踪 + 自动垃圾清理 | 防止错误积累，自愈式清理 |
+
+### 关键洞察
+
+- **AlphaPilot 从 Python 起步 ≠ 只能处理 Python**：`# FILE:` 协议是语言无关的，LLM 能写任何语言。瓶颈在 prompts 设计。
+- **自清理 = 智能体的基本能力**：一个真正的 Agent 应该能清理自己的错误输出，而不是依赖人工介入。
+- **管道比想象中干净**：Worker → Redis → Node.js → VSCode 扩展 的 FileOps 链路没有 bug，污染只来自解析层。
+
+### 提交
+
+```
+f822e60 v3.2: JSON unwrap in FileOps parser, language-agnostic architecture, self-cleanup
+89a6c0d Merge conflicts resolved
+→ 推送到 GitHub main + feature/gemini-worker-and-memory-hub
+```
+
+### 文件清单
+
+| 文件 | 改动 |
+|------|------|
+| `python_worker/file_ops.py` | P0: JSON 解包; P3: 清理/追踪 |
+| `python_worker/intent_router.py` | P1: 去 Python 化 |
+| `python_worker/context_builder.py` | P2: 多文件类型扫描 |
+| `python_worker/agents/qwen/qwen_worker_v2.py` | P3: 集成自清理 |
+| `python_worker/CHANGELOG.md` | v3.3 条目 |
+| `docs/WORKLOG.md` | 本条记录 |
+
+---
+
 ## 2026-04-02
 
 - 增强 `planner` 的 JSON 修复器（`python_worker/planner.py`）
