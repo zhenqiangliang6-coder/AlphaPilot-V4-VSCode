@@ -4,6 +4,7 @@
 # Local LLM (LM Studio) API 调用封装
 # - 支持流式和非流式输出
 # - 使用 OpenAI 兼容格式 /v1/chat/completions
+# - ⭐ v2.7 超时时间调整到 300 秒（LLM 处理较慢）
 # ---------------------------------------------------------
 
 import requests
@@ -148,7 +149,7 @@ def call_local_llm(prompt: str, model: str = None, stream: bool = False, task_id
             f"💡 提示：在 LM Studio 中启动 Server 模式"
         )
     except requests.exceptions.Timeout:
-        raise TimeoutError(f"LM Studio API 调用超时（120秒）")
+        raise TimeoutError(f"LM Studio API 调用超时（{DEFAULT_TIMEOUT}秒）")
     except Exception as e:
         raise RuntimeError(f"Local LLM API 调用失败: {str(e)}")
 
@@ -175,7 +176,7 @@ def _call_streaming(url: str, headers: dict, body: dict, task_id: str) -> str:
         stream_start(task_id, title=" Local LLM 正在生成...")
         
         # 发起流式请求
-        with requests.post(url, headers=headers, json=body, stream=True, timeout=120) as response:
+        with requests.post(url, headers=headers, json=body, stream=True, timeout=300) as response:
             response.raise_for_status()
             
             # ⭐ LM Studio 使用 SSE (Server-Sent Events) 格式

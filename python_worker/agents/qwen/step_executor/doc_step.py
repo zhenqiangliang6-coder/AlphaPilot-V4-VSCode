@@ -3,13 +3,26 @@ from .utils import extract_code
 from .prompts import doc_prompt, docstring_prompt
 from ....code_executor import run_python
 from ..qwen_api import call_qwen
-from ....worker_config import create_event
+from ....worker_config import create_event, stream_start, stream_chunk, stream_end
 
 
-def run_doc_step(step, context, events):
+def run_doc_step(step, context, events, task_id=None):
     """
-    doc 步骤（工业级容错）：生成文档和 docstring
+    doc 步骤（工业级容错 + 流式输出）：生成文档和 docstring
+    
+    参数:
+        step: 步骤定义
+        context: 上下文对象
+        events: 事件列表
+        task_id: 任务 ID（可选，用于流式输出）
     """
+    
+    # ===== 第0层：启动流式输出 =====
+    if task_id:
+        try:
+            stream_start(task_id, "📝 正在生成文档...", phase="doc")
+        except Exception as e:
+            print(f"[WARN] stream_start 失败: {e}")
 
     # ===== 第1层防御：获取并验证 write 输出 =====
     try:
@@ -20,13 +33,21 @@ def run_doc_step(step, context, events):
         ]
         
         if not write_outputs:
-            step["output"] = {"text": "doc：未找到 write 步骤的代码。"}
+            msg = "doc：未找到 write 步骤的代码。"
+            if task_id:
+                stream_chunk(task_id, msg, phase="doc", channel="reasoning")
+                stream_end(task_id)
+            step["output"] = {"text": msg}
             return
             
         write_text = write_outputs[-1]
         
     except Exception as e:
-        step["output"] = {"text": f"doc：获取代码时发生错误：{str(e)}"}
+        msg = f"doc：获取代码时发生错误：{str(e)}"
+        if task_id:
+            stream_chunk(task_id, msg, phase="doc", channel="reasoning")
+            stream_end(task_id)
+        step["output"] = {"text": msg}
         return
 
     # ===== 第2层防御：提取代码 =====
@@ -45,7 +66,11 @@ def run_doc_step(step, context, events):
         code = ""
 
     if not code:
-        step["output"] = {"text": "doc：无法提取有效代码。"}
+        msg = "doc：无法提取有效代码。"
+        if task_id:
+            stream_chunk(task_id, msg, phase="doc", channel="reasoning")
+            stream_end(task_id)
+        step["output"] = {"text": msg}
         return
 
     # ===== 第3层防御：生成 Markdown 文档 =====
@@ -100,3 +125,27 @@ def run_doc_step(step, context, events):
         "documented_code": documented,
         "text": output_text
     }
+    
+    # ===== 第6层：写入上下文和事件流 =====
+    context["intermediate_results"].append({
+        "type": "doc",
+        "markdown": markdown,
+        "documented_code": documented,
+        "text": output_text
+    })
+    
+    try:
+        events.append(create_event("doc_output", {
+            "markdown": markdown,
+            "documented_code": documented,
+            "text": output_text
+        }))
+    except Exception as e:
+        print(f"[WARN] 创建事件失败: {e}")
+    
+    # ===== 第7层：结束流式输出 =====
+    if task_id:
+        try:
+            stream_end(task_id)
+        except Exception as e:
+            print(f"[WARN] stream_end 失败: {e}")

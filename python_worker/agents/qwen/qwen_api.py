@@ -3,6 +3,7 @@
 # ---------------------------------------------------------
 # Qwen API 调用封装（支持流式输出 + 人格配置）
 # - 保持原有配置（已验证稳定可用）
+# - ⭐ v2.7 超时时间调整到 300 秒（LLM 处理较慢）
 # ---------------------------------------------------------
 
 import requests
@@ -33,16 +34,20 @@ def call_qwen(prompt: str) -> str:
     headers = {"Authorization": f"Bearer {DASHSCOPE_API_KEY}"}
     body = {
         "model": "qwen-turbo",
-        "input": {"prompt": prompt}
+        "input": {"prompt": prompt},
+        "parameters": {
+            "temperature": 0.3,
+            "result_format": "message"
+        }
     }
     
-    r = requests.post(url, headers=headers, json=body, timeout=30)
+    r = requests.post(url, headers=headers, json=body, timeout=300)
     r.raise_for_status()
     data = r.json()
-    return data["output"]["text"]
+    return _extract_text_from_response(data)
 
 
-def call_qwen_stream(prompt: str) -> Generator[str, None, None]:
+def call_qwen_stream(prompt: str, temperature: float = 0.3) -> Generator[str, None, None]:
     """
     ⭐ 新增：流式调用 Qwen API（逐 token 返回）
     
@@ -69,7 +74,9 @@ def call_qwen_stream(prompt: str) -> Generator[str, None, None]:
         "model": "qwen-turbo",
         "input": {"prompt": prompt},
         "parameters": {
-            "incremental_output": True  # ⭐ 增量输出模式
+            "incremental_output": True,
+            "temperature": temperature,
+            "result_format": "message"
         }
     }
     
@@ -79,7 +86,7 @@ def call_qwen_stream(prompt: str) -> Generator[str, None, None]:
             url, 
             headers=headers, 
             json=body, 
-            timeout=60,
+            timeout=300,
             stream=True
         )
         response.raise_for_status()
@@ -100,10 +107,8 @@ def call_qwen_stream(prompt: str) -> Generator[str, None, None]:
                 try:
                     import json
                     data = json.loads(data_str)
-                    
-                    # 提取文本内容
-                    if 'output' in data and 'text' in data['output']:
-                        chunk = data['output']['text']
+                    chunk = _extract_text_from_response(data)
+                    if chunk:
                         yield chunk
                         
                 except json.JSONDecodeError as e:
@@ -161,23 +166,40 @@ def call_qwen_with_persona(
         return _call_qwen_blocking_internal(full_prompt)
 
 
-def _call_qwen_blocking_internal(prompt: str) -> str:
+def _call_qwen_blocking_internal(prompt: str, temperature: float = 0.3) -> str:
     """内部阻塞调用函数"""
     url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation"
     headers = {"Authorization": f"Bearer {DASHSCOPE_API_KEY}"}
     body = {
         "model": "qwen-turbo",
-        "input": {"prompt": prompt}
+        "input": {"prompt": prompt},
+        "parameters": {
+            "temperature": temperature,
+            "result_format": "message"
+        }
     }
     
     try:
-        r = requests.post(url, headers=headers, json=body, timeout=60)
+        r = requests.post(url, headers=headers, json=body, timeout=300)
         r.raise_for_status()
         data = r.json()
-        return data["output"]["text"]
+        return _extract_text_from_response(data)
     except Exception as e:
         print(f"[ERROR] Qwen API 调用失败: {e}")
         return f"\n\n[API 调用失败: {str(e)}]"
+
+
+def _extract_text_from_response(data: dict) -> str:
+    if 'output' not in data:
+        return ""
+    output = data['output']
+    if 'text' in output:
+        return output['text']
+    if 'choices' in output and len(output['choices']) > 0:
+        choice = output['choices'][0]
+        if 'message' in choice and 'content' in choice['message']:
+            return choice['message']['content']
+    return ""
 
 
 def _call_qwen_stream_internal(prompt: str) -> Generator[str, None, None]:
@@ -192,7 +214,9 @@ def _call_qwen_stream_internal(prompt: str) -> Generator[str, None, None]:
         "model": "qwen-turbo",
         "input": {"prompt": prompt},
         "parameters": {
-            "incremental_output": True
+            "incremental_output": True,
+            "temperature": 0.3,
+            "result_format": "message"
         }
     }
     
@@ -201,7 +225,7 @@ def _call_qwen_stream_internal(prompt: str) -> Generator[str, None, None]:
             url, 
             headers=headers, 
             json=body, 
-            timeout=120,
+            timeout=300,
             stream=True
         )
         response.raise_for_status()
@@ -219,9 +243,8 @@ def _call_qwen_stream_internal(prompt: str) -> Generator[str, None, None]:
                 try:
                     import json
                     data = json.loads(data_str)
-                    
-                    if 'output' in data and 'text' in data['output']:
-                        chunk = data['output']['text']
+                    chunk = _extract_text_from_response(data)
+                    if chunk:
                         yield chunk
                         
                 except json.JSONDecodeError as e:

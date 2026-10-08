@@ -34,10 +34,11 @@ USE_MEMORY_REDIS = os.getenv("USE_MEMORY_REDIS", "false").lower() == "true"
 REDIS_TYPE = os.getenv("REDIS_TYPE", "auto").lower()
 
 # 国内模型列表（使用阿里云 Tair）
-# ✅ DeepSeek 和 Doubao 已恢复至国内模型列表，使用阿里云 Tair Redis
+# ✅ DeepSeek、Doubao、MaaS 已恢复至国内模型列表，使用阿里云 Tair Redis
 DOMESTIC_MODELS = [
     "deepseek",
     "doubao",
+    "maas",  # ⭐ MaaS (混元) - 腾讯混元
     "ernie",
     "glm",
 ]
@@ -49,7 +50,14 @@ INTERNATIONAL_MODELS = [
     "gemini",
     "llama",
     "qwen",  # ✅ Qwen 归类为国际模型，使用 Upstash
+    "modelscope",  # ⭐ ModelScope - 支持国际模型
 ]
+
+LOCAL_REDIS_MODELS = {
+    model.strip().lower()
+    for model in os.getenv("LOCAL_REDIS_MODELS", "").split(",")
+    if model.strip()
+}
 
 
 def get_redis_type_for_model(model_name: str = None) -> str:
@@ -75,6 +83,9 @@ def get_redis_type_for_model(model_name: str = None) -> str:
         return "upstash"
     
     model_lower = model_name.lower()
+
+    if any(local_model in model_lower for local_model in LOCAL_REDIS_MODELS):
+        return "local"
     
     # 检查是否是国内模型
     for domestic in DOMESTIC_MODELS:
@@ -109,20 +120,28 @@ def create_redis_client(redis_type: str = None, model_name: str = None):
             """内存 Redis 模拟器"""
             def __init__(self):
                 self.data = {}
+                self.expires_at = {}
             
             def ping(self):
                 return True
             
-            def set(self, key, value):
+            def set(self, key, value, ex=None):
                 self.data[key] = str(value)
+                if ex is None:
+                    self.expires_at.pop(key, None)
+                else:
+                    self.expires_at[key] = time.time() + ex
                 return "OK"
             
             def get(self, key):
+                if key in self.expires_at and time.time() >= self.expires_at[key]:
+                    self.delete(key)
                 return self.data.get(key)
             
             def delete(self, key):
                 if key in self.data:
                     del self.data[key]
+                self.expires_at.pop(key, None)
                 return 1
             
             def lpush(self, key, *values):
@@ -142,7 +161,24 @@ def create_redis_client(redis_type: str = None, model_name: str = None):
         
         return MemoryRedis()
     
-    # 2. Upstash Redis（国际模型）
+    # 2. 本地 Docker Redis（可与云 Redis 对照）
+    elif redis_type == "local":
+        import redis as redis_py
+
+        redis_host = os.getenv("REDIS_HOST", "127.0.0.1")
+        redis_port = int(os.getenv("REDIS_PORT", "6379"))
+        redis_password = os.getenv("REDIS_PASSWORD") or None
+        print(f"🐳 使用本地 Redis ({redis_host}:{redis_port})")
+        return redis_py.Redis(
+            host=redis_host,
+            port=redis_port,
+            password=redis_password,
+            decode_responses=True,
+            socket_timeout=10,
+            socket_connect_timeout=10,
+        )
+
+    # 3. Upstash Redis（国际模型）
     elif redis_type == "upstash":
         print("✅ 使用 Upstash Redis（国际模型/全球 CDN）")
         from upstash_redis import Redis
@@ -155,7 +191,7 @@ def create_redis_client(redis_type: str = None, model_name: str = None):
         
         return Redis(url=upstash_url, token=upstash_token)
     
-    # 3. 阿里云 Tair Redis（国内模型）
+    # 4. 阿里云 Tair Redis（国内模型）
     elif redis_type == "tair":
         print("✅ 使用阿里云 Tair Redis（国内模型/国内加速）")
         import redis as redis_py
@@ -202,7 +238,7 @@ def get_worker_model_type():
     根据 WORKER_ID 推断模型类型
     
     返回:
-        str: 模型类型 ("qwen" | "deepseek" | "doubao" | "openai" | "local" | ...)
+        str: 模型类型 ("qwen" | "deepseek" | "doubao" | "openai" | "local" | "maas" | "modelscope" | ...)
     """
     worker_id = os.getenv("WORKER_ID", "").lower()
     
@@ -212,6 +248,10 @@ def get_worker_model_type():
         return "deepseek"
     elif "doubao" in worker_id:
         return "doubao"
+    elif "maas" in worker_id:
+        return "maas"
+    elif "modelscope" in worker_id:
+        return "modelscope"
     elif "claude" in worker_id:
         return "claude"
     elif "gemini" in worker_id:
@@ -269,7 +309,17 @@ redis = _LazyRedis()
 
 NODE_API_URL = os.getenv("NODE_API_URL", "http://localhost:3000")
 DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 WORKER_ID = os.getenv("WORKER_ID", "qwen-worker-1")
+
+# =========================
+# ⭐ Gemini 代理配置（AlphaPilot International Proxy）
+# =========================
+GEMINI_PROXY_URL = os.getenv("GEMINI_PROXY_URL", "http://localhost:8000")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
+GEMINI_TIMEOUT = int(os.getenv("GEMINI_TIMEOUT", "300"))
+GEMINI_MAX_OUTPUT_TOKENS = int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "8192"))
+GEMINI_TEMPERATURE = float(os.getenv("GEMINI_TEMPERATURE", "0.7"))
 
 # =========================
 # ⭐ 新增：按模型类型隔离队列（符合多智能体架构）
@@ -281,6 +331,8 @@ WORKER_QUEUE_MAP = {
     "deepseek": "task_queue:deepseek", 
     "doubao": "task_queue:doubao",
     "local": "task_queue:local",  # ⭐ Local LLM Worker
+    "maas": "task_queue:maas",  # ⭐ MaaS (混元) Worker
+    "modelscope": "task_queue:modelscope",  # ⭐ ModelScope Worker
     # 未来扩展
     "claude": "task_queue:claude",
     "gemini": "task_queue:gemini",

@@ -58,7 +58,8 @@ export interface SubmitTaskMessage extends BaseMessage {
   direction: 'extension_to_backend';
   payload: {
     prompt: string;
-    task_type: string; // 'qwen_generate' | 'deepseek_generate' | 'doubao_generate'
+    collaboration_mode?: 'automatic' | 'teacher' | 'pair_programmer' | 'engineer' | 'reviewer' | 'creative' | 'navigator';
+    task_type: string; // qwen_generate | gemini_generate | deepseek_generate | doubao_generate | maas_generate | modelscope_generate | local_generate | openai_generate | claude_generate
     context?: {
       file_path?: string;
       selected_code?: string;

@@ -2,10 +2,7 @@
 # step_executor/prompts.py
 # ---------------------------------------------------------
 # 所有步骤类型的 prompt 模板（v3.0 执行链版）
-# ⭐ v3.5 新增：上下文记忆注入功能
 # ---------------------------------------------------------
-
-import json
 
 __all__ = [
     # 核心步骤 prompt
@@ -24,92 +21,11 @@ __all__ = [
 
     # ⭐ v2.8 新增
     "optimize_prompt_v28",
-    
-    # ⭐ v3.5 新增：上下文记忆注入
-    "inject_memory_context",
 ]
 
 
-def inject_memory_context(context: dict) -> str:
-    """
-    ⭐ v3.5 新增：将上下文记忆注入到 system prompt
-    
-    Args:
-        context: 完整的任务上下文（包含 memory 字段）
-        
-    Returns:
-        格式化后的记忆上下文字符串，如果没有记忆则返回空字符串
-    """
-    if not context or "memory" not in context:
-        return ""
-    
-    memory = context["memory"]
-    parts = []
-    
-    # 1. 项目上下文
-    project_ctx = memory.get("project_context", {})
-    if project_ctx:
-        parts.append("\n\n【项目信息】")
-        if project_ctx.get("name"):
-            parts.append(f"- 项目名称: {project_ctx['name']}")
-        if project_ctx.get("tech_stack"):
-            tech_stack_str = json.dumps(project_ctx["tech_stack"], ensure_ascii=False)
-            parts.append(f"- 技术栈: {tech_stack_str}")
-        if project_ctx.get("metadata"):
-            metadata_str = json.dumps(project_ctx["metadata"], ensure_ascii=False)
-            parts.append(f"- 元数据: {metadata_str}")
-    
-    # 2. 用户偏好
-    memory_ctx = memory.get("memory_context", {})
-    user_prefs = memory_ctx.get("user_preferences", {})
-    if user_prefs:
-        parts.append("\n\n【用户偏好】")
-        for key, value in user_prefs.items():
-            parts.append(f"- {key}: {value}")
-    
-    # 3. 项目规则（最重要，放在前面）
-    project_memories = memory_ctx.get("project_memories", [])
-    if project_memories:
-        parts.append("\n\n【项目规则】⭐ 必须严格遵守")
-        for mem in sorted(project_memories, key=lambda x: x.get("importance", 0), reverse=True):
-            importance_star = "⭐" * mem.get("importance", 3)
-            parts.append(f"- {importance_star} {mem['content']}")
-    
-    # 4. 相似任务参考
-    similar_tasks = memory_ctx.get("similar_tasks", [])
-    if similar_tasks:
-        parts.append("\n\n【相似任务参考】")
-        for i, task in enumerate(similar_tasks[:3], 1):
-            parts.append(f"{i}. 任务: {task['prompt'][:100]}...")
-            if task.get("result_summary"):
-                parts.append(f"   结果: {task['result_summary'][:100]}...")
-            # 如果有步骤输出，展示关键信息
-            if task.get("steps"):
-                for step in task["steps"][:1]:
-                    if step.get("output"):
-                        output_preview = str(step["output"])[:150]
-                        parts.append(f"   关键输出: {output_preview}...")
-    
-    # 5. 最近任务历史
-    recent_tasks = memory_ctx.get("recent_tasks", [])
-    if recent_tasks:
-        parts.append("\n\n【最近任务历史】")
-        for i, task in enumerate(recent_tasks[:3], 1):
-            parts.append(f"{i}. {task['prompt'][:80]}...")
-            if task.get("result_summary"):
-                parts.append(f"   结果: {task['result_summary'][:80]}...")
-    
-    return "\n".join(parts)
-
-
-def analyze_prompt(user_input: str, context: dict = None) -> str:
-    """
-    ⭐ v3.5 修改：支持上下文记忆注入
-    """
-    memory_context = inject_memory_context(context) if context else ""
-    
-    return f"""{memory_context}
-
+def analyze_prompt(user_input: str) -> str:
+    return f"""
 请分析下面的任务描述，并提取关键需求点：
 
 【用户任务描述】：
@@ -139,24 +55,47 @@ def plan_prompt(analysis: str) -> str:
 3. 输入与输出设计
 4. 伪代码（如果有必要）
 5. 需要注意的边界情况
+6. 若任务会修改代码，最后给出一条建议执行的测试命令，单独写成 `TEST_COMMAND: <完整命令>`；只提出命令，绝不执行。命令应使用项目已有的测试工具，不得包含命令链、管道或重定向。
 
 请使用自然语言描述，不要生成完整代码。
 """
 
 
-def write_prompt(plan: str, context: dict = None) -> str:
+def mentor_plan_prompt(analysis: str) -> str:
+    return f"""
+根据下面的项目分析，为用户制定针对当前项目的人工测试流程。只提供说明，不生成代码、不运行命令、不修改文件。
+
+【项目分析】：
+{analysis}
+
+请按以下标题输出：
+1. 启动方式
+2. 测试入口
+3. 操作步骤
+4. 预期结果
+5. 失败判断
+
+只陈述分析中有证据支持的项目事实。资料未提供的内容请明确标注“未从当前项目资料确认”，不要猜测。
+"""
+
+
+def write_prompt(plan: str, user_request: str = "") -> str:
     """
-    ⭐ v3.5 修改：write 步骤的 prompt，支持上下文记忆注入
-    
     write 步骤的 prompt：根据规划生成代码（多文件协议 v3.0）
+    包含用户原始请求以保持上下文连贯
     """
-    memory_context = inject_memory_context(context) if context else ""
+    user_section = ""
+    if user_request:
+        user_section = f"""
+====================
+【用户的原始请求 — 这是你最需要满足的目标】：
+{user_request}
+
+"""
     
-    return f"""{memory_context}
+    return f"""你现在处于 AlphaPilot OS v3.0 环境。
 
-你现在处于 AlphaPilot OS v3.0 环境。
-
-请严格按照以下"多文件输出协议"生成代码：
+请严格按照以下"多文件输出协议"生成结果：
 
 ==========================
 # FILE: <相对路径>
@@ -172,16 +111,18 @@ def write_prompt(plan: str, context: dict = None) -> str:
 {{"version": "1.0", "author": "AlphaPilot"}}
 
 # DEPENDS:
-{{"requirements": ["numpy>=1.20"]}}
-==========================
+{{"requirements": ["dependency>=version"]}}
 
+# DELETE: <用户明确指定的工作区相对路径>
+==========================
+{user_section}
 【代码规划】：
 {plan}
 
 ⭐⭐⭐ 强制要求（必须遵守）：
 
 1. 必须使用 "# FILE:" 开头声明文件路径  
-   - 格式：# FILE: sorter/__init__.py
+   - 格式：# FILE: path/to/file.py
    - 路径必须是相对路径，从项目根目录开始
    
 2. 每个文件必须单独一个 # FILE: 块  
@@ -200,17 +141,37 @@ def write_prompt(plan: str, context: dict = None) -> str:
    
 5. 不得输出未声明路径的代码  
    - 所有代码必须在 # FILE: 块内
-   
-6. 文件路径示例：
-   - sort_module/__init__.py
-   - tests/test_sort_engine.py
-   - docs/README.md
+
+6. 代码完整性（最高优先级）：
+   - 每个函数必须有完整的、可运行的实际实现
+   - 严禁使用 pass、...、raise NotImplementedError 作为函数体
+   - 即使是最简单的工具函数也要给出实际逻辑
+   - 如果确实无法确定实现细节，给出最合理的实现并添加注释
 
 7. 代码质量要求：
    - 代码必须可运行
    - 变量命名清晰
    - 逻辑结构与规划一致
    - 包含必要的注释和文档字符串
+
+8. 删除任务规则：
+   - 仅当用户明确要求删除且提供了明确相对路径时，才为每个目标输出一行 "# DELETE: 相对路径"
+   - DELETE 行不跟随文件内容；不得输出 shell 命令、代码删除逻辑或其他文件操作
+   - 路径不明确时不要猜测，要求用户澄清
+
+【常见任务示例】
+
+示例1 — 用户要求"生成 requirements.txt"：
+# FILE: requirements.txt
+fastapi>=0.100.0
+uvicorn>=0.23.0
+numpy>=1.20.0
+pydantic>=2.0.0
+pytest>=7.0.0
+
+示例2 — 用户要求"安装依赖"：
+你应在分析步中识别出需要安装的包，在 write 步中生成安装所需的配置或脚本文件。
+不要生成空的 pass 函数。
 
 只输出多文件协议内容，不要任何解释性文字。
 """
@@ -258,24 +219,58 @@ def test_prompt(code: str) -> str:
 """
 
 
-def fix_prompt(code: str, error_message: str) -> str:
-    return f"""
-下面是一段 Python 代码和它的执行错误，请分析错误原因并给出修复后的完整代码。
+def fix_prompt(path: str, code: str, error_message: str, test_code: str = "") -> str:
+    """
+    生成自动修复代码的 prompt
+
+    参数:
+        path: 文件路径
+        code: 原始代码字符串
+        error_message: 执行错误信息
+        test_code: 测试代码（可选，用于测试驱动修复）
+
+    返回:
+        str: 用于调用 LLM 的完整 prompt
+    """
+    base_prompt = f"""
+下面是一段代码和它的执行错误，请分析错误原因并给出修复后的完整代码。
+
+文件路径：{path}
 
 【原始代码】：
-\\`\\`\\`python
+```python
 {code}
-\\`\\`\\`
+```
 
 【执行错误】：
 {error_message}
+"""
+
+    # ⭐ 新增：如果有测试代码，添加到 prompt 中
+    if test_code:
+        base_prompt += f"""
+
+【测试代码】（你的修复必须通过以下测试）：
+```python
+{test_code}
+```
+
+⚠️ 重要提示：
+- 测试代码定义了接口期望（方法名、参数签名、返回值类型）
+- 请确保修复后的代码与测试代码中的调用方式完全匹配
+- 如果测试使用了特定的 fixture 或 mock，请参考其使用方式
+"""
+
+    base_prompt += """
 
 要求：
 1. 分析错误的根本原因
-2. 给出修复后的完整代码（使用 \\`\\`\\`python 代码块）
+2. 给出修复后的完整代码（使用 ```python 代码块）
 3. 简要说明修复了什么问题（可以用注释形式写在代码里）
 4. 不要输出解释性自然语言。
 """
+
+    return base_prompt
 
 
 def profile_prompt(code: str) -> str:

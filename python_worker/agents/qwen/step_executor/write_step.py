@@ -62,13 +62,15 @@ def run_write_step(step, context, events, task_id=None):
 
     plan_text = plan_outputs[-1]
 
-    # ===== 3. 调用 LLM（支持流式输出 + ⭐ v3.5 上下文记忆）=====
+    # ===== 2.5. 获取用户原始请求 =====
+    user_request = meta.get("user_request", "")
+
+    # ===== 3. 调用 LLM（支持流式输出）=====
     result = ""
     llm_success = False
 
     try:
-        # ⭐ v3.5 修改：传递 context 给 write_prompt，注入记忆
-        prompt = write_prompt(plan_text, context=context)
+        prompt = write_prompt(plan_text, user_request)
 
         if task_id:
             stream_chunk(task_id, "开始生成代码...\n", phase="write", channel="reasoning")

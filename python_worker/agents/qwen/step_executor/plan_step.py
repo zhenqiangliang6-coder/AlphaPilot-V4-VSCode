@@ -5,8 +5,9 @@
 # ---------------------------------------------------------
 
 from ..qwen_api import call_qwen, call_qwen_stream, call_qwen_with_persona
-from .prompts import plan_prompt
+from .prompts import plan_prompt, mentor_plan_prompt
 from ....worker_config import create_event, stream_chunk, stream_start, stream_end
+import re
 
 
 def run_plan_step(step, context, events, task_id=None):
@@ -87,7 +88,10 @@ def run_plan_step(step, context, events, task_id=None):
     llm_success = False
     
     try:
-        prompt = plan_prompt(analysis)
+        if context.get("meta", {}).get("intent") == "mentor_explain":
+            prompt = mentor_plan_prompt(analysis)
+        else:
+            prompt = plan_prompt(analysis)
         
         # ⭐ v2.6 关键改动：使用带人格配置的流式调用
         if task_id:
@@ -135,6 +139,19 @@ def run_plan_step(step, context, events, task_id=None):
 
     # ===== 第3层防御：写入输出 =====
     step["output"] = {"text": result or "规划生成失败"}
+    command_match = re.search(
+        r"(?im)^\s*TEST_COMMAND:\s*(.+?)\s*$",
+        result or "",
+    )
+    if command_match and context.get("meta", {}).get("intent") not in {
+        "architecture",
+        "code_review",
+        "mentor_explain",
+        "chat",
+        "explain_code",
+        "delete_files",
+    }:
+        context.setdefault("meta", {})["proposed_test_command"] = command_match.group(1).strip().strip("`")
 
     # ===== 第4层防御：写入上下文 =====
     try:

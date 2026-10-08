@@ -4,6 +4,8 @@
 import * as vscode from 'vscode';
 import { getNonce } from '../utils/getNonce';
 import { websocketService } from '../services/websocketService';
+import { taskProtocolAdapter } from '../services/taskProtocolAdapter';
+import { applyWorkspaceDeleteOps } from '../services/workspaceDelete';
 
 export class ReactPanel {
   private static currentPanel: ReactPanel | undefined;
@@ -87,23 +89,34 @@ export class ReactPanel {
       });
     });
 
-    // 流式数据块
-    websocketService.on('stream_chunk', (data) => {
-      console.log('📥 WebSocket: stream_chunk 收到数据:', JSON.stringify(data, null, 2));
-      
-      // 检查数据格式
-      if (!data || !data.task_id) {
-        console.error(' stream_chunk 数据格式错误:', data);
+    // Worker progress chunks are nested by the Node API; normalize once for the webview.
+    const forwardStreamChunk = (data: any) => {
+      const chunkData =
+        data?.chunk && typeof data.chunk === 'object' ? data.chunk : data;
+      const chunk =
+        typeof chunkData?.content === 'string'
+          ? chunkData.content
+          : typeof chunkData?.chunk === 'string'
+            ? chunkData.chunk
+            : '';
+      const taskId = data?.task_id || chunkData?.task_id;
+      if (!taskId || !chunk) {
+        console.warn('⚠️ 忽略格式无效的 stream_chunk:', data);
         return;
       }
-      
-      console.log('📤 转发到 Webview - task_id:', data.task_id, 'chunk:', data.chunk?.substring(0, 50));
-      
+
       this.panel.webview.postMessage({
         type: 'stream_chunk',
-        payload: data
+        payload: {
+          task_id: taskId,
+          chunk,
+          phase: chunkData.phase,
+          channel: chunkData.channel
+        }
       });
-    });
+    };
+    websocketService.on('task_stream_chunk', forwardStreamChunk);
+    websocketService.on('stream_chunk', forwardStreamChunk);
 
     // ⭐ v2.7 新增：监听 file_ops 事件并转发给 Webview
     websocketService.on('file_ops', (data) => {
@@ -193,19 +206,26 @@ export class ReactPanel {
   private async handleSubmitTask(payload: any): Promise<void> {
     try {
       const { prompt, model } = payload;
+      const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
       
       // 调用 Node API 提交任务
+      const submission = taskProtocolAdapter.createSubmission(model, prompt, {
+        workspace_path: workspacePath,
+        source: 'react-webview'
+      });
       const response = await fetch('http://localhost:3000/task/submit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          type: model,
-          payload: { prompt },
-          source: 'react-webview'
-        })
+        body: JSON.stringify(submission)
       });
 
-      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+      }
+      const data = taskProtocolAdapter.adaptSubmissionResponse(
+        await response.json(),
+        submission.trace_id
+      );
       const taskId = data.task_id;
 
       console.log('✅ 任务提交成功:', taskId);
@@ -258,6 +278,25 @@ export class ReactPanel {
         vscode.window.showErrorMessage('❌ 未打开工作区文件夹');
         return;
       }
+
+      const deletionOps = fileOps
+        .filter((op: any) => op.action === 'delete' && typeof op.path === 'string')
+        .map((op: any) => ({ op: 'delete' as const, path: op.path }));
+      if (deletionOps.length > 0) {
+        const deletion = await applyWorkspaceDeleteOps(deletionOps, workspaceRoot);
+        if (deletion.rejected.length > 0) {
+          throw new Error(deletion.rejected.join('\n'));
+        }
+        if (deletion.cancelled) {
+          this.panel.webview.postMessage({
+            type: 'file_ops_applied',
+            success: false,
+            error: '删除操作已取消',
+            taskId,
+          });
+          return;
+        }
+      }
       
       let successCount = 0;
       let errorCount = 0;
@@ -265,6 +304,7 @@ export class ReactPanel {
       // 遍历所有文件操作
       for (const op of fileOps) {
         try {
+          if (op.action === 'delete') continue;
           const uri = vscode.Uri.joinPath(workspaceRoot, op.path);
           
           if (op.action === 'create' && op.type === 'file') {
@@ -291,13 +331,6 @@ export class ReactPanel {
             // 创建目录
             await vscode.workspace.fs.createDirectory(uri);
             console.log(`✅ Created directory: ${op.path}`);
-            successCount++;
-          }
-          
-          if (op.action === 'delete') {
-            // 删除文件/目录
-            await vscode.workspace.fs.delete(uri, { recursive: true });
-            console.log(`✅ Deleted: ${op.path}`);
             successCount++;
           }
           
@@ -398,9 +431,3 @@ export class ReactPanel {
     }
   }
 }
-
-
-
-
-
-

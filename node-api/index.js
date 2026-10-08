@@ -5,6 +5,8 @@
 // ---------------------------------------------------------
 
 require("dotenv").config();
+const path = require('path');
+require("dotenv").config({ path: path.resolve(__dirname, '../python_worker/.env') });
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -12,6 +14,11 @@ const cors = require('cors');
 const os = require('os');
 const { v4: uuidv4 } = require("uuid");
 const { Redis } = require("@upstash/redis");
+const {
+    PROTOCOL_VERSION,
+    TaskProtocolError,
+    normalizeTaskSubmission
+} = require('./taskProtocol');
 
 // =========================
 // 1. Import FileOps Handler
@@ -44,12 +51,32 @@ const redisUpstash = new Redis({
   token: process.env.UPSTASH_REDIS_REST_TOKEN,
 });
 
+const REDIS_TYPE = (process.env.REDIS_TYPE || 'auto').toLowerCase();
+const localRedisModels = new Set(
+    (process.env.LOCAL_REDIS_MODELS || '')
+        .split(',')
+        .map((model) => model.trim().toLowerCase())
+        .filter(Boolean)
+);
+let redisLocal = null;
+
 // 阿里云 Tair Redis（国内模型：DeepSeek/Doubao）
 // ⚠️ 注意：Node.js 的 @upstash/redis 只支持 Upstash，需要使用 ioredis 连接阿里云 Tair
 let redisTair = null;
 
 try {
     const IORedis = require('ioredis');
+
+    if (REDIS_TYPE === 'local' || localRedisModels.size > 0) {
+        redisLocal = new IORedis({
+            host: process.env.REDIS_HOST || '127.0.0.1',
+            port: parseInt(process.env.REDIS_PORT || '6379'),
+            password: process.env.REDIS_PASSWORD || undefined,
+            maxRetriesPerRequest: 3,
+            lazyConnect: true,
+        });
+        console.log('🐳 本地 Docker Redis 已配置');
+    }
     
     const tairHost = process.env.TAIR_HOST;
     const tairPort = parseInt(process.env.TAIR_PORT || '6379');
@@ -76,12 +103,21 @@ try {
 }
 
 // 智能路由函数：根据模型选择 Redis 实例
-function getRedisClient(model) {
-    // 提取模型前缀
-    const modelPrefix = model.split('_')[0].split('-')[0];
+function getRedisClient(model, taskType) {
+    const modelPrefix = (taskType || model).split('_')[0].split('-')[0].toLowerCase();
+
+    if (REDIS_TYPE === 'local' || (REDIS_TYPE === 'auto' && localRedisModels.has(modelPrefix))) {
+        if (!redisLocal) {
+            throw new Error('本地 Redis 未配置；请检查 REDIS_HOST 和 REDIS_PORT');
+        }
+        return redisLocal;
+    }
+
+    if (REDIS_TYPE === 'upstash') return redisUpstash;
+    if (REDIS_TYPE === 'tair') return redisTair || redisUpstash;
     
     // 国内模型列表
-    const domesticModels = ['deepseek', 'doubao'];
+    const domesticModels = ['deepseek', 'doubao', 'maas'];
     
     if (domesticModels.includes(modelPrefix) && redisTair) {
         return redisTair;
@@ -151,12 +187,17 @@ app.post('/task/submit', async (req, res) => {
         console.log("\n📥 收到前端提交任务：");
         console.log(JSON.stringify(req.body, null, 2));
 
-        const { type, payload, source = "vscode-plugin", meta = {} } = req.body;
+        const submission = normalizeTaskSubmission(req.body, uuidv4);
+        const { type, payload, source, meta } = submission;
         const task_id = uuidv4();
 
-        if (!type) return res.status(400).json({ error: "任务类型 type 不能为空" });
-        if (!payload || typeof payload !== "object") {
-            return res.status(400).json({ error: "payload 必须是对象" });
+        const collaborationMode = payload.collaboration_mode || "automatic";
+        const supportedCollaborationModes = new Set([
+            "automatic", "architect", "teacher", "pair_programmer", "engineer",
+            "reviewer", "file_manager", "creative", "navigator"
+        ]);
+        if (!supportedCollaborationModes.has(collaborationMode)) {
+            return res.status(400).json({ error: "不支持的协作模式", collaboration_mode: collaborationMode });
         }
 
         // ⭐ 提取模型配置（支持自动推断）
@@ -166,9 +207,14 @@ app.post('/task/submit', async (req, res) => {
         if (!model) {
             const MODEL_TYPE_MAP = {
                 "qwen_generate": "qwen-turbo",
+                "gemini_generate": process.env.GEMINI_MODEL || "gemini-3.5-flash",  // ⭐ Gemini 原生接口（经代理）
                 "deepseek_generate": "deepseek-chat",
                 "doubao_generate": "doubao-pro",
-                "local_generate": "local-gemma4b"  // ⭐ Local LLM 模型
+                "local_generate": "local-gemma4b",  // ⭐ Local LLM 模型
+                "maas_generate": process.env.TENCENT_MAAS_MODEL || "hy4-preview",
+                "modelscope_generate": process.env.MODELSCOPE_MODEL || "Qwen/Qwen3.8-Flash-Next",
+                "openai_generate": "gpt-4o-mini",
+                "claude_generate": "claude-3-5-sonnet"
             };
             model = MODEL_TYPE_MAP[type] || "qwen-turbo";
         }
@@ -183,7 +229,16 @@ app.post('/task/submit', async (req, res) => {
             if (!prompt || typeof prompt !== "string") {
                 return res.status(400).json({ error: "生成任务需要 prompt 字符串" });
             }
-            finalPayload = { prompt };
+            finalPayload = {
+                prompt,
+                collaboration_mode: collaborationMode,
+                ...(payload.context && typeof payload.context === 'object'
+                    ? { context: payload.context }
+                    : {}),
+                ...(typeof payload.workspace_path === 'string'
+                    ? { workspace_path: payload.workspace_path }
+                    : {})
+            };
         } else {
             finalPayload = payload;
         }
@@ -227,6 +282,8 @@ app.post('/task/submit', async (req, res) => {
 
         // ⭐ 构建 TaskModel v2 格式
         const task = {
+            protocol_version: PROTOCOL_VERSION,
+            trace_id: submission.trace_id,
             task_id,
             type,
             payload: finalPayload,
@@ -246,8 +303,8 @@ app.post('/task/submit', async (req, res) => {
         console.log(`🎯 路由到队列: ${queueName} (任务类型: ${type})`);
 
         // ⭐ v2.8 双云架构：根据模型选择 Redis 实例
-        const targetRedis = getRedisClient(model);
-        const redisType = targetRedis === redisTair ? '阿里云 Tair' : 'Upstash';
+        const targetRedis = getRedisClient(model, type);
+        const redisType = targetRedis === redisLocal ? '本地 Docker Redis' : targetRedis === redisTair ? '阿里云 Tair' : 'Upstash';
         console.log(`💾 使用 Redis: ${redisType}`);
 
         const result = await targetRedis.lpush(queueName, JSON.stringify(task));
@@ -257,6 +314,8 @@ app.post('/task/submit', async (req, res) => {
         const response = { 
             status: "submitted", 
             task_id,
+            protocol_version: PROTOCOL_VERSION,
+            trace_id: submission.trace_id,
             model,
             stream,
             message: "任务已提交到队列" 
@@ -270,6 +329,9 @@ app.post('/task/submit', async (req, res) => {
 
     } catch (err) {
         console.error("❌ 提交任务接口发生错误：", err);
+        if (err instanceof TaskProtocolError) {
+            return res.status(400).json({ error: "Invalid task protocol", message: err.message });
+        }
         res.status(500).json({ error: "Internal Server Error", message: err.message });
     }
 });
@@ -388,7 +450,7 @@ app.post('/task/notify/:task_id', async (req, res) => {
 app.post('/task/stream_chunk/:task_id', (req, res) => {
     try {
         const { task_id } = req.params;
-        const chunk = req.body;
+        const chunk = req.body && typeof req.body === "object" ? req.body : {};
 
         // ⭐ 推送给订阅者（实时步骤输出）
         if (taskSubscriptions.has(task_id)) {
@@ -396,7 +458,7 @@ app.post('/task/stream_chunk/:task_id', (req, res) => {
             subscribers.forEach((socketId) => {
                 const socket = io.sockets.sockets.get(socketId);
                 if (socket) {
-                    socket.emit("task_stream_chunk", { task_id, chunk });
+                    socket.emit("task_stream_chunk", { ...chunk, task_id });
                 }
             });
         }
@@ -705,6 +767,8 @@ function getWorkerQueueByType(taskType) {
         "qwen_generate": "task_queue:qwen",
         "deepseek_generate": "task_queue:deepseek",
         "doubao_generate": "task_queue:doubao",
+        "maas_generate": "task_queue:maas",
+        "modelscope_generate": "task_queue:modelscope",
         "local_generate": "task_queue:local",  // ⭐ Local LLM Worker
         "openai_generate": "task_queue:openai",
         "claude_generate": "task_queue:claude",
@@ -722,6 +786,8 @@ function getWorkerQueue(modelOrType) {
         "qwen": "task_queue:qwen",
         "deepseek": "task_queue:deepseek",
         "doubao": "task_queue:doubao",
+        "maas": "task_queue:maas",
+        "modelscope": "task_queue:modelscope",
         "local": "task_queue:local",  // ⭐ Local LLM Worker
         "gpt": "task_queue:openai",
         "claude": "task_queue:claude",

@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://alphapilot.dev/contracts/task-protocol-v1.schema.json",
+  "title": "AlphaPilot Task Protocol v1",
+  "description": "Versioned task submission and execution envelope used by the VS Code Extension, Node API, and the Qwen Worker protocol adapter.",
+  "oneOf": [
+    { "$ref": "#/$defs/submission" },
+    { "$ref": "#/$defs/queuedTask" },
+    { "$ref": "#/$defs/taskResult" }
+  ],
+  "$defs": {
+    "submission": {
+      "type": "object",
+      "required": ["protocol_version", "trace_id", "type", "payload"],
+      "properties": {
+        "protocol_version": { "const": "1.0" },
+        "trace_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "task_id": { "type": "string", "minLength": 1 },
+        "type": { "type": "string", "minLength": 1 },
+        "payload": { "type": "object" },
+        "source": { "type": "string" },
+        "meta": { "type": "object" }
+      },
+      "additionalProperties": true,
+      "not": { "required": ["status"] },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": { "pattern": "(_generate$|^task\\.generate$)" }
+            },
+            "required": ["type"]
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "required": ["prompt"],
+                "properties": {
+                  "prompt": { "type": "string", "minLength": 1 }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "queuedTask": {
+      "type": "object",
+      "required": [
+        "protocol_version",
+        "trace_id",
+        "task_id",
+        "type",
+        "status",
+        "payload"
+      ],
+      "properties": {
+        "protocol_version": { "const": "1.0" },
+        "trace_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "task_id": { "type": "string", "minLength": 1 },
+        "type": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["pending", "running", "awaiting_authorization"] },
+        "payload": { "type": "object" }
+      },
+      "additionalProperties": true
+    },
+    "taskResult": {
+      "type": "object",
+      "required": [
+        "protocol_version",
+        "trace_id",
+        "task_id",
+        "type",
+        "status",
+        "result",
+        "error",
+        "steps",
+        "events",
+        "context"
+      ],
+      "properties": {
+        "protocol_version": { "const": "1.0" },
+        "trace_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "task_id": { "type": "string", "minLength": 1 },
+        "type": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["done", "completed", "failed", "error", "cancelled"] },
+        "result": {},
+        "error": {},
+        "steps": { "type": "array" },
+        "events": { "type": "array" },
+        "context": { "type": "object" },
+        "authorization": { "$ref": "#/$defs/authorization" }
+      },
+      "additionalProperties": true
+    },
+    "authorization": {
+      "type": "object",
+      "required": ["request_id", "status", "actions"],
+      "properties": {
+        "request_id": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["pending", "approved", "denied", "expired"] },
+        "actions": {
+          "type": "array",
+          "items": { "type": "object" }
+        },
+        "decision_id": { "type": "string" },
+        "decided_at": { "type": "string", "format": "date-time" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -18,6 +18,8 @@ from .fix_step import run_fix_step
 from .profile_step import run_profile_step
 from .doc_step import run_doc_step
 from .docstring_step import run_docstring_step   # ⭐ v3.0 docstring 步骤（文件名: docstring_step.py）
+from .respond_step import run_respond_step
+from .workspace_step import run_workspace_step
 
 
 # ---------------------------------------------------------
@@ -36,6 +38,8 @@ STEP_DISPATCHER = {
 
     # ⭐ v3.0 新增步骤
     "docstring": run_docstring_step,
+    "respond": run_respond_step,
+    "workspace": run_workspace_step,
 }
 
 

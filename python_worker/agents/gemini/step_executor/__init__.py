@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 # step_executor/__init__.py
 # ---------------------------------------------------------
-# 多步骤执行器模块（analyze / plan / write / refine / test / fix / profile / doc）
+# 多步骤执行器模块（Gemini Worker v3.0）
+# analyze / plan / write / refine / test / fix / profile / doc
 # 统一导出所有公共 API，供 Worker 调用
+# ⭐ 所有 LLM 调用通过 Google Gemini 原生接口
 # ---------------------------------------------------------
 
 # ---------------------------------------------------------
@@ -30,7 +32,11 @@ from .execute_step import execute_step
 # 工具函数 & 常量
 # ---------------------------------------------------------
 from .utils import extract_code, FAKE_PYTEST, FAKE_ENVIRONMENT
-from .qwen_api import call_qwen
+
+# ---------------------------------------------------------
+# Gemini API 调用（替代原 Qwen API）
+# ---------------------------------------------------------
+from .qwen_api import call_qwen  # 向后兼容接口，内部调用 Gemini
 
 # ---------------------------------------------------------
 # Prompt 模板（10 个）
@@ -70,7 +76,7 @@ __all__ = [
     # 工具函数
     "extract_code",
 
-    # API 调用
+    # API 调用（Gemini 驱动）
     "call_qwen",
 
     # 常量

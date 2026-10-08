@@ -25,7 +25,8 @@ from ...worker_config import (
 )
 
 from ...planner import llm_decompose_task
-from ...intent_router import IntentRouter
+from ...intent_router import IntentRouter, requires_authorization_before_step
+from ...collaboration_modes import apply_mode_to_persona, apply_mode_to_steps, enforce_file_operation_policy, prepare_collaboration_mode
 from .step_executor import execute_step
 from .personas import get_persona_config  # ⭐ 使用 DeepSeek 自己的人格配置（不依赖 Qwen）
 from ...TaskModel_v2 import TaskModel
@@ -34,24 +35,6 @@ from ...TaskModel_v2 import TaskModel
 # =========================================================
 # v3.0：执行链定义（按意图动态裁剪）
 # =========================================================
-
-BASE_CHAIN = ["analyze", "plan", "write", "refine", "test", "fix", "doc", "docstring", "profile"]
-
-INTENT_CHAINS = {
-    "write_code": ["analyze", "plan", "write", "refine", "test", "fix", "doc", "docstring"],
-    "generate_doc": ["analyze", "plan", "write", "doc", "docstring"],
-    "explain_code": ["analyze", "plan", "doc"],
-    "creative_writing": ["analyze", "plan", "write", "refine"],
-    "chat": ["analyze", "write"],
-}
-
-
-def build_execution_chain(intent: str) -> list:
-    """
-    根据意图选择执行链；未知意图使用默认 BASE_CHAIN。
-    """
-    return INTENT_CHAINS.get(intent, BASE_CHAIN)
-
 
 # =========================================================
 # v3.0：根据执行链构建步骤（与现有 step_executor 协议对齐）
@@ -133,11 +116,14 @@ def execute_task(task_type: str, payload: dict, task_id: str, steps: list, event
         raise ValueError("prompt 不能为空")
 
     # 1) 意图识别 + 人格选择
-    intent, persona_type, _ = IntentRouter.detect_intent(prompt)
-    persona_config = get_persona_config(persona_type)
-
-    # 2) 构建执行链
-    execution_chain = build_execution_chain(intent)
+    execution_plan = IntentRouter.plan_request(prompt, worker="standard")
+    intent = execution_plan["intent"]
+    persona_type = execution_plan["persona"]
+    mode, prompt, execution_chain = prepare_collaboration_mode(
+        payload.get("collaboration_mode"), prompt, execution_plan["execution_chain"], intent=intent
+    )
+    execution_plan["execution_chain"] = list(execution_chain)
+    persona_config = apply_mode_to_persona(get_persona_config(persona_type), mode)
 
     # 写入 meta
     context["meta"] = {
@@ -145,6 +131,8 @@ def execute_task(task_type: str, payload: dict, task_id: str, steps: list, event
         "persona": persona_type,
         "persona_config": persona_config,
         "execution_chain": execution_chain,
+        "execution_plan": execution_plan,
+        "collaboration_mode": mode,
     }
 
     print("\n🧠 DeepSeek Worker v3.0 决策：")
@@ -156,6 +144,7 @@ def execute_task(task_type: str, payload: dict, task_id: str, steps: list, event
     if not steps:
         steps.extend(create_steps_from_chain(execution_chain, prompt, persona_type, intent))
         print(f"\n📋 动态生成 {len(steps)} 个步骤 (意图: {intent})")
+    apply_mode_to_steps(steps, mode)
 
     # 4) Planner 兜底（可选）
     if not steps:
@@ -165,6 +154,12 @@ def execute_task(task_type: str, payload: dict, task_id: str, steps: list, event
     # 5) 逐步执行（带取消检查 + 状态管理）
     for step in steps:
         try:
+            if requires_authorization_before_step(execution_plan, step.get("type", "")):
+                step["status"] = "awaiting_authorization"
+                step["output"] = {"text": "验证步骤需要用户授权；当前任务未执行该步骤。"}
+                context["meta"].setdefault("deferred_steps", []).append(step.get("type"))
+                continue
+
             if check_stop_flag(task_id):
                 step["status"] = "failed"
                 step["output"] = {"text": "任务已被用户取消"}
@@ -188,6 +183,7 @@ def execute_task(task_type: str, payload: dict, task_id: str, steps: list, event
             raise step_error
 
     # 6) 返回最后一步的输出
+    enforce_file_operation_policy(context, mode, steps=steps, events=events)
     last_output = steps[-1].get("output", {})
     return last_output.get("text", "")
 

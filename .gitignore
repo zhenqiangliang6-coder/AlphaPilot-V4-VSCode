@@ -36,4 +36,25 @@ Thumbs.db
 .env.local
 .env.development
 .env.production
+.env.memory
+.env.*
+!.env.example
+!.env.*.example
 .venv_worker/
+
+# ===== 本地数据库数据 =====
+postgres_data/
+pgdata/
+
+# ===== 运行时临时产物 =====
+tmp_*.json
+*.tmp
+.pytest_cache/
+.mypy_cache/
+
+# ===== 本地凭据与密钥 =====
+*.pem
+*.key
+*.p12
+secrets/
+credentials.json

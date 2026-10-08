@@ -1,4 +1,4 @@
-# Step Executor 模块
+# Step Executor 模块（Gemini Edition）
 
 ## 📁 目录结构
 
@@ -6,21 +6,21 @@
 step_executor/
 │
 ├── __init__.py              # 模块入口，统一导出 API
-├── qwen_api.py              # Qwen API 调用封装
+├── qwen_api.py              # ⭐ Gemini API 桥接层（向后兼容，内部调用 Gemini）
 ├── utils.py                 # 工具函数（extract_code / fake pytest / fake env）
 ├── prompts.py               # 所有 prompt 模板（10 个函数）
 │
-├── execute_step.py          # ★ 统一步骤调度器（新增）
+├── execute_step.py          # ★ 统一步骤调度器（支持 task_id 流式输出）
 │
-├── analyze_step.py          # analyze 步骤执行器
-├── plan_step.py             # plan 步骤执行器
-├── write_step.py            # write 步骤执行器
-├── refine_step.py           # refine 步骤执行器
+├── analyze_step.py          # analyze 步骤执行器（流式 + 人格配置）
+├── plan_step.py             # plan 步骤执行器（流式 + 人格配置）
+├── write_step.py            # write 步骤执行器（流式 + 人格配置）
+├── refine_step.py           # refine 步骤执行器（流式 + 人格配置）
 │
 ├── test_step.py             # test 步骤执行器
-├── fix_step.py              # fix 步骤执行器
-├── profile_step.py          # profile 步骤执行器
-├── doc_step.py              # doc 步骤执行器
+├── fix_step.py              # fix 步骤执行器（流式 + 人格配置）
+├── profile_step.py          # profile 步骤执行器（非核心，异常降级）
+├── doc_step.py              # doc 步骤执行器（非核心，异常降级）
 │
 └── README.md                # 模块文档
 
@@ -30,23 +30,23 @@ step_executor/
 
 ### 1. **单一职责**
 每个文件负责一个明确的功能：
-- `analyze_step.py`：分析用户需求，提取关键点
-- `plan_step.py`：生成代码结构规划
-- `write_step.py`：根据规划生成代码
-- `refine_step.py`：执行代码并优化
+- `analyze_step.py`：分析用户需求，提取关键点（⭐ 流式输出 + 人格配置）
+- `plan_step.py`：生成代码结构规划（⭐ 流式输出 + 人格配置）
+- `write_step.py`：根据规划生成代码（⭐ 流式输出 + 人格配置）
+- `refine_step.py`：执行代码并优化（⭐ 流式输出 + 人格配置）
 - `test_step.py`：pytest 风格单元测试 + fake pytest
-- `fix_step.py`：mock-aware 自动修复
-- `profile_step.py`：mock-aware 性能分析
-- `doc_step.py`：生成 .md 文档 + docstring
+- `fix_step.py`：mock-aware 自动修复（⭐ 流式输出 + 人格配置）
+- `profile_step.py`：mock-aware 性能分析（⭐ 非核心，异常降级）
+- `doc_step.py`：生成 .md 文档 + docstring（⭐ 非核心，异常降级）
 - `utils.py`：通用工具函数
 - `prompts.py`：统一的 prompt 模板（10 个函数）
-- `qwen_api.py`：API 调用封装
+- `qwen_api.py`：⭐ Gemini API 桥接层（向后兼容接口，内部调用 Gemini）
 
 ### 2. **关注点分离**
 - **Prompt 层**（`prompts.py`）：只负责生成提示词
 - **执行层**（`*_step.py`）：只负责业务逻辑
 - **工具层**（`utils.py`）：只提供辅助功能
-- **API 层**（`qwen_api.py`）：只负责外部调用
+- **API 层**（`qwen_api.py` → Gemini Bridge）：⭐ 封装 Google Gemini 原生 API 调用
 
 ### 3. **可测试性**
 每个模块独立可测，互不依赖：
@@ -139,7 +139,7 @@ step1 = {
     "type": "analyze",
     "input": {"prompt": "实现一个快速排序算法"}
 }
-run_analyze_step(step1, context, events)
+run_analyze_step(step1, context, events, task_id="task-001")
 
 # 2. plan - 生成规划
 step2 = {
@@ -147,7 +147,7 @@ step2 = {
     "type": "plan",
     "input": {}
 }
-run_plan_step(step2, context, events)
+run_plan_step(step2, context, events, task_id="task-001")
 
 # 3. write - 生成代码
 step3 = {
@@ -155,7 +155,7 @@ step3 = {
     "type": "write",
     "input": {}
 }
-run_write_step(step3, context, events)
+run_write_step(step3, context, events, task_id="task-001")
 
 # 4. refine - 执行并优化
 step4 = {
@@ -163,22 +163,22 @@ step4 = {
     "type": "refine",
     "input": {}
 }
-run_refine_step(step4, context, events)
+run_refine_step(step4, context, events, task_id="task-001")
 ```
 
-### 使用 prompt 模板
+### 使用 prompt 模板（直接调用 Gemini API）
 ```python
 from step_executor import (
     analyze_prompt,
     plan_prompt,
     write_prompt,
     refine_prompt,
-    call_qwen
+    call_qwen  # ⭐ 向后兼容接口，内部调用 Gemini
 )
 
 # 1. 分析需求
 analysis_prompt_text = analyze_prompt("实现一个快速排序算法")
-analysis = call_qwen(analysis_prompt_text)
+analysis = call_qwen(analysis_prompt_text)  # 内部调用 Google Gemini
 
 # 2. 生成规划
 plan_prompt_text = plan_prompt(analysis)
@@ -193,6 +193,18 @@ exec_result = run_python(code_text)
 exec_summary = f"stdout:\n{exec_result['stdout']}\nstderr:\n{exec_result['stderr']}"
 refine_prompt_text = refine_prompt(code_text, exec_summary)
 optimized_code = call_qwen(refine_prompt_text)
+```
+
+### 直接使用 Gemini API（推荐）
+```python
+from ..gemini_api import call_gemini, call_gemini_stream
+
+# 阻塞模式
+result = call_gemini("实现一个快速排序算法")
+
+# 流式模式
+for chunk in call_gemini_stream("实现一个快速排序算法"):
+    print(chunk, end='', flush=True)
 ```
 
 ### 执行 test 步骤
@@ -211,7 +223,7 @@ context = {
 step = {"id": "step-5", "type": "test", "input": {}}
 events = []
 
-run_test_step(step, context, events)
+run_test_step(step, context, events, task_id="task-001")
 print(step["output"]["text"])
 ```
 
@@ -235,22 +247,24 @@ result = run_python(full_code)
 ## ✅ 已完成的功能
 
 ### 核心四阶段（完整工作流）
-- ✅ `analyze_step.py` - 分析用户需求
-- ✅ `plan_step.py` - 生成代码规划
-- ✅ `write_step.py` - 生成实现代码
-- ✅ `refine_step.py` - 执行并优化代码
+- ✅ `analyze_step.py` - 分析用户需求（⭐ 流式 + 人格配置）
+- ✅ `plan_step.py` - 生成代码规划（⭐ 流式 + 人格配置）
+- ✅ `write_step.py` - 生成实现代码（⭐ 流式 + 人格配置）
+- ✅ `refine_step.py` - 执行并优化代码（⭐ 流式 + 人格配置）
 
 ### 扩展步骤
 - ✅ `test_step.py` - 自动生成并运行单元测试
-- ✅ `fix_step.py` - 自动修复代码错误
-- ✅ `profile_step.py` - 性能分析
-- ✅ `doc_step.py` - 生成文档
+- ✅ `fix_step.py` - 自动修复代码错误（⭐ 流式 + 人格配置）
+- ✅ `profile_step.py` - 性能分析（⭐ 非核心，异常降级）
+- ✅ `doc_step.py` - 生成文档（⭐ 非核心，异常降级）
 
 ### 基础设施
 - ✅ `prompts.py` - 10 个完整的 prompt 模板
-- ✅ `qwen_api.py` - Qwen API 调用封装
+- ✅ `qwen_api.py` - ⭐ Gemini API 桥接层（向后兼容接口）
+- ✅ `gemini_api.py`（父目录）- Google Gemini 原生 API 客户端
 - ✅ `utils.py` - 核心工具函数
 - ✅ `__init__.py` - 统一的模块导出
+- ✅ `execute_step.py` - 统一步骤调度器（支持 task_id 流式输出）
 - ✅ `README.md` - 完整的模块文档
 
 ## 📊 标准工作流程
@@ -258,21 +272,21 @@ result = run_python(full_code)
 ```
 用户输入
    ↓
-[analyze] → 需求分析
+[analyze] → 需求分析（流式 + 人格）
    ↓
-[plan]     → 代码规划
+[plan]     → 代码规划（流式 + 人格）
    ↓
-[write]    → 实现代码
+[write]    → 实现代码（流式 + 人格）
    ↓
-[refine]   → 执行 + 优化
+[refine]   → 执行 + 优化（流式 + 人格）
    ↓
 [test]     → 测试验证（可选）
    ↓
-[fix]      → 修复错误（如果需要）
+[fix]      → 修复错误（如果需要，流式 + 人格）
    ↓
-[profile]  → 性能分析（可选）
+[profile]  → 性能分析（可选，异常降级）
    ↓
-[doc]      → 生成文档（可选）
+[doc]      → 生成文档（可选，异常降级）
 ```
 
 ## 🎯 下一步计划
@@ -291,6 +305,7 @@ result = run_python(full_code)
 
 ## 📚 相关文档
 
+- [AlphaPilot International Proxy 使用指南](../../ALPHAPILOT_INTERNATIONAL_PROXY_GUIDE.md)
 - [智能体任务执行工作流规范](../../TASK_MODEL_SPECIFICATION.md)
 - [步骤执行器扩展规范](../../ENHANCEMENT_SETUP.md)
 - [AlphaPilot 架构信条](../../ARCHITECTURE_MANIFESTO.md)

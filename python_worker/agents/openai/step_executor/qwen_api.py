@@ -2,6 +2,7 @@
 # step_executor/qwen_api.py
 # ---------------------------------------------------------
 # Qwen API 调用封装
+# - ⭐ v2.7 超时时间调整到 300 秒（LLM 处理较慢）
 # ---------------------------------------------------------
 
 import requests
@@ -28,7 +29,7 @@ def call_qwen(prompt: str) -> str:
         "input": {"prompt": prompt}
     }
     
-    r = requests.post(url, headers=headers, json=body, timeout=30)
+    r = requests.post(url, headers=headers, json=body, timeout=300)
     r.raise_for_status()
     data = r.json()
     return data["output"]["text"]
