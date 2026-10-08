@@ -20,8 +20,11 @@ from typing import List, Callable
 # 确保 python_worker 根目录在 sys.path 中
 current_dir = os.path.dirname(os.path.abspath(__file__))
 python_worker_dir = os.path.abspath(os.path.join(current_dir, '..', '..'))
+project_root = os.path.dirname(python_worker_dir)
 if python_worker_dir not in sys.path:
     sys.path.insert(0, python_worker_dir)
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 # 绝对导入（避免相对导入超出顶层包的问题）
 from worker_config import (
@@ -39,8 +42,11 @@ from worker_config import (
     create_event,
 )
 from TaskModel_v2 import TaskModel
+from python_worker.protocol import PROTOCOL_VERSION, validate_worker_task
+from python_worker.worker_runtime import prepare_worker_request, save_worker_memory
 from agents.local_llm.personas import PERSONA_CONFIGS, get_persona_config
-from intent_router import IntentRouter
+from intent_router import IntentRouter, requires_authorization_before_step
+from collaboration_modes import apply_mode_to_persona, apply_mode_to_steps, enforce_file_operation_policy, prepare_collaboration_mode
 from agents.local_llm.step_executor import execute_step
 from agents.local_llm.local_api import call_local_llm
 from file_ops import create_file_op
@@ -54,29 +60,6 @@ DLQ_NAME = "dlq"
 # =========================================================
 # v3.0：执行链定义（按意图动态裁剪）
 # =========================================================
-
-BASE_CHAIN = ["analyze", "plan", "write", "refine", "test", "fix", "doc", "docstring", "profile"]
-
-INTENT_CHAINS = {
-    # ⭐ 完整工程链路（复杂任务）
-    "write_code": ["analyze", "plan", "write", "refine", "test", "fix", "doc", "docstring"],
-    
-    # ⭐ 简化代码生成链路（简单任务，如排序函数、工具函数）
-    "simple_code": ["write", "test"],
-    
-    # 文档生成
-    "generate_doc": ["analyze", "plan", "write", "doc", "docstring"],
-    
-    # 代码解释
-    "explain_code": ["analyze", "plan", "doc"],
-    
-    # 创意写作
-    "creative_writing": ["analyze", "plan", "write", "refine"],
-    
-    # 闲聊
-    "chat": ["analyze", "write"],
-}
-
 
 # =========================================================
 # 能力层（Behavioral Ability）接口与本地适配器（占位实现）
@@ -161,54 +144,14 @@ class LocalWorkerAbility:
         return ValidationResult(ok=(len(errors) == 0), errors=errors)
 
     def apply_fileops(self, fileops: List[FileOp], workspace_root: str, options: dict = None) -> ApplyResult:
-        applied = []
-        failed = []
-        for f in fileops:
-            try:
-                abspath = os.path.join(workspace_root, f.path)
-                dirpath = os.path.dirname(abspath)
-                if not os.path.exists(dirpath):
-                    os.makedirs(dirpath, exist_ok=True)
-                # 简单写入（覆盖）
-                with open(abspath, "w", encoding="utf-8") as fh:
-                    fh.write(f.content or "")
-                applied.append(f)
-            except Exception as e:
-                failed.append({"file": f.path, "error": str(e)})
-        return ApplyResult(success=(len(failed) == 0), applied=applied, failed=failed)
+        raise RuntimeError(
+            "Direct filesystem writes are disabled; file operations must be applied by the host policy layer."
+        )
 
 # 工厂函数
 def get_local_worker_ability() -> LocalWorkerAbility:
     return LocalWorkerAbility()
 
-
-
-def build_execution_chain(intent: str, prompt: str = None) -> list:
-    """
-    v3.2.1 修复：强制 Local Worker 只执行 write 步骤
-    
-    ⭐ 核心原则：
-    - Local Worker 能力有限，禁止复杂执行链
-    - 只执行 write，避免 test/refine/fix 导致的崩溃
-    - Qwen Worker 保持原有逻辑不变
-    """
-    
-    # ⭐ 关键修复：检测是否为 Local Worker
-    worker_id = os.environ.get("WORKER_ID", "")
-    is_local_worker = "local" in worker_id.lower() or "gemma" in worker_id.lower()
-    
-    if is_local_worker:
-        # Local Worker：只执行 write
-        print(f"\n💡 Local Worker 模式：强制使用简化执行链 [write]")
-        return ["write"]
-    
-    # Qwen Worker：保持原有逻辑
-    # ⭐ 修复：使用 BASE_CHAIN 替代未定义的 DEFAULT_ENGINEERING_STEPS
-    chain = INTENT_CHAINS.get(intent, BASE_CHAIN)
-    
-    # ⭐ 修复：移除对未定义函数 detect_simple_task 的调用
-    # 简单任务使用默认执行链
-    return chain
 
 
 # =========================================================
@@ -229,6 +172,11 @@ def create_steps_from_chain(execution_chain: list, prompt: str, persona: str, in
         "plan": {
             "type": "plan",
             "input": {"prompt": "根据分析结果制定执行计划"}
+        },
+        "respond": {"type": "respond", "input": {"prompt": prompt}},
+        "workspace": {
+            "type": "workspace",
+            "input": {"prompt": "执行已明确请求的工作区检查和 Python 环境操作"}
         },
         "write": {
             "type": "write",
@@ -276,7 +224,15 @@ def create_steps_from_chain(execution_chain: list, prompt: str, persona: str, in
 # v3.0：统一任务执行入口
 # =========================================================
 
-def execute_task(task_type: str, payload: dict, task_id: str, steps: list, events: list, context: dict):
+def execute_task(
+    task_type: str,
+    payload: dict,
+    task_id: str,
+    steps: list,
+    events: list,
+    context: dict,
+    protocol_metadata: dict = None,
+):
     """
     Local LLM Worker v3.0 统一入口：
     - 处理 local_generate 任务
@@ -289,34 +245,42 @@ def execute_task(task_type: str, payload: dict, task_id: str, steps: list, event
     if task_type != "local_generate":
         raise ValueError(f"不支持的任务类型：{task_type}")
 
-    prompt = payload.get("prompt", "")
-    
-    if not prompt:
-        raise ValueError("prompt 不能为空")
-
-    # 1) 意图识别 + 人格选择
-    intent, persona_type, _ = IntentRouter.detect_intent(prompt)
-    persona_config = get_persona_config(persona_type)
-
-    # 2) 构建执行链（⭐ 传入 prompt 以支持智能简化）
-    execution_chain = build_execution_chain(intent, prompt)
+    prepared = prepare_worker_request(
+        payload, task_id, task_type, "Local LLM", protocol_metadata
+    )
+    prompt = prepared["prompt"]
+    execution_plan = prepared["execution_plan"]
+    intent = execution_plan["intent"]
+    persona_type = execution_plan["persona"]
+    requested_mode = payload.get("collaboration_mode")
+    if intent == "mentor_explain":
+        requested_mode = "teacher"
+    mode, prompt, execution_chain = prepare_collaboration_mode(
+        requested_mode,
+        prompt,
+        execution_plan["execution_chain"],
+        preserve_chain=intent in {"mentor_explain", "external_git"},
+        intent=intent,
+    )
+    if intent == "workspace_maintenance" and not prepared["meta"]["workspace_scan"]["fixable_issue_count"]:
+        execution_chain = [step for step in execution_chain if step != "fix"]
+    execution_plan["execution_chain"] = list(execution_chain)
+    persona_config = apply_mode_to_persona(get_persona_config(persona_type), mode)
 
     # 写入 meta
     context["meta"] = {
-        "intent": intent,
-        "persona": persona_type,
+        **prepared["meta"],
         "persona_config": persona_config,
         "execution_chain": execution_chain,
+        "execution_plan": execution_plan,
+        "collaboration_mode": mode,
+        "model": "local",
     }
     
     # ⭐ v3.2.2 关键修复：将用户原始 prompt 存入 context，供 write_step 使用
     context["user_query"] = prompt
 
-    # 注入能力实例（行为契约实现），上层步骤可通过 context['_ability'] 使用
-    try:
-        context["_ability"] = get_local_worker_ability()
-    except Exception:
-        context["_ability"] = None
+    context["_respond_call"] = _respond_call
 
     print("\n🧠 Local LLM Worker v3.0 决策：")
     print(f"  意图: {intent}")
@@ -327,6 +291,7 @@ def execute_task(task_type: str, payload: dict, task_id: str, steps: list, event
     if not steps:
         steps.extend(create_steps_from_chain(execution_chain, prompt, persona_type, intent))
         print(f"\n📋 动态生成 {len(steps)} 个步骤 (意图: {intent})")
+    apply_mode_to_steps(steps, mode)
 
     # 4) Planner 兜底（可选）
     if not steps:
@@ -337,6 +302,20 @@ def execute_task(task_type: str, payload: dict, task_id: str, steps: list, event
     # 5) 逐步执行（带取消检查 + 状态管理）
     for step in steps:
         try:
+            if requires_authorization_before_step(execution_plan, step.get("type", "")):
+                step["status"] = "awaiting_authorization"
+                step["output"] = {
+                    "text": "验证步骤需先向用户展示完整测试命令并取得确认；当前任务未运行该步骤。",
+                    "proposed_command": context["meta"].get("proposed_test_command"),
+                }
+                context["meta"].setdefault("deferred_steps", []).append(step.get("type"))
+                context["meta"].setdefault("authorization_requests", []).append({
+                    "type": "test",
+                    "command": context["meta"].get("proposed_test_command"),
+                    "status": "awaiting_user_confirmation",
+                })
+                continue
+
             if check_stop_flag(task_id):
                 step["status"] = "failed"
                 step["output"] = {"text": "任务已被用户取消"}
@@ -368,8 +347,29 @@ def execute_task(task_type: str, payload: dict, task_id: str, steps: list, event
             raise step_error
 
     # 6) 返回最后一步的输出
+    enforce_file_operation_policy(context, mode, steps=steps, events=events)
+    if any(operation.get("op") == "delete" for operation in context.get("final_file_ops", [])):
+        context["meta"].setdefault("authorization_requests", []).append({
+            "type": "delete",
+            "paths": [
+                operation.get("path")
+                for operation in context.get("final_file_ops", [])
+                if operation.get("op") == "delete"
+            ],
+            "status": "awaiting_host_policy",
+        })
+    if context["meta"].get("authorization_requests"):
+        context["meta"]["execution_state"] = "awaiting_authorization"
     last_output = steps[-1].get("output", {})
     return last_output.get("text", "")
+
+
+def _respond_call(prompt, persona_config, task_id):
+    full_prompt = (
+        f"{persona_config.get('system_prompt', '')}\n\n---\n\n{prompt}"
+        if persona_config else prompt
+    )
+    return call_local_llm(full_prompt, stream=bool(task_id), task_id=task_id)
 
 
 def call_local_llm_wrapper(prompt: str, task_id: str = None) -> str:
@@ -407,7 +407,7 @@ def main_loop():
                 time.sleep(2)
                 continue
 
-            task = json.loads(task_json)
+            task = validate_worker_task(json.loads(task_json))
 
             print("\n" + "=" * 60)
             print("收到任务:")
@@ -437,7 +437,23 @@ def main_loop():
             context["final_file_ops"] = []
 
             # 执行任务
-            result = execute_task(task_type, payload, task_id, steps, events, context)
+            result = execute_task(
+                task_type, payload, task_id, steps, events, context,
+                protocol_metadata={
+                    "protocol_version": task.get("protocol_version"),
+                    "trace_id": task.get("trace_id"),
+                },
+            )
+            save_worker_memory(
+                context.get("meta", {}).get("memory_user_id"),
+                task_id,
+                task_type,
+                context.get("meta", {}).get("intent", "unknown"),
+                result,
+                steps,
+                context,
+            )
+            context.pop("_respond_call", None)
 
             # write_step 负责生成并注入 final_file_ops（包含严格的自然语言解析），此处不再重复解析
 
@@ -458,6 +474,9 @@ def main_loop():
                 events=events,
                 context=context,
             )
+            if task.get("protocol_version") == PROTOCOL_VERSION:
+                result_data["protocol_version"] = task["protocol_version"]
+                result_data["trace_id"] = task["trace_id"]
 
             redis.set(result_key, json.dumps(result_data))
 
@@ -493,8 +512,8 @@ def main_loop():
             is_cancelled = "取消" in str(e) or "cancel" in str(e).lower()
 
             # ⭐ v3.2.1 修复：清理 context 中无法序列化的对象（错误分支）
-            if "_ability" in context:
-                del context["_ability"]
+            context.pop("_ability", None)
+            context.pop("_respond_call", None)
 
             if is_cancelled:
                 error_result = TaskModel.create_task_result_error(

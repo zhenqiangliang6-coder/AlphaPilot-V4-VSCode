@@ -17,6 +17,9 @@ from .test_step import run_test_step
 from .fix_step import run_fix_step
 from .profile_step import run_profile_step
 from .doc_step import run_doc_step
+from ....worker_docstring_step import run_docstring_step
+from ....worker_respond_step import run_respond_step
+from ...qwen.step_executor.workspace_step import run_workspace_step
 
 
 # ---------------------------------------------------------
@@ -32,6 +35,9 @@ STEP_DISPATCHER = {
     "fix": run_fix_step,
     "profile": run_profile_step,
     "doc": run_doc_step,
+    "docstring": run_docstring_step,
+    "respond": run_respond_step,
+    "workspace": run_workspace_step,
 }
 
 

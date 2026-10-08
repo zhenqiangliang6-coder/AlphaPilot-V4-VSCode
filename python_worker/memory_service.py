@@ -15,13 +15,25 @@ AlphaPilot 记忆中枢 - 核心服务模块
 import os
 import json
 import hashlib
+import re
+import requests
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, List, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
+from dotenv import load_dotenv
 import psycopg2
 from psycopg2.extras import Json
-import openai
+from pgvector.psycopg2 import register_vector
+
+
+# Load local memory DB credentials without overriding explicitly supplied
+# process environment variables.
+load_dotenv(Path(__file__).resolve().parents[2] / ".env.memory", override=False)
+
+# Also load python_worker/.env for API keys (e.g. DASHSCOPE_API_KEY)
+load_dotenv(Path(__file__).resolve().parent / ".env", override=False)
 
 
 # ============================================================
@@ -53,9 +65,19 @@ class MemoryConfig:
     DB_PASSWORD = _env_any("MEMORY_DB_PASSWORD", "DB_PASSWORD", default="")
     DB_NAME = _env_any("MEMORY_DB_NAME", "DB_NAME", default="alphapilot_memory")
     
-    # OpenAI Embedding 配置（用于向量生成）
+    # Embedding 提供商配置：dashscope / openai / none
+    EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "dashscope").lower()
+    
+    # DashScope Embedding 配置（阿里云通义千问，国内首选）
+    DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY", "")
+    DASHSCOPE_EMBEDDING_MODEL = os.getenv("DASHSCOPE_EMBEDDING_MODEL", "text-embedding-v2")
+    DASHSCOPE_EMBEDDING_URL = (
+        "https://dashscope.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding"
+    )
+    
+    # OpenAI Embedding 配置（备选）
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-    EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+    OPENAI_EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
     EMBEDDING_DIMENSION = 1536
     
     # 记忆生命周期参数
@@ -73,6 +95,9 @@ class MemoryConfig:
     DEFAULT_TOP_K = 5
     MIN_ACTIVATION_FOR_SEARCH = 0.3
     MAX_CONTEXT_TOKENS = 2000
+    RECENT_HIGH_VALUE_DAYS = 7
+    RECENT_HIGH_VALUE_MIN_IMPORTANCE = 0.3
+    RECENT_HIGH_VALUE_LIMIT = 3
 
 
 # ============================================================
@@ -152,10 +177,43 @@ class MemoryService:
     def __init__(self, config: MemoryConfig = None):
         self.config = config or MemoryConfig()
         self._connection = None
+        self._embedding_warning_emitted = False
+        self._memory_items_has_updated_at = False
+        self._has_search_function = False
+        self._embedding_provider = self._resolve_embedding_provider()
+    
+    def _resolve_embedding_provider(self) -> str:
+        """解析实际可用的 embedding 提供商"""
+        provider = self.config.EMBEDDING_PROVIDER
         
-        # 初始化 OpenAI client（用于 embedding）
+        if provider == "dashscope":
+            if self.config.DASHSCOPE_API_KEY:
+                return "dashscope"
+            else:
+                print("[MEMORY] ⚠️ EMBEDDING_PROVIDER=dashscope 但 DASHSCOPE_API_KEY 未配置，"
+                      "尝试回退到 OpenAI")
+                if self.config.OPENAI_API_KEY:
+                    return "openai"
+        
+        if provider == "openai":
+            if self.config.OPENAI_API_KEY:
+                return "openai"
+            else:
+                print("[MEMORY] ⚠️ EMBEDDING_PROVIDER=openai 但 OPENAI_API_KEY 未配置，"
+                      "尝试回退到 DashScope")
+                if self.config.DASHSCOPE_API_KEY:
+                    return "dashscope"
+        
+        if provider == "none":
+            return "none"
+        
+        # 自动检测：优先 DashScope（国内），其次 OpenAI
+        if self.config.DASHSCOPE_API_KEY:
+            return "dashscope"
         if self.config.OPENAI_API_KEY:
-            openai.api_key = self.config.OPENAI_API_KEY
+            return "openai"
+        
+        return "none"
     
     # --------------------------------------------------------
     # 数据库连接管理
@@ -169,14 +227,61 @@ class MemoryService:
                     "可复制项目根目录的 .env.memory.example 为 .env.memory 后填写；"
                     "该文件已被 .gitignore 忽略，不会提交到仓库。"
                 )
-            self._connection = psycopg2.connect(
+            connection = psycopg2.connect(
                 host=self.config.DB_HOST,
                 port=self.config.DB_PORT,
                 user=self.config.DB_USER,
                 password=self.config.DB_PASSWORD,
                 dbname=self.config.DB_NAME
             )
+            try:
+                register_vector(connection)
+                self._detect_memory_schema(connection)
+            except Exception:
+                connection.close()
+                raise
+            self._connection = connection
         return self._connection
+
+    def _detect_memory_schema(self, connection) -> None:
+        """Detect optional columns and functions to keep writes compatible with older schemas."""
+        cursor = connection.cursor()
+        try:
+            cursor.execute("""
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM information_schema.columns
+                    WHERE table_schema = current_schema()
+                      AND table_name = 'memory_items'
+                      AND column_name = 'updated_at'
+                )
+            """)
+            self._memory_items_has_updated_at = bool(cursor.fetchone()[0])
+
+            cursor.execute("""
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM pg_proc p
+                    WHERE p.proname = 'search_similar_memories'
+                      AND p.pronamespace IN (
+                          SELECT oid FROM pg_namespace
+                          WHERE nspname IN ('public', current_schema())
+                      )
+                )
+            """)
+            self._has_search_function = bool(cursor.fetchone()[0])
+            if not self._has_search_function:
+                print(
+                    "[MEMORY] ⚠️ 数据库中未找到 search_similar_memories 函数，"
+                    "语义向量搜索不可用。"
+                )
+                print(
+                    "[MEMORY] 💡 请运行 init_memory_schema.sql 初始化数据库："
+                    "psql -U alphapilot -d alphapilot_memory -f init_memory_schema.sql"
+                )
+            connection.commit()
+        finally:
+            cursor.close()
     
     def close(self):
         """关闭数据库连接"""
@@ -186,9 +291,9 @@ class MemoryService:
     # --------------------------------------------------------
     # Embedding 生成
     # --------------------------------------------------------
-    def _get_embedding(self, text: str) -> List[float]:
+    def _get_embedding(self, text: str) -> Optional[List[float]]:
         """
-        生成文本的 embedding 向量
+        生成文本的 embedding 向量（多提供商支持）
         
         参数:
             text: 输入文本
@@ -196,21 +301,82 @@ class MemoryService:
         返回:
             List[float]: 1536维向量
         """
-        if not self.config.OPENAI_API_KEY:
-            # 降级：返回零向量（仅用于测试）
-            return [0.0] * self.config.EMBEDDING_DIMENSION
+        if self._embedding_provider == "none":
+            self._warn_embedding_unavailable(
+                "未配置任何 embedding 提供商（DASHSCOPE_API_KEY / OPENAI_API_KEY）"
+            )
+            return None
         
+        if self._embedding_provider == "dashscope":
+            return self._get_embedding_dashscope(text)
+        
+        if self._embedding_provider == "openai":
+            return self._get_embedding_openai(text)
+        
+        self._warn_embedding_unavailable(f"未知的 embedding 提供商: {self._embedding_provider}")
+        return None
+    
+    def _get_embedding_dashscope(self, text: str) -> Optional[List[float]]:
+        """通过 DashScope API 生成 embedding（text-embedding-v2, 1536维）"""
         try:
-            response = openai.embeddings.create(
-                model=self.config.EMBEDDING_MODEL,
+            response = requests.post(
+                self.config.DASHSCOPE_EMBEDDING_URL,
+                headers={
+                    "Authorization": f"Bearer {self.config.DASHSCOPE_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": self.config.DASHSCOPE_EMBEDDING_MODEL,
+                    "input": {"texts": [text]},
+                },
+                timeout=30,
+            )
+            response.raise_for_status()
+            data = response.json()
+            
+            if data.get("output") and data["output"].get("embeddings"):
+                embedding = data["output"]["embeddings"][0].get("embedding")
+                if embedding:
+                    return embedding
+            
+            error_msg = data.get("message", "未知错误")
+            self._warn_embedding_unavailable(f"DashScope 返回异常: {error_msg}")
+            return None
+            
+        except requests.Timeout:
+            self._warn_embedding_unavailable("DashScope Embedding 请求超时（APITimeoutError）")
+            return None
+        except requests.RequestException as error:
+            self._warn_embedding_unavailable(
+                f"DashScope Embedding 请求失败（{type(error).__name__}）"
+            )
+            return None
+    
+    def _get_embedding_openai(self, text: str) -> Optional[List[float]]:
+        """通过 OpenAI API 生成 embedding"""
+        try:
+            import openai
+            client = openai.OpenAI(api_key=self.config.OPENAI_API_KEY)
+            response = client.embeddings.create(
+                model=self.config.OPENAI_EMBEDDING_MODEL,
                 input=text,
-                dimensions=self.config.EMBEDDING_DIMENSION
+                dimensions=self.config.EMBEDDING_DIMENSION,
             )
             return response.data[0].embedding
-        except Exception as e:
-            print(f"[ERROR] Embedding 生成失败: {e}")
-            # 降级：返回零向量
-            return [0.0] * self.config.EMBEDDING_DIMENSION
+        except Exception as error:
+            self._warn_embedding_unavailable(
+                f"OpenAI Embedding 请求失败（{type(error).__name__}）"
+            )
+            return None
+
+    def _warn_embedding_unavailable(self, reason: str) -> None:
+        if self._embedding_warning_emitted:
+            return
+        self._embedding_warning_emitted = True
+        print(
+            f"[MEMORY] WARNING: {reason}；语义向量检索暂不可用，"
+            "将继续保存记忆并通过近期经验层召回。"
+        )
     
     # --------------------------------------------------------
     # 记忆写入决策（Gatekeeper）
@@ -274,14 +440,14 @@ class MemoryService:
     
     def _is_chitchat(self, content: str) -> bool:
         """判断是否为闲聊内容"""
-        chitchat_patterns = [
+        chitchat_patterns = {
             "你好", "hello", "hi", "嗨",
             "谢谢", "thanks", "thank you",
             "再见", "bye", "goodbye",
             "好的", "ok", "okay",
-        ]
-        content_lower = content.lower()
-        return any(pattern in content_lower for pattern in chitchat_patterns)
+        }
+        normalized = content.strip().lower().strip(" \t\r\n!！?？.,，。")
+        return normalized in chitchat_patterns
     
     def _extract_preference(self, content: str) -> Optional[str]:
         """提取用户偏好"""
@@ -333,13 +499,19 @@ class MemoryService:
         try:
             # 生成 embedding
             embedding = self._get_embedding(memory.content)
+            updated_at_update = (
+                ",\n                    updated_at = NOW()"
+                if self._memory_items_has_updated_at
+                else ""
+            )
             
             # 插入记忆
-            cursor.execute("""
+            cursor.execute(f"""
                 INSERT INTO memory_items (
                     user_id, content, summary, embedding, memory_type,
                     domain_tags, importance_score, activation_score, status
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT DO NOTHING
                 RETURNING id
             """, (
                 memory.user_id,
@@ -352,8 +524,36 @@ class MemoryService:
                 memory.activation_score,
                 memory.status.value
             ))
-            
-            memory_id = cursor.fetchone()[0]
+            saved_row = cursor.fetchone()
+            if saved_row is None:
+                cursor.execute(f"""
+                    UPDATE memory_items
+                    SET status = 'active',
+                        importance_score = GREATEST(importance_score, %s),
+                        activation_score = GREATEST(activation_score, %s),
+                        embedding = COALESCE(%s, embedding),
+                        summary = COALESCE(%s, summary),
+                        last_accessed_at = NOW(){updated_at_update}
+                    WHERE user_id = %s
+                      AND memory_type = %s
+                      AND content = %s
+                    RETURNING id
+                """, (
+                    memory.importance_score,
+                    memory.activation_score,
+                    embedding,
+                    memory.summary,
+                    memory.user_id,
+                    memory.memory_type.value,
+                    memory.content,
+                ))
+                saved_row = cursor.fetchone()
+                if saved_row is None:
+                    raise RuntimeError(
+                        "记忆插入发生唯一键冲突，但无法定位现有记忆记录。"
+                    )
+
+            memory_id = saved_row[0]
             
             # 记录审计日志
             cursor.execute("""
@@ -362,16 +562,64 @@ class MemoryService:
             """, (
                 memory.user_id,
                 memory_id,
-                "create",
+                "upsert",
                 Json({"content_preview": memory.content[:100]})
             ))
             
             conn.commit()
+            if embedding is None:
+                print(
+                    "[MEMORY] 记忆已持久化，但没有向量索引；"
+                    "有效期内可通过近期经验层召回。"
+                )
             return memory_id
             
         except Exception as e:
             conn.rollback()
             print(f"[ERROR] 保存记忆失败: {e}")
+            raise
+        finally:
+            cursor.close()
+
+    def save_user_preference(self, user_id: str, preference: str) -> None:
+        """Persist explicit preferences in the exact-match profile tier."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute("""
+                INSERT INTO user_profiles (user_id, global_preferences, domain_expertise)
+                VALUES (
+                    %s,
+                    jsonb_build_object('declared_preferences', jsonb_build_array(%s)),
+                    '[]'::jsonb
+                )
+                ON CONFLICT (user_id) DO UPDATE
+                SET global_preferences = jsonb_set(
+                    COALESCE(user_profiles.global_preferences, '{}'::jsonb),
+                    '{declared_preferences}',
+                    (
+                        SELECT COALESCE(jsonb_agg(to_jsonb(pref) ORDER BY pref), '[]'::jsonb)
+                        FROM (
+                            SELECT DISTINCT pref
+                            FROM jsonb_array_elements_text(
+                                COALESCE(
+                                    user_profiles.global_preferences->'declared_preferences',
+                                    '[]'::jsonb
+                                ) || jsonb_build_array(%s)
+                            ) AS preferences(pref)
+                        ) AS unique_preferences
+                    ),
+                    true
+                )
+            """, (user_id, preference, preference))
+            cursor.execute("""
+                INSERT INTO memory_audit_log (user_id, action, metadata)
+                VALUES (%s, 'preference_upsert', %s)
+            """, (user_id, Json({"preference": preference[:100]})))
+            conn.commit()
+        except Exception:
+            conn.rollback()
             raise
         finally:
             cursor.close()
@@ -388,6 +636,8 @@ class MemoryService:
     ) -> List[MemoryItem]:
         """
         向量相似度搜索
+
+        如果数据库未初始化向量搜索函数，自动降级为关键词匹配搜索。
         
         参数:
             user_id: 用户ID
@@ -405,34 +655,116 @@ class MemoryService:
         cursor = conn.cursor()
         
         try:
-            # 生成查询 embedding
             query_embedding = self._get_embedding(query)
-            
-            # 调用数据库函数进行向量搜索
-            cursor.execute("""
-                SELECT * FROM search_similar_memories(%s, %s, %s, %s)
-            """, (query_embedding, user_id, top_k, min_activation))
-            
+
+            if query_embedding is not None and self._has_search_function:
+                cursor.execute("""
+                    SELECT * FROM search_similar_memories(%s::vector(1536), %s, %s, %s)
+                """, (query_embedding, user_id, top_k, min_activation))
+
+                results = []
+                for row in cursor.fetchall():
+                    memory = MemoryItem(
+                        id=str(row[0]),
+                        user_id=user_id,
+                        content=row[1],
+                        summary=row[2],
+                        memory_type=MemoryType(row[3]),
+                        importance_score=row[4],
+                        activation_score=row[5]
+                    )
+                    results.append(memory)
+                    self._bump_activation(memory.id)
+
+                if results:
+                    return results
+
+            if not self._has_search_function:
+                print(
+                    "[MEMORY] 向量搜索不可用，使用关键词匹配作为降级方案"
+                )
+
+            results = self._keyword_search_memories(
+                user_id, query, top_k, min_activation
+            )
+            return results
+
+        except Exception as e:
+            print(f"[ERROR] 向量搜索失败 (降级到关键词搜索): {e}")
+            try:
+                conn.rollback()
+                results = self._keyword_search_memories(
+                    user_id, query, top_k, min_activation
+                )
+                return results
+            except Exception as fallback_error:
+                print(f"[ERROR] 关键词搜索也失败: {fallback_error}")
+                return []
+        finally:
+            cursor.close()
+
+    def _keyword_search_memories(
+        self,
+        user_id: str,
+        query: str,
+        top_k: int,
+        min_activation: float
+    ) -> List[MemoryItem]:
+        """关键词匹配搜索，作为向量搜索不可用时的降级方案"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        try:
+            keywords = [
+                kw for kw in re.findall(r'[\u4e00-\u9fff]{2,}|[a-zA-Z]{3,}', query)
+                if len(kw) >= 2
+            ]
+            if not keywords:
+                return []
+
+            like_clauses = []
+            params = [user_id]
+            for kw in keywords[:5]:
+                safe_kw = kw.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+                like_clauses.append('m.content ILIKE %s')
+                params.append(f'%{safe_kw}%')
+
+            where_clause = ' OR '.join(like_clauses)
+
+            sql = f"""
+                SELECT m.id, m.content, m.summary, m.memory_type,
+                       m.importance_score, m.activation_score
+                FROM memory_items m
+                WHERE m.user_id = %s
+                  AND m.status = 'active'
+                  AND ({where_clause})
+                ORDER BY m.importance_score DESC, m.last_accessed_at DESC NULLS LAST
+                LIMIT %s
+            """
+            params.append(top_k)
+
+            cursor.execute(sql, params)
+
             results = []
-            for row in cursor.fetchall():
+            rows = cursor.fetchall()
+            for row in rows:
                 memory = MemoryItem(
                     id=str(row[0]),
                     user_id=user_id,
-                    content=row[1],
-                    summary=row[2],
-                    memory_type=MemoryType(row[3]),
-                    importance_score=row[4],
-                    activation_score=row[5]
+                    content=str(row[1] or ''),
+                    summary=str(row[2] or ''),
+                    memory_type=MemoryType(row[3]) if row[3] else MemoryType.INSIGHT,
+                    importance_score=float(row[4] or 0),
+                    activation_score=float(row[5] or 0)
                 )
                 results.append(memory)
-                
-                # 访问即激活
-                self._bump_activation(memory.id)
-            
+
             return results
-            
         except Exception as e:
-            print(f"[ERROR] 搜索记忆失败: {e}")
+            import traceback
+            conn.rollback()
+            print(f"[ERROR] 关键词搜索失败: {e}")
+            traceback.print_exc()
             return []
         finally:
             cursor.close()
@@ -484,13 +816,26 @@ class MemoryService:
                 context_parts.append(f"【用户偏好】{json.dumps(prefs, ensure_ascii=False)}")
         
         # 第二层：语义相关记忆（向量检索）
-        related = self.search_similar_memories(user_id, current_query, top_k=5)
+        related = self.search_similar_memories(
+            user_id,
+            current_query,
+            top_k=self.config.DEFAULT_TOP_K,
+        )
+        included_memory_ids = set()
         for mem in related:
+            included_memory_ids.add(mem.id)
             context_parts.append(f"【相关记忆】{mem.summary or mem.content[:200]}")
         
         # 第三层：近期高价值经验
-        recent = self._get_recent_high_value(user_id, days=7, limit=3)
+        recent = self._get_recent_high_value(
+            user_id,
+            days=self.config.RECENT_HIGH_VALUE_DAYS,
+            min_importance=self.config.RECENT_HIGH_VALUE_MIN_IMPORTANCE,
+            limit=self.config.RECENT_HIGH_VALUE_LIMIT,
+        )
         for mem in recent:
+            if mem.id in included_memory_ids:
+                continue
             context_parts.append(f"【近期经验】{mem.content[:200]}")
         
         # 截断到 token 限制（简单按字符数估算）
@@ -517,12 +862,19 @@ class MemoryService:
                 }
             return None
         except Exception as e:
+            conn.rollback()
             print(f"[ERROR] 获取用户画像失败: {e}")
             return None
         finally:
             cursor.close()
     
-    def _get_recent_high_value(self, user_id: str, days: int, limit: int) -> List[MemoryItem]:
+    def _get_recent_high_value(
+        self,
+        user_id: str,
+        days: int,
+        min_importance: float,
+        limit: int
+    ) -> List[MemoryItem]:
         """获取近期高价值记忆"""
         conn = self._get_connection()
         cursor = conn.cursor()
@@ -533,11 +885,11 @@ class MemoryService:
                 FROM memory_items
                 WHERE user_id = %s
                   AND status = 'active'
-                  AND importance_score >= 0.7
-                  AND created_at >= NOW() - INTERVAL '%s days'
+                  AND importance_score >= %s
+                  AND created_at >= NOW() - make_interval(days => %s)
                 ORDER BY importance_score DESC, created_at DESC
                 LIMIT %s
-            """, (user_id, days, limit))
+            """, (user_id, min_importance, days, limit))
             
             results = []
             for row in cursor.fetchall():
@@ -553,6 +905,7 @@ class MemoryService:
             
             return results
         except Exception as e:
+            conn.rollback()
             print(f"[ERROR] 获取近期记忆失败: {e}")
             return []
         finally:

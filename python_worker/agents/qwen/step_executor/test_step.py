@@ -10,7 +10,14 @@ from ....worker_config import create_event, stream_chunk, stream_start, stream_e
 from ..qwen_api import call_qwen_stream, call_qwen
 
 
-def run_test_step(step, context, events, task_id=None):
+def run_test_step(
+    step, 
+    context, 
+    events, 
+    task_id=None,
+    llm_client=None,  # ⭐ 依赖注入：LLM 客户端
+    code_executor=None  # ⭐ 依赖注入：代码执行器
+):
     """
     执行 test 步骤（工业级容错 + 流式输出）：
     - 从 write 步骤获取代码
@@ -94,16 +101,27 @@ def run_test_step(step, context, events, task_id=None):
     try:
         prompt = test_prompt(code)
         
-        # ⭐ 关键改动：使用流式调用而非阻塞调用
-        if task_id:
-            # 流式模式：逐块接收并转发
-            for chunk in call_qwen_stream(prompt):
-                test_code_text += chunk
-                # 实时发送到前端
-                stream_chunk(task_id, chunk)
+        # ⭐ 依赖注入：使用注入的 LLM 客户端，或默认使用真实实现
+        if llm_client is not None:
+            # 使用注入的依赖
+            if task_id and hasattr(llm_client, 'call_stream'):
+                # 流式模式
+                for chunk in llm_client.call_stream(prompt):
+                    test_code_text += chunk
+                    stream_chunk(task_id, chunk)
+            else:
+                # 非流式模式
+                test_code_text = llm_client.call(prompt)
         else:
-            # 非流式模式（向后兼容）
-            test_code_text = call_qwen(prompt)
+            # 使用默认实现
+            if task_id:
+                # 流式模式
+                for chunk in call_qwen_stream(prompt):
+                    test_code_text += chunk
+                    stream_chunk(task_id, chunk)
+            else:
+                # 非流式模式
+                test_code_text = call_qwen(prompt)
         
         # 验证返回值
         if not test_code_text:
@@ -162,7 +180,12 @@ def run_test_step(step, context, events, task_id=None):
     
     try:
         full_code = FAKE_PYTEST + "\n\n" + code + "\n\n" + test_code
-        test_result = run_python(full_code)
+        
+        # ⭐ 依赖注入：使用注入的代码执行器，或默认使用真实实现
+        if code_executor is not None:
+            test_result = code_executor.execute(full_code)
+        else:
+            test_result = run_python(full_code)
         
         # 检查执行结果
         if isinstance(test_result, dict):
@@ -212,6 +235,16 @@ def run_test_step(step, context, events, task_id=None):
         "llm_success": llm_success,
         "exec_success": exec_success
     }
+    
+    # ⭐ 新增：保存测试代码到 context，供 fix_step 使用
+    if context is not None:
+        context.setdefault("intermediate_results", []).append({
+            "type": "test",
+            "test_code": test_code,           # 关键：保存测试代码
+            "test_result": test_result,
+            "exec_success": exec_success,
+            "status": "passed" if exec_success else "failed"
+        })
     
     # ⭐ 结束流式输出
     if task_id:

@@ -57,7 +57,11 @@ export const useChatStore = create<ChatState>()(
       messages: [],
       currentTaskId: null,
       isStreaming: false,
-      selectedModel: 'qwen-turbo',  // ⭐ 改为默认模型名
+      // 默认值必须是 ModelSelector 中的 value（形如 xxx_generate）。
+      // 此前为 'qwen-turbo'，与选择器取值格式不一致：首次使用（无 localStorage）
+      // 提交时该值会作为任务 type 传给 Node API，命中 index.js 的兜底队列
+      // "task_queue"，而没有任何 worker 监听该队列，任务会永久卡在 pending。
+      selectedModel: 'qwen_generate',
       currentPhase: null,  // ⭐ 初始化
       
       addMessage: (message) => 
@@ -88,7 +92,7 @@ export const useChatStore = create<ChatState>()(
       
       setSelectedModel: (model) =>
         set({ selectedModel: model }),
-      
+
       clearMessages: () =>
         set({ messages: [], currentTaskId: null, isStreaming: false, currentPhase: null }),
       
@@ -126,9 +130,21 @@ export const useChatStore = create<ChatState>()(
     }),
     {
       name: 'alphapilot-chat-storage',
+      version: 3,
       partialize: (state) => ({ 
-        selectedModel: state.selectedModel 
-      })
+        selectedModel: state.selectedModel,
+      }),
+      migrate: (persisted: unknown, version: number) => {
+        const state = (persisted || {}) as { selectedModel?: string; collaborationMode?: string };
+
+        // 只修正已知的非法值；用户主动选择的其他值一律保留
+        if (version < 1 && (state.selectedModel === 'qwen-turbo' || !state.selectedModel)) {
+          state.selectedModel = 'qwen_generate';
+        }
+        delete state.collaborationMode;
+
+        return state as ChatState;
+      }
     }
   )
 );

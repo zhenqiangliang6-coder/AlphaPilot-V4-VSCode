@@ -46,9 +46,7 @@ class WebSocketService {
           // 发送缓存的消息
           while (this.messageQueue.length > 0) {
             const message = this.messageQueue.shift();
-            if (this.socket) {
-              this.socket.emit('message', message);
-            }
+            this.send(message);
           }
           
           resolve();

@@ -6,6 +6,7 @@
 
 import * as vscode from 'vscode';
 import * as path from 'path';
+import { applyWorkspaceDeleteOps } from './workspaceDelete';
 
 export interface FileOp {
     op: string;
@@ -39,7 +40,26 @@ export class FileOpsService {
                 throw new Error('未找到打开的工作区');
             }
 
+            const deletionOps = fileOps.filter((op) => op.op === 'delete' && op.path);
+            if (deletionOps.length > 0) {
+                const deletion = await applyWorkspaceDeleteOps(
+                    deletionOps.map((op) => ({ op: 'delete' as const, path: op.path! })),
+                    workspaceFolder.uri,
+                );
+                if (deletion.rejected.length > 0) {
+                    throw new Error(deletion.rejected.join('\n'));
+                }
+                if (deletion.cancelled) {
+                    this.outputChannel.appendLine('删除操作已取消。');
+                    return;
+                }
+                deletion.deleted.forEach((deletedPath) => {
+                    this.outputChannel.appendLine(`🗑️ 已移入回收站: ${deletedPath}`);
+                });
+            }
+
             for (const op of fileOps) {
+                if (op.op === 'delete') continue;
                 let fullPath = '';
                 if (op.path) {
                     // 使用 path.join 确保路径兼容性，然后转换为 URI
@@ -57,10 +77,6 @@ export class FileOpsService {
                     case 'modify':
                         await this.writeFile(fullPath, op.content || '');
                         this.outputChannel.appendLine(`✏️ 修改: ${op.path}`);
-                        break;
-                    case 'delete':
-                        await vscode.workspace.fs.delete(vscode.Uri.file(fullPath), { recursive: true, useTrash: false });
-                        this.outputChannel.appendLine(`🗑️ 删除: ${op.path}`);
                         break;
                     case 'meta':
                     case 'depends':
@@ -107,6 +123,8 @@ export class FileOpsService {
 // 如果需要在 extension.ts 中初始化并共享，建议在 extension.ts 中创建实例并传递
 
 import { Task, TaskStatus } from '../types/task';
+import { taskProtocolAdapter } from './taskProtocolAdapter';
+import type { TaskSubmissionOptions } from './taskProtocolAdapter';
 
 const NODE_API_BASE_URL = 'http://localhost:3000';
 
@@ -125,13 +143,13 @@ class TaskService {
   /**
    * 提交新任务
    */
-  async submitTask(prompt: string, type: string = 'qwen_generate'): Promise<string> {
+  async submitTask(
+    prompt: string,
+    type: string = 'qwen_generate',
+    options: TaskSubmissionOptions = {}
+  ): Promise<string> {
     try {
-      const body = {
-        type,
-        payload: { prompt },
-        source: 'vscode-extension'
-      };
+      const body = taskProtocolAdapter.createSubmission(type, prompt, options);
 
       const response = await fetch(`${NODE_API_BASE_URL}/task/submit`, {
         method: 'POST',
@@ -144,7 +162,10 @@ class TaskService {
         throw new Error(`HTTP ${response.status}: ${text}`);
       }
 
-      const data = await response.json();
+      const data = taskProtocolAdapter.adaptSubmissionResponse(
+        await response.json(),
+        body.trace_id
+      );
       const taskId = data.task_id;
 
       // 创建任务记录
@@ -155,7 +176,11 @@ class TaskService {
         status: 'pending',
         steps: [],
         events: [],
-        metadata: { source: 'vscode-extension' },
+        metadata: {
+          source: body.source,
+          protocol_version: body.protocol_version,
+          trace_id: body.trace_id
+        },
         createdAt: Date.now(),
         updatedAt: Date.now()
       };
@@ -362,5 +387,3 @@ class TaskService {
 
 // 单例模式
 export const taskService = new TaskService();
-
-

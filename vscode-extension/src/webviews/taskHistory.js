@@ -92,7 +92,15 @@ function getStatusIcon(status) {
 
 function getTypeLabel(type) {
     const labels = {
-        'qwen_generate': '🤖 AI 生成',
+        'qwen_generate': '🤖 通义千问',
+        'gemini_generate': '✨ Gemini',
+        'deepseek_generate': '🔍 DeepSeek',
+        'doubao_generate': '🫘 豆包',
+        'maas_generate': '🌀 腾讯混元 (MaaS)',
+        'modelscope_generate': '🌐 ModelScope',
+        'local_generate': '💻 本地模型',
+        'openai_generate': '🧠 OpenAI',
+        'claude_generate': '🎭 Claude',
         'add_numbers': '🧮 加法计算',
         'default': '📋 任务'
     };

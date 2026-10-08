@@ -209,7 +209,11 @@ class TaskModel:
             "version": TaskModel.VERSION,
             "task_id": task_id,
             "type": task_type,
-            "status": "done",
+            "status": (
+                "awaiting_authorization"
+                if (context or {}).get("meta", {}).get("execution_state") == "awaiting_authorization"
+                else "done"
+            ),
             "result": result,
             "error": None,
 

@@ -52,7 +52,7 @@ export function submitTask(prompt: string, model: string): void {
     type: 'submit_task',
     payload: {
       prompt,
-      model
+      model,
     }
   });
 }

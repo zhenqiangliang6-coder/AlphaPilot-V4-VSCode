@@ -31,19 +31,54 @@ class FileOpsValidator {
             return { valid: false, error: `禁止使用绝对路径: ${filePath}` };
         }
 
-        // 禁止 .. 越级
-        const normalized = path.normalize(filePath);
-        if (normalized.startsWith('..')) {
+        const rootPath = path.resolve(this.workspaceRoot);
+        const fullPath = path.resolve(rootPath, filePath);
+        const relativePath = path.relative(rootPath, fullPath);
+        if (
+            relativePath === '..'
+            || relativePath.startsWith(`..${path.sep}`)
+            || path.isAbsolute(relativePath)
+        ) {
             return { valid: false, error: `禁止路径越级: ${filePath}` };
         }
 
-        // 检查最终路径是否在工作区内
-        const fullPath = path.join(this.workspaceRoot, filePath);
-        if (!fullPath.startsWith(this.workspaceRoot)) {
+        let existingParent = fullPath;
+        while (!fs.existsSync(existingParent)) {
+            const parent = path.dirname(existingParent);
+            if (parent === existingParent) break;
+            existingParent = parent;
+        }
+        try {
+            const realRoot = fs.realpathSync(rootPath);
+            const realParent = fs.realpathSync(existingParent);
+            const realRelativePath = path.relative(realRoot, realParent);
+            if (
+                realRelativePath === '..'
+                || realRelativePath.startsWith(`..${path.sep}`)
+                || path.isAbsolute(realRelativePath)
+            ) {
+                return { valid: false, error: `路径通过符号链接超出工作区: ${filePath}` };
+            }
+        } catch (error) {
+            return { valid: false, error: `无法验证目标路径: ${error.message}` };
+        }
+
+        if (!fs.existsSync(rootPath) || !fs.statSync(rootPath).isDirectory()) {
             return { valid: false, error: `路径超出工作区范围: ${filePath}` };
         }
 
         return { valid: true };
+    }
+
+    isSensitivePath(filePath) {
+        const segments = filePath.replace(/\\/g, '/').split('/').filter(Boolean);
+        return segments.some((segment) => {
+            const normalized = segment.toLowerCase();
+            return normalized === '.git'
+                || normalized === '.env'
+                || normalized.startsWith('.env.')
+                || ['node_modules', 'venv', '.venv', '__pycache__', 'dist', 'build'].includes(normalized);
+        });
     }
 
     /**
@@ -57,6 +92,9 @@ class FileOpsValidator {
         if (['create', 'modify', 'delete', 'test', 'doc'].includes(op.op)) {
             const pathCheck = this.validatePath(op.path);
             if (!pathCheck.valid) return pathCheck;
+            if (op.op === 'delete' && this.isSensitivePath(op.path)) {
+                return { valid: false, error: `拒绝删除敏感路径: ${op.path}` };
+            }
         }
 
         return { valid: true };
@@ -104,10 +142,7 @@ class FileOpsExecutor {
                 return { status: 'success', action: 'modify', path: op.path };
 
             case 'delete':
-                if (fs.existsSync(fullPath)) {
-                    fs.unlinkSync(fullPath);
-                }
-                return { status: 'success', action: 'delete', path: op.path };
+                throw new Error('删除操作必须通过 VS Code 工作区删除工具，以确保回收站与用户确认策略生效');
 
             case 'meta':
             case 'depends':
@@ -199,6 +234,7 @@ class FileOpsHandler {
         // 2. 执行阶段
         try {
             const results = await this.executor.executeBatch(fileOps);
+            const failedResults = results.filter(result => result.status !== 'success');
             
             // ⭐ 构建返回结果，包含生成的文件列表
             const files = results
@@ -206,9 +242,13 @@ class FileOpsHandler {
                 .map(r => ({ path: r.path, action: r.action }));
             
             return { 
-                success: true, 
+                success: failedResults.length === 0,
                 results,
-                files  // ⭐ 返回生成的文件列表
+                files,
+                errors: failedResults.map(result => ({
+                    path: result.path,
+                    error: result.error,
+                })),
             };
         } catch (error) {
             return { success: false, error: error.message };

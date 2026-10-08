@@ -39,6 +39,7 @@ function Test-PortInUse {
 # -------------------------------
 function Get-PythonVenvPath {
     $venvPaths = @(
+        "$PSScriptRoot\..\.venv_worker\Scripts\python.exe",
         "$PSScriptRoot\.venv_worker\Scripts\python.exe",
         "$PSScriptRoot\python_worker\.venv\Scripts\python.exe",
         "$PSScriptRoot\.venv\Scripts\python.exe"
@@ -76,6 +77,28 @@ try {
 }
 
 if ($dockerRunning) {
+    # ⭐ 加载 .env.memory 环境变量，使 docker-compose 能获取 DB_PASSWORD 等配置
+    $envMemoryPath = Join-Path $PSScriptRoot "..\.env.memory"
+    if (-not (Test-Path $envMemoryPath)) {
+        $envMemoryPath = Join-Path $PSScriptRoot ".env.memory"
+    }
+    if (Test-Path $envMemoryPath) {
+        Write-Host "   📄 加载记忆中枢环境变量: $envMemoryPath" -ForegroundColor Cyan
+        Get-Content $envMemoryPath | ForEach-Object {
+            $line = $_.Trim()
+            if ($line -and -not $line.StartsWith('#')) {
+                $parts = $line -split '=', 2
+                if ($parts.Count -eq 2) {
+                    $key = $parts[0].Trim()
+                    $value = $parts[1].Trim()
+                    if ($key -and -not [Environment]::GetEnvironmentVariable($key, 'Process')) {
+                        [Environment]::SetEnvironmentVariable($key, $value, 'Process')
+                    }
+                }
+            }
+        }
+    }
+    
     # 检查容器是否已存在
     $existingContainer = docker ps -a --filter "name=$containerName" --format "{{.Names}}" 2>$null
     
@@ -100,8 +123,8 @@ if ($dockerRunning) {
         }
         
         if (Test-Path $dockerComposePath) {
-            # 使用 docker-compose 启动
-            docker-compose -f $dockerComposePath up -d | Out-Null
+            # 使用 docker compose 启动
+            docker compose -f $dockerComposePath up -d | Out-Null
             Write-Host "   🔄 等待数据库就绪..." -ForegroundColor Cyan
             Start-Sleep -Seconds 5
             
@@ -119,6 +142,27 @@ if ($dockerRunning) {
     
     # ⭐ 阶段 2：即时更新（启动时维护记忆）
     Write-Host "   🔄 执行记忆维护（衰减、剪枝、合并）..." -ForegroundColor Cyan
+    
+    # ⭐ 启动时清理临时会话记忆（每次启动全新开始）
+    Write-Host "   🧹 清理临时会话记忆..." -ForegroundColor Cyan
+    $tempMemoryDir = Join-Path $PSScriptRoot "..\..\.temp_memory"
+    if (-not (Test-Path $tempMemoryDir)) {
+        $tempMemoryDir = Join-Path $PSScriptRoot "..\.temp_memory"
+    }
+    if (-not (Test-Path $tempMemoryDir)) {
+        $tempMemoryDir = Join-Path $PSScriptRoot ".temp_memory"
+    }
+    if (Test-Path $tempMemoryDir) {
+        try {
+            Remove-Item -Path "$tempMemoryDir\*.json" -Force -ErrorAction SilentlyContinue
+            Write-Host "   ✅ 临时记忆已清理" -ForegroundColor Green
+        } catch {
+            Write-Host "   ⚠️ 临时记忆清理跳过" -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "   📁 创建临时记忆目录: $tempMemoryDir" -ForegroundColor Cyan
+        New-Item -ItemType Directory -Path $tempMemoryDir -Force | Out-Null
+    }
     
     $pythonExe = Get-PythonVenvPath
     $memoryMaintenanceScript = @"
@@ -153,6 +197,23 @@ except Exception as e:
         Write-Host "   ✅ 记忆维护完成" -ForegroundColor Green
     } catch {
         Write-Host "   ⚠️ 记忆维护失败，将在下次启动时重试" -ForegroundColor Yellow
+    }
+}
+
+if ($dockerRunning) {
+    $dockerComposePath = Join-Path $PSScriptRoot "..\docker-compose.yml"
+    if (-not (Test-Path $dockerComposePath)) {
+        $dockerComposePath = Join-Path $PSScriptRoot "docker-compose.yml"
+    }
+
+    if (Test-Path $dockerComposePath) {
+        docker compose -f $dockerComposePath up -d redis
+        $redisComposeExitCode = $LASTEXITCODE
+        if ($redisComposeExitCode -eq 0) {
+            Write-Host "   🐳 本地 Redis 已启动 (localhost:6379)" -ForegroundColor Green
+        } else {
+            Write-Host "   ⚠️ 本地 Redis 启动失败，请检查 Docker 输出" -ForegroundColor Yellow
+        }
     }
 }
 
@@ -238,8 +299,8 @@ Write-Host "   🐍 Python: $pythonExe" -ForegroundColor Cyan
 $workers = @(
     @{Name="Qwen"; Script="python_worker.agents.qwen.qwen_worker_v2"; EnvId="qwen-worker-1"},
     @{Name="Gemini"; Script="python_worker.agents.gemini.gemini_worker_v2"; EnvId="gemini-worker-1"},
-    @{Name="DeepSeek"; Script="python_worker.agents.deepeek.deepseek_worker_v3"; EnvId="deepseek-worker-1"},
-    @{Name="Doubao"; Script="python_worker.agents.Volcengine.doubao_worker_v3"; EnvId="doubao-worker-1"},
+    @{Name="MaaS"; Script="python_worker.agents.maas.maas_worker_v3"; EnvId="maas-worker-1"},
+    @{Name="ModelScope"; Script="python_worker.agents.modelscope.modelscope_worker_v3"; EnvId="modelscope-worker-1"},
     @{Name="Local LLM"; Script="python_worker.agents.local_llm.local_worker_v3"; EnvId="local-worker-1"}
 )
 
@@ -290,7 +351,7 @@ Write-Host "   Node API: $(if (Test-PortInUse -Port 3000) { '✅ 运行中' } el
 Write-Host "   AlphaPilot Proxy: $(if (Test-PortInUse -Port 8000) { '✅ 运行中' } else { '❌ 未运行' })" -ForegroundColor White
 Write-Host "   Qwen Worker: ✅ 已启动 (新窗口)" -ForegroundColor White
 Write-Host "   Gemini Worker: ✅ 已启动 (新窗口)" -ForegroundColor White
-Write-Host "   DeepSeek Worker: ✅ 已启动 (新窗口)" -ForegroundColor White
-Write-Host "   Doubao Worker: ✅ 已启动 (新窗口)" -ForegroundColor White
+Write-Host "   MaaS Worker: ✅ 已启动 (新窗口)" -ForegroundColor White
+Write-Host "   ModelScope Worker: ✅ 已启动 (新窗口)" -ForegroundColor White
 Write-Host "   Local LLM Worker: ✅ 已启动 (新窗口)" -ForegroundColor White
 Write-Host ""

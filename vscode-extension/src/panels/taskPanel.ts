@@ -619,6 +619,8 @@ export class TaskPanel {
           <option value="qwen_generate">通义千问 (Qwen)</option>
           <option value="deepseek_generate">深度求索 (DeepSeek)</option>
           <option value="doubao_generate">豆包 (Doubao)</option>
+          <option value="maas_generate">腾讯混元 (MaaS)</option>
+          <option value="modelscope_generate">ModelScope</option>
         </select>
       </div>
     </div>

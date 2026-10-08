@@ -1,5 +1,5 @@
 // src/App.tsx
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useChatStore } from './store/chatStore';
 import { Toolbar } from './components/Toolbar';
 import { ModelSelector } from './components/ModelSelector';
@@ -7,6 +7,7 @@ import { MessageList } from './components/MessageList';
 import { ChatInput } from './components/ChatInput';
 import { FileOpsList } from './components/FileOpsList';
 import { StepPanel } from './components/StepPanel';  // ⭐ v3.2 新增
+import { WorkspaceProgressToast } from './components/WorkspaceProgressToast';
 import { vscodeAPI } from './utils/vscode';
 
 function App() {
@@ -27,6 +28,29 @@ function App() {
 
   // ⭐ v3.2 新增：StepPanel 侧边栏状态
   const [showStepPanel, setShowStepPanel] = useState(false);
+  const [workspaceProgress, setWorkspaceProgress] = useState<{
+    message: string;
+    completed: boolean;
+  } | null>(null);
+  const workspaceProgressTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearWorkspaceProgressTimeout = () => {
+    if (workspaceProgressTimeout.current) {
+      clearTimeout(workspaceProgressTimeout.current);
+      workspaceProgressTimeout.current = null;
+    }
+  };
+
+  const finishWorkspaceProgress = () => {
+    clearWorkspaceProgressTimeout();
+    setWorkspaceProgress((progress) =>
+      progress ? { ...progress, completed: true } : null
+    );
+    workspaceProgressTimeout.current = setTimeout(() => {
+      setWorkspaceProgress(null);
+      workspaceProgressTimeout.current = null;
+    }, 1800);
+  };
 
   // 监听来自 Extension 的消息
   useEffect(() => {
@@ -79,10 +103,15 @@ function App() {
     };
 
     window.addEventListener('message', handleMessage);
-    return () => window.removeEventListener('message', handleMessage);
+    return () => {
+      window.removeEventListener('message', handleMessage);
+      clearWorkspaceProgressTimeout();
+    };
   }, []);
 
   const handleTaskStarted = (payload: any) => {
+    clearWorkspaceProgressTimeout();
+    setWorkspaceProgress(null);
     setCurrentTaskId(payload.task_id);
     setStreaming(true);
     
@@ -117,6 +146,7 @@ function App() {
   };
 
   const handleTaskCompleted = (payload: any) => {
+    finishWorkspaceProgress();
     setCurrentTaskId(null);
     setStreaming(false);
     setCurrentPhase(null);
@@ -149,6 +179,8 @@ function App() {
   };
 
   const handleTaskFailed = (payload: any) => {
+    clearWorkspaceProgressTimeout();
+    setWorkspaceProgress(null);
     setCurrentTaskId(null);
     setStreaming(false);
     setCurrentPhase(null);
@@ -182,6 +214,18 @@ function App() {
   const handleStreamChunk = (payload: any) => {
     const { task_id, chunk, phase, channel } = payload;
     
+    if (task_id !== useChatStore.getState().currentTaskId) {
+      return;
+    }
+
+    if (channel === 'tool') {
+      if (phase === 'workspace' && typeof chunk === 'string') {
+        clearWorkspaceProgressTimeout();
+        setWorkspaceProgress({ message: chunk, completed: false });
+      }
+      return;
+    }
+
     console.log('🔄 handleStreamChunk - phase:', phase, 'channel:', channel);
     
     updateMessage(task_id, (prev: any) => {
@@ -250,6 +294,12 @@ function App() {
       <Toolbar showStepPanel={showStepPanel} setShowStepPanel={setShowStepPanel} />
       <ModelSelector />
       <MessageList />
+      {workspaceProgress && (
+        <WorkspaceProgressToast
+          message={workspaceProgress.message}
+          completed={workspaceProgress.completed}
+        />
+      )}
       <ChatInput />
 
       {/* ⭐ v3.2 新增：StepPanel 侧边栏 */}

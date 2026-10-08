@@ -22,6 +22,7 @@ import {
 import { eventBus, EventType } from './eventBus';
 import { diffService } from '../services/diffService';
 import { websocketService } from '../services/websocketService';
+import { taskService } from '../services/taskService';
 
 /**
  * 消息处理器类型
@@ -230,13 +231,19 @@ class MessageDispatcher {
   /**
    * 便捷方法: 提交任务
    */
-  async submitTask(prompt: string, taskType: string, context?: any): Promise<void> {
-    const message = createExtensionMessage('submit_task', {
+  async submitTask(
+    prompt: string,
+    taskType: string,
+    context?: Record<string, unknown>
+  ): Promise<string> {
+    const taskId = await taskService.submitTask(
       prompt,
-      task_type: taskType,
-      context
-    });
-    await this.sendMessage(message);
+      taskType,
+      context ? { context } : {}
+    );
+    websocketService.subscribeTask(taskId);
+    eventBus.emit(EventType.TASK_SUBMITTED, { taskId, prompt });
+    return taskId;
   }
 
   /**

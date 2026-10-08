@@ -4,8 +4,11 @@ import { useChatStore } from '../store/chatStore';
 
 const models = [
   { value: 'qwen_generate', label: '通义千问 (Qwen)', desc: '快速响应' },
+  { value: 'gemini_generate', label: 'Gemini (谷歌)', desc: '长上下文·需代理' },
   { value: 'deepseek_generate', label: '深度求索 (DeepSeek)', desc: '平衡性能' },
   { value: 'doubao_generate', label: '豆包 (Doubao)', desc: '多模态支持' },
+  { value: 'maas_generate', label: '腾讯混元 (MaaS)', desc: '本地 Redis 测试' },
+  { value: 'modelscope_generate', label: 'ModelScope', desc: '本地 Redis 测试' },
   { value: 'local_generate', label: 'AlphaPilot (gemma LLM)', desc: '离线运行' }
 ];
 

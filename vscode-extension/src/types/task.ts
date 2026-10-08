@@ -1,7 +1,13 @@
 // src/types/task.ts
 // TaskModel 类型定义
 
-export type TaskStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+export type TaskStatus =
+  | 'pending'
+  | 'running'
+  | 'awaiting_authorization'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
 
 export interface Task {
   id: string;
@@ -44,7 +50,13 @@ export type StepType =
   | 'profile'
   | 'doc';
 
-export type StepStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
+export type StepStatus =
+  | 'pending'
+  | 'running'
+  | 'awaiting_authorization'
+  | 'completed'
+  | 'failed'
+  | 'skipped';
 
 export interface TaskEvent {
   event: string;

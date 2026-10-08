@@ -4,7 +4,7 @@
 # Gemini Worker v3.0 — 世界级执行链架构版（Google Gemini 原生接口）
 # - Intent Router：意图识别
 # - Persona Engine：执行链人格（engineer/creator/conversational）
-# - Execution Chain：analyze → plan → write → refine → test → fix → doc → docstring → profile
+# - Execution Chain：analyze → plan → write → refine → test → fix → doc → profile
 # - FileOps：多文件协议 v3.0（FILE/TEST/DOC/META/DEPENDS）
 # - ⭐ Memory Integration：记忆中枢集成（任务前注入上下文，任务后保存洞察）
 # - ⭐ Google Gemini 原生接口（通过 AlphaPilot International Proxy）
@@ -27,47 +27,21 @@ from ...worker_config import (
 )
 
 from ...planner import llm_decompose_task
-from ...intent_router import IntentRouter
+from ...intent_router import IntentRouter, requires_authorization_before_step
+from ...collaboration_modes import apply_mode_to_persona, apply_mode_to_steps, enforce_file_operation_policy, prepare_collaboration_mode
 from .step_executor import execute_step
 from .personas import get_persona_config
 from ...TaskModel_v2 import TaskModel
-
-# ⭐ 记忆集成层（延迟导入，避免循环依赖）
-try:
-    from ...memory_integration import (
-        build_memory_context,
-        enhance_prompt_with_memory,
-        save_task_memories
-    )
-    MEMORY_ENABLED = True
-except ImportError as e:
-    print(f"[WARN] 记忆集成层导入失败: {e}")
-    MEMORY_ENABLED = False
+from ...protocol import PROTOCOL_VERSION, validate_worker_task
+from ...worker_runtime import prepare_worker_request, save_worker_memory
+from .gemini_api import call_gemini_with_persona
 
 
 # =========================================================
 # v3.0：执行链定义（按意图动态裁剪）
 # =========================================================
 
-BASE_CHAIN = ["analyze", "plan", "write", "refine", "test", "fix", "doc", "docstring", "profile"]
-
-INTENT_CHAINS = {
-    "write_code": ["analyze", "plan", "write", "refine", "test", "fix", "doc", "docstring"],
-    "generate_doc": ["analyze", "plan", "write", "doc", "docstring"],
-    "explain_code": ["analyze", "plan", "doc"],
-    "creative_writing": ["analyze", "plan", "write", "refine"],
-    "chat": ["analyze", "write"],
-}
-
-# ⭐ 非核心步骤（异常时降级而非中断）
-NON_CRITICAL_STEPS = {"doc", "docstring", "profile"}
-
-
-def build_execution_chain(intent: str) -> list:
-    """
-    根据意图选择执行链；未知意图使用默认 BASE_CHAIN。
-    """
-    return INTENT_CHAINS.get(intent, BASE_CHAIN)
+NON_CRITICAL_STEPS = {"doc", "profile"}
 
 
 # =========================================================
@@ -88,6 +62,14 @@ def create_steps_from_chain(execution_chain: list, prompt: str, persona: str, in
         "plan": {
             "type": "plan",
             "input": {"prompt": "根据分析结果制定执行计划"}
+        },
+        "respond": {
+            "type": "respond",
+            "input": {"prompt": prompt}
+        },
+        "workspace": {
+            "type": "workspace",
+            "input": {"prompt": "执行已明确请求的工作区检查和 Python 环境操作"}
         },
         "write": {
             "type": "write",
@@ -135,7 +117,15 @@ def create_steps_from_chain(execution_chain: list, prompt: str, persona: str, in
 # v3.0：统一任务执行入口
 # =========================================================
 
-def execute_task(task_type: str, payload: dict, task_id: str, steps: list, events: list, context: dict):
+def execute_task(
+    task_type: str,
+    payload: dict,
+    task_id: str,
+    steps: list,
+    events: list,
+    context: dict,
+    protocol_metadata: dict = None,
+):
     """
     Gemini Worker v3.0 统一入口：
     - 只处理 gemini_generate 任务
@@ -147,53 +137,56 @@ def execute_task(task_type: str, payload: dict, task_id: str, steps: list, event
     if task_type != "gemini_generate":
         raise ValueError(f"不支持的任务类型：{task_type}")
 
-    prompt = payload.get("prompt", "")
-    if not prompt:
-        raise ValueError("prompt 不能为空")
+    prepared = prepare_worker_request(
+        payload, task_id, task_type, "Gemini",
+        protocol_metadata,
+    )
+    prompt = prepared["prompt"]
+    intent = prepared["intent"]
+    execution_plan = prepared["execution_plan"]
+    intent = execution_plan["intent"]
+    persona_type = execution_plan["persona"]
+    requested_mode = payload.get("collaboration_mode")
+    if intent == "mentor_explain":
+        requested_mode = "teacher"
+    mode, prompt, execution_chain = prepare_collaboration_mode(
+        requested_mode,
+        prompt,
+        execution_plan["execution_chain"],
+        preserve_chain=intent in {"mentor_explain", "external_git"},
+        intent=intent,
+    )
+    if intent == "workspace_maintenance" and not prepared["meta"]["workspace_scan"]["fixable_issue_count"]:
+        execution_chain = [step for step in execution_chain if step != "fix"]
+    execution_plan["execution_chain"] = list(execution_chain)
+    persona_config = apply_mode_to_persona(get_persona_config(persona_type), mode)
 
-    # ⭐ 记忆集成：任务开始前构建记忆上下文
-    user_id = payload.get("user_id", "default_user")
-    memory_ctx = None
-    original_prompt = prompt
-    
-    if MEMORY_ENABLED:
-        try:
-            memory_ctx = build_memory_context(user_id, task_id, prompt)
-            if memory_ctx.has_memory:
-                # 增强提示词
-                prompt = enhance_prompt_with_memory(prompt, memory_ctx)
-                print(f"\n🧠 [MEMORY] 已为任务 {task_id} 注入记忆上下文")
-        except Exception as e:
-            print(f"\n⚠️ [MEMORY] 记忆注入失败，继续执行: {e}")
-
-    # 1) 意图识别 + 人格选择
-    intent, persona_type, _ = IntentRouter.detect_intent(prompt)
-    persona_config = get_persona_config(persona_type)
-
-    # 2) 构建执行链
-    execution_chain = build_execution_chain(intent)
-
-    # 写入 meta
     context["meta"] = {
-        "intent": intent,
-        "persona": persona_type,
+        **prepared["meta"],
         "persona_config": persona_config,
         "execution_chain": execution_chain,
-        "has_memory": memory_ctx.has_memory if memory_ctx else False,  # ⭐ 记录是否有记忆注入
-        "model": "gemini",  # ⭐ 标识模型类型
+        "execution_plan": execution_plan,
+        "collaboration_mode": mode,
+        "model": "gemini",
     }
+    if task_type == "gemini_generate":
+        context["_respond_call"] = lambda text, persona, run_id: (
+            call_gemini_with_persona(text, persona, use_stream=bool(run_id))
+        )
 
-    print("\n🧠 Gemini Worker v3.0 决策：")
+    print("\n🧠 Gemini Worker 决策：")
     print(f"  意图: {intent}")
     print(f"  人格: {persona_config['name']} ({persona_config['icon']})")
     print(f"  执行链: {' → '.join(execution_chain)}")
-    if memory_ctx and memory_ctx.has_memory:
-        print(f"  🧠 [MEMORY] 已注入记忆上下文 ({len(memory_ctx.memory_context)} 字符)")
+    memory_context = prepared.get("memory_context")
+    if memory_context and memory_context.has_memory:
+        print(f"  🧠 [MEMORY] 已注入记忆上下文 ({len(memory_context.memory_context)} 字符)")
 
     # 3) 如果外部未传入 steps，则根据执行链动态生成
     if not steps:
         steps.extend(create_steps_from_chain(execution_chain, prompt, persona_type, intent))
         print(f"\n📋 动态生成 {len(steps)} 个步骤 (意图: {intent})")
+    apply_mode_to_steps(steps, mode)
 
     # 4) Planner 兜底（可选）
     if not steps:
@@ -203,6 +196,20 @@ def execute_task(task_type: str, payload: dict, task_id: str, steps: list, event
     # 5) 逐步执行（带取消检查 + 状态管理 + 非核心步骤降级）
     for step in steps:
         try:
+            if requires_authorization_before_step(execution_plan, step.get("type", "")):
+                step["status"] = "awaiting_authorization"
+                step["output"] = {
+                    "text": "此验证步骤需先向用户展示完整测试命令并取得确认；当前任务未运行该步骤。",
+                    "proposed_command": context["meta"].get("proposed_test_command"),
+                }
+                context["meta"].setdefault("deferred_steps", []).append(step.get("type"))
+                context["meta"].setdefault("authorization_requests", []).append({
+                    "type": "test",
+                    "command": context["meta"].get("proposed_test_command"),
+                    "status": "awaiting_user_confirmation",
+                })
+                continue
+
             if check_stop_flag(task_id):
                 step["status"] = "failed"
                 step["output"] = {"text": "任务已被用户取消"}
@@ -239,6 +246,19 @@ def execute_task(task_type: str, payload: dict, task_id: str, steps: list, event
             raise step_error
 
     # 6) 返回最后一步的输出
+    enforce_file_operation_policy(context, mode, steps=steps, events=events)
+    if any(operation.get("op") == "delete" for operation in context.get("final_file_ops", [])):
+        context["meta"].setdefault("authorization_requests", []).append({
+            "type": "delete",
+            "paths": [
+                operation.get("path")
+                for operation in context.get("final_file_ops", [])
+                if operation.get("op") == "delete"
+            ],
+            "status": "awaiting_host_policy",
+        })
+    if context["meta"].get("authorization_requests"):
+        context["meta"]["execution_state"] = "awaiting_authorization"
     last_output = steps[-1].get("output", {})
     return last_output.get("text", "")
 
@@ -271,7 +291,7 @@ def main_loop():
                 time.sleep(2)
                 continue
 
-            task = json.loads(task_json)
+            task = validate_worker_task(json.loads(task_json))
 
             print("\n" + "=" * 60)
             print("收到任务:")
@@ -281,8 +301,6 @@ def main_loop():
             task_id = task["task_id"]
             task_type = task.get("task_type") or task.get("type")
             payload = task["payload"]
-            user_id = payload.get("user_id", "default_user")
-
             # 只处理 gemini_generate
             if task_type and not task_type.startswith("gemini_"):
                 redis.lpush(queue_name, task_json)
@@ -302,31 +320,24 @@ def main_loop():
             context["final_file_ops"] = []
 
             # 执行任务
-            result = execute_task(task_type, payload, task_id, steps, events, context)
-
-            # ⭐ 记忆集成：任务完成后保存洞察
-            if MEMORY_ENABLED:
-                try:
-                    # 构建任务结果摘要
-                    task_result = {
-                        "status": "success",
-                        "content": result[:500] if result else "",  # 取前500字符
-                        "steps": steps
-                    }
-                    
-                    # 保存记忆
-                    save_task_memories(
-                        user_id=user_id,
-                        task_id=task_id,
-                        result=task_result,
-                        context={
-                            "preferred_language": payload.get("language", "Python"),
-                            "task_type": task_type,
-                            "intent": context.get("meta", {}).get("intent", "unknown")
-                        }
-                    )
-                except Exception as e:
-                    print(f"\n⚠️ [MEMORY] 保存任务记忆失败: {e}")
+            protocol_metadata = {
+                "protocol_version": task.get("protocol_version"),
+                "trace_id": task.get("trace_id"),
+            }
+            result = execute_task(
+                task_type, payload, task_id, steps, events, context,
+                protocol_metadata=protocol_metadata,
+            )
+            save_worker_memory(
+                context.get("meta", {}).get("memory_user_id"),
+                task_id,
+                task_type,
+                context.get("meta", {}).get("intent", "unknown"),
+                result,
+                steps,
+                context,
+            )
+            context.pop("_respond_call", None)
 
             # 写回成功结果
             result_key = f"task_result:{task_id}"
@@ -340,6 +351,9 @@ def main_loop():
                 events=events,
                 context=context,
             )
+            if task.get("protocol_version") == PROTOCOL_VERSION:
+                result_data["protocol_version"] = task["protocol_version"]
+                result_data["trace_id"] = task["trace_id"]
 
             redis.set(result_key, json.dumps(result_data))
 
@@ -372,6 +386,7 @@ def main_loop():
             clear_stop_flag(task_id)
 
         except Exception as e:
+            context.pop("_respond_call", None)
             is_cancelled = "取消" in str(e) or "cancel" in str(e).lower()
 
             if is_cancelled:
