@@ -112,6 +112,8 @@ def infer_collaboration_mode(intent):
         return "file_manager"
     if intent == "creative_writing":
         return "creative"
+    if intent == "set_preference":
+        return "engineer"
     return "engineer"
 
 def prepare_collaboration_mode(mode, prompt, default_chain, preserve_chain=False, intent=None):

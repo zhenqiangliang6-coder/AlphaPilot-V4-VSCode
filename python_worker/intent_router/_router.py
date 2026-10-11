@@ -190,6 +190,10 @@ class IntentRouter:
         if intent in ("chat", "mentor_explain"):
             chain = ["analyze", "plan", "respond"]
 
+        # set_preference — 只需理解约定并写入
+        if intent == "set_preference":
+            chain = ["analyze", "plan", "write"]
+
         # external_git 不需 write/refine
         if intent == "external_git":
             chain = [s for s in chain if s not in ("write", "refine", "test", "fix", "doc")]

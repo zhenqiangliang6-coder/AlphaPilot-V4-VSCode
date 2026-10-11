@@ -12,7 +12,7 @@ ALL_INTENTS = (
     "external_git", "workspace_maintenance", "write_code",
     "fix_code", "explain_and_fix", "explain_code",
     "creative_writing", "analysis", "architecture",
-    "refactor", "generate_doc",
+    "refactor", "generate_doc", "set_preference",
 )
 
 ALL_TARGET_TYPES = ("file", "code", "test", "config", "infra", "dep", "none")
@@ -34,6 +34,7 @@ LITE_CLASSIFY_PROMPT = """你是意图路由器。根据用户输入，只输出
     - architecture: 架构设计/方案讨论（只读，不写代码）
     - refactor: 重构/抽取/拆分/迁移（改进现有代码结构）
     - generate_doc: 生成文档/注释/API文档
+    - set_preference: 设定项目偏好/记录约定/记住规则（不是教学解释。如"记住XX放YY"、"以后都用ZZ"、"默认遵循AA规范"）
 
     目标类型（target_type）：
     - code: 源代码/业务逻辑
@@ -74,7 +75,13 @@ LITE_CLASSIFY_PROMPT = """你是意图路由器。根据用户输入，只输出
     用户："run tests"
     输出：{"intent":"write_code","target_type":"test","confidence":0.97,"reasoning":"要求运行测试，属于代码生成/执行类工程任务"}
 
-    重要：运行测试、执行测试、run test 属于 write_code 而不是 workspace_maintenance。workspace_maintenance 仅限缩进/格式化/语法检查/环境安装。
+    用户："记住，数据加载统一放在 src/ 里"
+    输出：{"intent":"set_preference","target_type":"config","confidence":0.95,"reasoning":"要求记住一个项目约定，属于设置偏好"}
+
+    用户："以后都用 pandas 做数据处理吧"
+    输出：{"intent":"set_preference","target_type":"config","confidence":0.94,"reasoning":"设定默认技术选型偏好"}
+
+    重要：运行测试、执行测试、run test 属于 write_code 而不是 workspace_maintenance。workspace_maintenance 仅限缩进/格式化/语法检查/环境安装。"记住""以后都""默认用""统一放"这类设定偏好的指令属于 set_preference 而不是 mentor_explain。
 
     现在分类（只输出 JSON）："""
 
@@ -211,6 +218,18 @@ READ_ONLY_DESIGN_PATTERNS = [
 # ② 普通意图匹配（按优先级）
 # =========================================================
 INTENT_PATTERNS: Dict[str, list] = {
+    "set_preference": [
+        r"(?:记住|记下|记录).{0,24}(?:约定|规则|偏好|规范|要求|偏好|配置)",
+        r"(?:以后|今后|往后|之后|下回|下次).{0,16}(?:都|一律|统一|默认).{0,24}(?:用|放在|使用|采用|遵循|放在|放到)",
+        r"(?:设定|设置|配置).{0,16}(?:偏好|默认|规则|规范|约定)",
+        r"(?:统一|一律).{0,16}(?:放在|放到|使用|采用)",
+        r"(?:默认|总是).{0,16}(?:使用|采用|放在|放到)",
+        r"remember.{0,24}(?:convention|rule|preference|standard)",
+        r"(?:set|configure).{0,16}(?:preference|default|rule|standard)",
+        r"(?:以后|今后|往后).{0,16}(?:不|别|不要|禁止).{0,16}(?:用|使用|采用|放在|放到)",
+        r"(?:就|都).{0,4}(?:按|按照|照).{0,16}(?:这个|这|上面|前述).{0,16}(?:规范|标准|约定|规则).{0,8}(?:来|做|写|实现)",
+    ],
+
     "workspace_maintenance": [
         r"(?:检查|扫描|修复|整理).{0,30}(?:整个项目|所有|全部|项目).{0,30}(?:语法|缩进)",
         r"(?:语法|缩进).{0,30}(?:整个项目|所有|全部|项目)",
@@ -344,6 +363,7 @@ INTENT_TO_PERSONA: Dict[str, str] = {
     "architecture": "architect",
     "refactor": "engineer",
     "generate_doc": "engineer",
+    "set_preference": "engineer",
 }
 
 # =========================================================
@@ -402,6 +422,7 @@ _INTENT_DEFAULT_PROFILE: Dict[str, dict] = {
     "architecture":      dict(output_mode="document", ws_dep="read_only", fileops=True, scan=True, test=False, fmt="md", complexity="moderate"),
     "refactor":          dict(output_mode="code", ws_dep="rw", fileops=True, scan=True, test=True, fmt="py", complexity="moderate"),
     "generate_doc":      dict(output_mode="document", ws_dep="read_only", fileops=True, scan=True, test=False, fmt="md", complexity="simple"),
+    "set_preference":    dict(output_mode="text", ws_dep="read_write", fileops=True, scan=False, test=False, fmt="plain_text", complexity="simple"),
 }
 
 # 测试执行请求的正则模式 — 用于硬覆盖 LLM 误判为 workspace_maintenance 的情况
