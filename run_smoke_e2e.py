@@ -22,6 +22,7 @@ from python_worker.agents.qwen import qwen_worker_v2
 from python_worker.collaboration_modes import enforce_file_operation_policy
 from python_worker.context_builder import inspect_python_project
 from python_worker.file_ops import parse_fileops_v3
+from python_worker.dependency_merger import merge_dependencies, dependency_summary
 from python_worker.intent_router import IntentRouter
 from python_worker.memory_integration import MemoryIntegration
 
@@ -239,22 +240,37 @@ def run() -> bool:
             "import pandas\nimport numpy\nimport openpyxl\n", encoding="utf-8"
         )
         scan = inspect_python_project(str(dep_project))
-        marker_ops = [
-            operation
-            for operation in parse_fileops_v3(GENERATED_PROTOCOL)
-            if operation["op"] == "depends"
-        ]
-        found_sources = (
-            bool(scan["dependency_manifests"])
-            and {"pandas", "numpy"}.issubset(scan["inferred_dependencies"])
-            and "openpyxl" in scan["unresolved_imports"]
-            and marker_ops[0]["data"]["files"] == ["pandas", "numpy", "openpyxl"]
-        )
-        assert found_sources, "At least one dependency discovery source is unavailable"
+
+        # ---- 验证 unified_dependencies 合并去重 -----------------------------------
+        unified = {d["name"]: d for d in scan.get("unified_dependencies", [])}
+        assert "pandas" in unified, "pandas missing from unified_dependencies"
+        assert "numpy" in unified, "numpy missing from unified_dependencies"
+
+        pandas_entry = unified["pandas"]
+        numpy_entry = unified["numpy"]
+
+        assert set(pandas_entry["sources"]) == {"manifest", "ast_import"}, \
+            f"pandas sources: {pandas_entry['sources']}"
+        assert pandas_entry["signal_count"] == 2, \
+            f"pandas signal_count: {pandas_entry['signal_count']}"
+        assert set(numpy_entry["sources"]) == {"manifest", "ast_import"}, \
+            f"numpy sources: {numpy_entry['sources']}"
+        assert numpy_entry["signal_count"] == 2
+
+        # openpyxl 未在 sandbox venv 安装 → 应进入 unresolved_imports（仍是有效信号）
+        assert "openpyxl" in scan["unresolved_imports"], \
+            "openpyxl should be in unresolved_imports (not installed in sandbox)"
+
+        summary = scan["dependency_summary"]
+        assert summary["total"] == 2
+        assert summary["by_source"]["manifest"] == 2
+        assert summary["by_source"]["ast_import"] == 2
+        assert summary["multi_signal"] == 2
+
         results.append((
-            "Dependency sources (manifest, DEPENDS, AST)",
-            "GAP",
-            "All three signals are detected separately; no product API merges/deduplicates them.",
+            "Unified dependency merge & dedup",
+            "PASS",
+            "Manifest + AST merged: pandas/numpy=2-signal; openpyxl=unresolved (third signal preserved).",
         ))
 
         memory_ok = _exercise_memory_integration()

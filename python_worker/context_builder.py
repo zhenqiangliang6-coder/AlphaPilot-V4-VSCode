@@ -11,6 +11,11 @@ import tabnanny
 import tokenize
 from pathlib import Path
 
+try:
+    from .dependency_merger import merge_dependencies, dependency_summary, _parse_version
+except ImportError:
+    from dependency_merger import merge_dependencies, dependency_summary, _parse_version
+
 MAX_FILE_BYTES = 16_000
 MAX_TOTAL_CHARS = 60_000
 MAX_FILES_PER_GROUP = 6
@@ -224,6 +229,24 @@ def inspect_python_project(workspace_path):
         imported_modules,
         local_modules,
     )
+
+    # ---- 解析 manifest 文件内容，得到包名 → 版本映射 ----------------------------
+    manifest_deps: dict[str, str | None] = {}
+    for manifest_name in manifests:
+        manifest_path = root / manifest_name
+        if manifest_name.lower() == "requirements.txt" or manifest_name.lower() == "requirements-dev.txt":
+            manifest_deps.update(_parse_requirements_txt(manifest_path))
+        elif manifest_name.lower() == "pyproject.toml":
+            manifest_deps.update(_parse_pyproject_toml_deps(manifest_path))
+
+    # ---- 合并三种信号源 ----------------------------------------------------------
+    unified_deps = merge_dependencies(
+        manifest_deps=manifest_deps,
+        inferred_deps=inferred_dependencies,
+        depends_deps=None,  # DEPENDS markers come from write_step, not workspace scan
+    )
+    deps_summary = dependency_summary(unified_deps)
+
     return {
         "root": str(root),
         "python_file_count": len(python_paths),
@@ -240,6 +263,16 @@ def inspect_python_project(workspace_path):
         "unresolved_imports": unresolved_imports,
         "unresolved_import_files": unresolved_import_files,
         "scan_errors": walk_errors,
+        "unified_dependencies": [
+            {
+                "name": e.name,
+                "sources": e.sources,
+                "version": e.version,
+                "signal_count": e.signal_count,
+            }
+            for e in unified_deps
+        ],
+        "dependency_summary": deps_summary,
     }
 
 
@@ -402,3 +435,96 @@ def _matching_files(directory, patterns):
             if not any(part in SKIP_DIRS for part in path.parts)
         )
     return matches
+
+
+# ---- Manifest 文件解析器 --------------------------------------------------------
+
+_REQUIREMENTS_LINE_RE = re.compile(
+    r"^\s*(?P<name>[a-zA-Z0-9_][a-zA-Z0-9_.-]*)\s*"
+    r"(?:(?P<version>==|>=|<=|~=|!=|<|>)\s*[a-zA-Z0-9_.*+!-]+)?"
+    r"\s*(?:#.*)?$"
+)
+
+
+def _parse_requirements_txt(manifest_path: Path) -> dict[str, str | None]:
+    """解析 requirements.txt，返回 {包名: 版本约束}。"""
+    deps: dict[str, str | None] = {}
+    try:
+        content = manifest_path.read_text(encoding="utf-8", errors="replace")
+    except (OSError, RuntimeError, UnicodeError):
+        return deps
+
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or line.startswith("-"):
+            continue
+        match = _REQUIREMENTS_LINE_RE.match(line)
+        if not match:
+            continue
+        name = match.group("name")
+        version = match.group("version")
+        if version:
+            # 提取版本字符串
+            ver_start = line.index(version)
+            version_str = line[ver_start:].split("#")[0].strip()
+        else:
+            version_str = None
+        deps[name] = version_str
+    return deps
+
+
+def _parse_pyproject_toml_deps(path: Path) -> dict[str, str | None]:
+    """从 pyproject.toml 的 [project].dependencies 和 [build-system].requires 中提取包名。"""
+    deps: dict[str, str | None] = {}
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace")
+    except (OSError, RuntimeError, UnicodeError):
+        return deps
+
+    in_project_table = False
+    in_dependencies = False
+    in_build_table = False
+    in_build_requires = False
+
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+
+        if line.startswith("[project]"):
+            in_project_table = True
+            in_build_table = False
+            continue
+        if line.startswith("[build-system]"):
+            in_build_table = True
+            in_project_table = False
+            continue
+        if line.startswith("[") and not line.startswith("[["):
+            in_project_table = False
+            in_build_table = False
+            in_dependencies = False
+            in_build_requires = False
+            continue
+
+        if in_project_table and line.startswith("dependencies"):
+            in_dependencies = True
+            line = line.split("=", 1)[-1] if "=" in line else ""
+
+        if in_build_table and line.startswith("requires"):
+            in_build_requires = True
+            line = line.split("=", 1)[-1] if "=" in line else ""
+
+        if not in_dependencies and not in_build_requires:
+            continue
+
+        # 尝试匹配包名字符串 "package" 或 'package'
+        pkg_matches = re.findall(r"[\"']([a-zA-Z0-9_][a-zA-Z0-9_.-]*)[\"']", line)
+        for pkg in pkg_matches:
+            if pkg.lower() not in ("python", "py"):
+                deps.setdefault(pkg, None)
+
+        # 检测依赖块是否结束
+        if in_dependencies and line.endswith("]"):
+            in_dependencies = False
+        if in_build_requires and line.endswith("]"):
+            in_build_requires = False
+
+    return deps
