@@ -275,6 +275,16 @@ task = TaskModel.create_task_submit(
 
 ## 📝 更新日志
 
+### 2026-10-11
+
+- ✅ DeepSeek Worker 升级至 v3.0（完全重写，与 Qwen Worker v3.0 对齐）
+- ✅ DeepSeek API 三级降级链（MAAS deepseek-v4-pro-0813 → deepseek-v4-pro → 火山引擎 Ark）
+- ✅ DeepSeek 切换至本地 Redis (127.0.0.1:6379)
+- ✅ DeepSeek 加入 start_all.ps1 启动管线
+- ✅ 全部 9 个 Worker write_step plan 回退修复
+- ✅ 4 个 Worker 创意意图 token 浪费优化
+- ✅ intent_router.py 拆分为 intent_router/ 包（_data / _classification / _router）
+
 ### 2026-03-31
 
 - ✅ 完成 DeepSeek Worker v2 实现

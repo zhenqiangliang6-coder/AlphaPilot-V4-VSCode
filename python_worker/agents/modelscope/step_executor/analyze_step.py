@@ -78,11 +78,13 @@ def run_analyze_step(step, context, events, task_id=None):
         prompt = analyze_prompt(user_input)
         
         # ⭐ v2.6 关键改动：使用带人格配置的流式调用
+        system_prompt = persona_config.get("system_prompt") if persona_config else None
+        
         if task_id:
             # ⭐ 使用带人格配置的流式调用
             if persona_config:
                 print(f"🚀 使用人格配置进行流式调用: {persona_config['name']}")
-                for chunk in call_modelscope_stream(prompt):
+                for chunk in call_modelscope_stream(prompt, system_prompt=system_prompt):
                     result += chunk
                     # 实时发送到前端 (channel=reasoning)
                     stream_chunk(task_id, chunk, phase="analyze", channel="reasoning")
@@ -94,7 +96,7 @@ def run_analyze_step(step, context, events, task_id=None):
         else:
             # 非流式模式（向后兼容）
             if persona_config:
-                result = call_modelscope(prompt)
+                result = call_modelscope(prompt, system_prompt=system_prompt)
             else:
                 result = call_modelscope(prompt)
         

@@ -99,6 +99,7 @@ def prepare_worker_request(payload, task_id, task_type, model_name, protocol_met
         )
         prompt += f"\n\n[工作区实际扫描结果]\n{workspace_report}"
 
+    skill = route_skill(original_prompt)
     execution_plan = IntentRouter.plan_request(
         original_prompt,
         workspace_available=bool(project_context_files or workspace_scan),
@@ -107,8 +108,8 @@ def prepare_worker_request(payload, task_id, task_type, model_name, protocol_met
         detected_intent=detected_intent,
         detected_persona=detected_persona,
         detected_chain=detected_chain,
+        matched_skill=skill,
     )
-    skill = route_skill(original_prompt)
     if skill:
         prompt += (
             f"\n\n[AlphaPilot Skill: {skill.id} v{skill.version}]\n{skill.guidance}"

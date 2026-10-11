@@ -9,6 +9,7 @@ __all__ = [
     "analyze_prompt",
     "plan_prompt",
     "write_prompt",
+    "creative_write_prompt",
     "refine_prompt",
     
     # 扩展步骤 prompt
@@ -99,6 +100,45 @@ def write_prompt(plan: str) -> str:
 5. 不要包含解释性文字，只输出代码
 6. 输出必须是合法 Python 代码，不要包含解释性文字
 """
+
+
+def creative_write_prompt(plan: str, user_request: str = "", intent: str = "creative_writing") -> str:
+    """
+    创意/对话类意图的纯文本输出 prompt（跳过 FileOps，零浪费）
+    不生成代码文件结构，直接输出自然语言内容
+    """
+    intent_label = {
+        "creative_writing": "创作任务",
+        "translate": "翻译任务",
+        "summarization": "摘要任务",
+        "chat": "对话任务",
+        "mentor_explain": "教学讲解任务",
+    }.get(intent, "内容生成任务")
+
+    user_section = ""
+    if user_request:
+        user_section = f"\n【用户原始请求】：\n{user_request}\n"
+    
+    analyze_section = ""
+    if plan:
+        analyze_section = f"\n【分析参考】：\n{plan}\n"
+
+    return f"""你正在执行一个 {intent_label}。
+
+这是纯文本输出模式，请不要生成任何代码文件、测试文件、文档文件或元数据。
+禁止使用以下格式：
+- 禁止代码块包装（```python```）
+- 禁止函数定义包装内容
+- 禁止模拟文件结构输出
+{user_section}{analyze_section}
+【输出要求】：
+1. 直接输出最终内容，不要任何格式包装
+2. 内容自然流畅，符合 {intent_label} 场景
+3. 不要添加解释、说明或备注
+4. 如果用户要的是诗，直接输出诗；要的是文章，直接输出文章
+5. 只输出纯文本内容
+
+现在请直接输出："""
 
 
 def refine_prompt(code: str, exec_summary: str) -> str:

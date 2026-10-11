@@ -158,18 +158,19 @@ def test_prompt(code: str) -> str:
 """
 
 
-def fix_prompt(code: str, error_message: str) -> str:
+def fix_prompt(code: str, error_message: str, test_code: str = "") -> str:
     """
-    生成自动修复代码的 prompt
+    生成自动修复代码的 prompt（支持测试代码）
     
     参数:
         code: 原始代码字符串
         error_message: 执行错误信息
+        test_code: 测试代码（可选）
     
     返回:
         str: 用于调用 LLM 的完整 prompt
     """
-    return f"""
+    prompt = f"""
 下面是一段 Python 代码和它的执行错误，请分析错误原因并给出修复后的完整代码：
 
 【原始代码】：
@@ -179,6 +180,24 @@ def fix_prompt(code: str, error_message: str) -> str:
 
 【执行错误】：
 {error_message}
+"""
+    
+    if test_code:
+        prompt += f"""
+
+【测试代码】（关键参考，必须满足测试要求）：
+```python
+{test_code}
+```
+
+⭐⭐⭐ 重要提示：
+- 上面的测试代码定义了期望的方法名、参数签名、返回类型
+- 修复后的代码必须与测试代码匹配，否则测试仍会失败
+- 检查方法名、参数顺序、返回类型是否与测试一致
+- 如果测试使用了 fixture 或 mock，确保代码能兼容
+"""
+    
+    prompt += """
 
 要求：
 1. 分析错误的根本原因
@@ -186,6 +205,8 @@ def fix_prompt(code: str, error_message: str) -> str:
 3. 简要说明修复了什么问题
 4. 输出必须是合法 Python 代码，不要包含解释性文字
 """
+    
+    return prompt
 
 
 def profile_prompt(code: str) -> str:

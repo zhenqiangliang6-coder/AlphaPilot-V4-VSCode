@@ -33,9 +33,21 @@ def run_refine_step(step, context, events, task_id=None):
 
     meta = context.get("meta", {})
     persona = meta.get("persona_config")
+    intent = meta.get("intent", "write_code")
+    
+    # ⭐ 创意/对话类意图跳过 refine（无代码可优化）
+    _creative_intents = {"creative_writing", "translate", "summarization", "chat", "mentor_explain"}
+    if intent in _creative_intents:
+        print(f"[INFO] 创意/对话类意图 ({intent})，跳过 refine 步骤")
+        step["output"] = {"text": "refine 跳过（创意任务无需代码优化）"}
+        if task_id:
+            stream_end(task_id)
+        return
+
+    system_prompt = persona.get("system_prompt") if persona else None
 
     if persona:
-        response = call_modelscope(prompt)
+        response = call_modelscope(prompt, system_prompt=system_prompt)
     else:
         response = call_modelscope(prompt)
 

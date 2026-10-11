@@ -257,6 +257,13 @@ def main_loop():
     while True:
         try:
             result_key = None
+            task_id = None
+            task_type = None
+            started_at = int(time.time() * 1000)
+            retry_count = 0
+            steps = []
+            events = []
+            context = {}
 
             task_json = redis.rpop(queue_name)
             if not task_json:
@@ -275,7 +282,7 @@ def main_loop():
             payload = task["payload"]
 
             # 只处理 maas_generate
-            if task_type and not task_type.startswith("maas_"):
+            if task_type and not task_type.startswith("maas"):
                 redis.lpush(queue_name, task_json)
                 print(f"⚠️ 收到不匹配的任务类型: {task_type}，已放回队列")
                 time.sleep(1)

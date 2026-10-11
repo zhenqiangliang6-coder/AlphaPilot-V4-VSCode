@@ -25,14 +25,30 @@ class QwenLLMClient(LLMClient):
 
 
 class PythonCodeExecutor(CodeExecutor):
-    """Python 代码执行器适配器"""
+    """Python 代码执行器适配器（支持策略模式）"""
     
-    def __init__(self):
-        from ....code_executor import run_python
-        self._execute = run_python
+    def __init__(self, strategy: str = None):
+        """
+        参数:
+            strategy: 执行策略（"local" 或 "docker"）
+                     如果为 None，从环境变量读取
+        """
+        # 尝试使用策略模式
+        try:
+            from ....execution_strategy import ExecutionStrategyFactory
+            self._strategy = ExecutionStrategyFactory.create(strategy)
+            self._use_strategy = True
+        except ImportError:
+            # 如果 execution_strategy 不存在，回退到直接使用 run_python
+            from ....code_executor import run_python
+            self._execute = run_python
+            self._use_strategy = False
     
     def execute(self, code: str) -> Dict[str, Any]:
-        return self._execute(code)
+        if self._use_strategy:
+            return self._strategy.execute(code)
+        else:
+            return self._execute(code)
 
 
 class V3FileOpsParser(FileOpsParser):

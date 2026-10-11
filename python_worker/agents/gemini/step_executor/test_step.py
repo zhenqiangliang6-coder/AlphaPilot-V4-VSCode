@@ -11,7 +11,14 @@ from ....worker_config import create_event, stream_chunk, stream_start, stream_e
 from ..gemini_api import call_gemini
 
 
-def run_test_step(step, context, events, task_id=None):
+def run_test_step(
+    step, 
+    context, 
+    events, 
+    task_id=None,
+    llm_client=None,  # ⭐ 依赖注入：LLM 客户端
+    code_executor=None  # ⭐ 依赖注入：代码执行器
+):
     """
     执行 test 步骤（Gemini 版）：
     - 从 write 步骤获取代码
@@ -45,7 +52,12 @@ def run_test_step(step, context, events, task_id=None):
         return
 
     # 3) 让 Gemini 生成 pytest 风格测试代码（不 import pytest）
-    test_code_text = call_gemini(test_prompt(code))
+    # ⭐ 依赖注入：使用注入的 LLM 客户端，或默认使用真实实现
+    if llm_client is not None:
+        test_code_text = llm_client.call(test_prompt(code))
+    else:
+        test_code_text = call_gemini(test_prompt(code))
+    
     test_code = extract_code(test_code_text)
 
     if not test_code:
@@ -54,7 +66,12 @@ def run_test_step(step, context, events, task_id=None):
 
     # 4) 组合执行 fake pytest + 用户代码 + 测试代码
     full_code = FAKE_PYTEST + "\n\n" + code + "\n\n" + test_code
-    test_result = run_python(full_code)
+    
+    # ⭐ 依赖注入：使用注入的代码执行器，或默认使用真实实现
+    if code_executor is not None:
+        test_result = code_executor.execute(full_code)
+    else:
+        test_result = run_python(full_code)
 
     # 5) 输出测试结果
     test_summary = (
@@ -71,9 +88,10 @@ def run_test_step(step, context, events, task_id=None):
     # 6) 写入 context
     context["intermediate_results"].append({
         "type": "test",
-        "test_code": test_code,
+        "test_code": test_code,  # ⭐ 保存测试代码
         "test_result": test_result,
-        "tested_code": code
+        "tested_code": code,
+        "status": "passed" if test_result.get("error") == "None" else "failed"
     })
 
     # ⭐ 结束流式输出

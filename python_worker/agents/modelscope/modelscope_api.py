@@ -75,11 +75,15 @@ def _headers() -> dict:
     }
 
 
-def _payload(prompt: str, stream: bool) -> dict:
+def _payload(prompt: str, stream: bool, system_prompt: str = None) -> dict:
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": prompt})
     return {
         "model": MODELSCOPE_MODEL,
         "stream": stream,
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": messages,
     }
 
 
@@ -106,9 +110,9 @@ def _stream_chunks(response):
                 yield content
 
 
-def _request_stream(prompt: str):
+def _request_stream(prompt: str, system_prompt: str = None):
     headers = _headers()
-    payload = _payload(prompt, stream=True)
+    payload = _payload(prompt, stream=True, system_prompt=system_prompt)
     last_error = None
 
     for attempt in range(MODELSCOPE_MAX_RETRIES + 1):
@@ -150,17 +154,22 @@ def _request_stream(prompt: str):
         raise last_error
 
 
-def call_modelscope(prompt: str, stream: bool = False) -> str:
+def call_modelscope(prompt: str, stream: bool = False, system_prompt: str = None) -> str:
     """
     调用 ModelScope API 进行文本生成。
 
     连接超时、响应读取超时和指定的服务端错误会有限次自动重试。
+    
+    参数:
+        prompt: 用户提示词
+        stream: 是否流式返回
+        system_prompt: 系统提示词（人格配置等），可选
     """
     if stream:
-        return "".join(_request_stream(prompt))
+        return "".join(_request_stream(prompt, system_prompt=system_prompt))
 
     headers = _headers()
-    payload = _payload(prompt, stream=False)
+    payload = _payload(prompt, stream=False, system_prompt=system_prompt)
     for attempt in range(MODELSCOPE_MAX_RETRIES + 1):
         try:
             response = SESSION.post(
@@ -187,6 +196,6 @@ def call_modelscope(prompt: str, stream: bool = False) -> str:
                 time.sleep(delay)
 
 
-def call_modelscope_stream(prompt: str):
+def call_modelscope_stream(prompt: str, system_prompt: str = None):
     """以生成器方式流式调用 ModelScope API。"""
-    yield from _request_stream(prompt)
+    yield from _request_stream(prompt, system_prompt=system_prompt)

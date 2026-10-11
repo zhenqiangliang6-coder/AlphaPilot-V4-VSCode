@@ -10,7 +10,7 @@
 import re
 from ..local_api import call_local_llm
 from .utils import extract_code
-from .prompts import write_prompt
+from .prompts import write_prompt, creative_write_prompt
 from worker_config import create_event, stream_chunk, stream_start, stream_end
 
 # ⭐ 尝试导入 file_ops，如果失败则使用空实现（用于测试环境）
@@ -247,12 +247,20 @@ def run_write_step(step, context, events, task_id=None):
         except Exception as e:
             print(f"[WARN] 获取 persona_config 失败: {e}, 将不使用 system_prompt")
 
-        # 调用 LLM 生成代码（⭐ 支持流式输出 + persona 注入）
+        # 调用 LLM 生成代码（⭐ 支持流式输出 + persona 注入 + 创意意图零浪费）
         result = ""
         llm_success = False
 
+        _creative_intents = {"creative_writing", "translate", "summarization", "chat", "mentor_explain"}
+        intent = meta.get("intent", "write_code")
+
         try:
-            base_prompt = write_prompt(plan_text)
+            if intent in _creative_intents:
+                base_prompt = creative_write_prompt(plan_text, intent=intent)
+                stream_label = "开始生成内容...\n"
+            else:
+                base_prompt = write_prompt(plan_text)
+                stream_label = "开始生成代码...\n"
             
             # ⭐ 关键：如果存在 persona system_prompt,将其拼接到 prompt 前面
             if persona_system_prompt:
@@ -262,8 +270,7 @@ def run_write_step(step, context, events, task_id=None):
                 prompt = base_prompt
 
             if task_id:
-                # ⭐ 流式输出模式（local_worker_v3 会注入带 stream 的 wrapper）
-                stream_chunk(task_id, "开始生成代码...\n", phase="write", channel="reasoning")
+                stream_chunk(task_id, stream_label, phase="write", channel="reasoning")
                 result = api_func(prompt)
                 stream_chunk(task_id, result, phase="write", channel="content")
             else:

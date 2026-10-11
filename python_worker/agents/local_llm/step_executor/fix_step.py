@@ -13,8 +13,48 @@ from worker_config import create_event, stream_chunk, stream_start, stream_end
 from ..local_api import call_local_llm
 
 
+def _get_test_context(context):
+    """
+    从 context 中提取测试代码和错误信息
+    
+    参数:
+        context: 执行上下文
+    
+    返回:
+        (error_info, test_code): 错误信息和测试代码
+    """
+    error_info = ""
+    test_code = ""
+    
+    # 从 intermediate_results 中提取
+    for item in context.get("intermediate_results", []):
+        if item.get("type") == "test":
+            # 提取错误信息
+            error = item.get("error", "")
+            if error:
+                error_info = error
+            # 提取测试代码
+            tc = item.get("test_code", "")
+            if tc:
+                test_code = tc
+            break
+    
+    # 如果没有找到测试代码，尝试从其他来源提取
+    if not error_info:
+        error_info = context.get("last_error", "")
+    
+    return error_info, test_code
 
-def run_fix_step(step, context, events, task_id=None):
+
+
+def run_fix_step(
+    step, 
+    context, 
+    events, 
+    task_id=None,
+    llm_client=None,  # ⭐ 依赖注入：LLM 客户端
+    code_executor=None  # ⭐ 依赖注入：代码执行器
+):
     """
     fix 步骤（v3.0）：
     - 输入：write 步骤的代码和执行错误
@@ -41,27 +81,38 @@ def run_fix_step(step, context, events, task_id=None):
         return
 
     code = extract_code(write_outputs[-1])
-    exec_result = run_python(FAKE_ENVIRONMENT + "\n\n" + code)
+    
+    # ⭐ 依赖注入：使用注入的代码执行器，或默认使用真实实现
+    if code_executor is not None:
+        exec_result = code_executor.execute(FAKE_ENVIRONMENT + "\n\n" + code)
+    else:
+        exec_result = run_python(FAKE_ENVIRONMENT + "\n\n" + code)
 
     if not exec_result["error"]:
         step["output"] = {"text": "fix：代码执行成功，无需修复。"}
         return
 
     # ⭐ v3.0：选择 API 调用函数
-    api_func = context.get("_custom_api_func", call_local_llm)
+    if llm_client is not None:
+        api_func = llm_client.call
+    else:
+        api_func = context.get("_custom_api_func", call_local_llm)
+
+    # ⭐ 获取测试代码
+    error_info, test_code = _get_test_context(context)
 
     # 调用 LLM 修复代码（⭐ 支持流式输出）
     fixed_text = ""
     llm_success = False
 
     try:
-        prompt = fix_prompt(code, exec_result["error"])
+        prompt = fix_prompt(code, exec_result["error"], test_code)
 
         if task_id:
             # ⭐ 流式输出模式
             stream_chunk(task_id, "分析错误并修复...\n", phase="fix", channel="reasoning")
             
-            # 注意：Local LLM 的 call_qwen 目前不支持真正的流式，这里先同步调用
+            # 使用注入的 LLM 客户端或默认实现
             fixed_text = api_func(prompt)
             stream_chunk(task_id, fixed_text, phase="fix", channel="content")
         else:
@@ -81,7 +132,11 @@ def run_fix_step(step, context, events, task_id=None):
 
     fixed_code = extract_code(fixed_text)
 
-    verify = run_python(FAKE_ENVIRONMENT + "\n\n" + fixed_code)
+    # ⭐ 依赖注入：使用注入的代码执行器，或默认使用真实实现
+    if code_executor is not None:
+        verify = code_executor.execute(FAKE_ENVIRONMENT + "\n\n" + fixed_code)
+    else:
+        verify = run_python(FAKE_ENVIRONMENT + "\n\n" + fixed_code)
 
     step["output"] = {
         "text": fixed_text

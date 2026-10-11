@@ -7,7 +7,7 @@
 import re
 from ..qwen_api import call_qwen, call_qwen_stream, call_qwen_with_persona
 from .utils import extract_code
-from .prompts import write_prompt
+from .prompts import write_prompt, creative_write_prompt
 from ....worker_config import create_event, stream_chunk, stream_start, stream_end
 from ....file_ops import parse_fileops_v3, create_file_op
 
@@ -48,32 +48,47 @@ def run_write_step(step, context, events, task_id=None):
         print(f"[WARN] 获取人格失败: {e}")
         persona_config = None
 
-    # ===== 2. 获取 plan 输出 =====
+    # ===== 2. 获取 plan 输出（若无 plan 则回退到 analyze 输出 + 用户请求）=====
     plan_outputs = [
         item.get("plan", "")
         for item in context.get("intermediate_results", [])
         if item.get("type") == "plan"
     ]
 
-    if not plan_outputs:
-        msg = "write：未找到 plan 步骤的规划内容。"
-        step["output"] = {"text": msg, "code": ""}
-        return
-
-    plan_text = plan_outputs[-1]
-
     # ===== 2.5. 获取用户原始请求 =====
     user_request = meta.get("user_request", "")
+
+    if not plan_outputs:
+        analyze_outputs = [
+            item.get("analysis", "") or item.get("text", "")
+            for item in context.get("intermediate_results", [])
+            if item.get("type") == "analyze"
+        ]
+        if analyze_outputs:
+            plan_text = f"# 任务分析\n{analyze_outputs[-1]}\n\n# 用户原始请求\n{user_request}"
+            print(f"[INFO] write_step 未找到 plan，回退使用 analyze 输出 + 用户请求")
+        else:
+            plan_text = user_request or "请根据上下文生成内容"
+            print(f"[INFO] write_step 未找到 plan 和 analyze，回退使用用户请求")
+    else:
+        plan_text = plan_outputs[-1]
 
     # ===== 3. 调用 LLM（支持流式输出）=====
     result = ""
     llm_success = False
 
+    _creative_intents = {"creative_writing", "translate", "summarization", "chat", "mentor_explain"}
+
     try:
-        prompt = write_prompt(plan_text, user_request)
+        if intent in _creative_intents:
+            prompt = creative_write_prompt(plan_text, user_request, intent)
+            stream_label = "开始生成内容...\n"
+        else:
+            prompt = write_prompt(plan_text, user_request)
+            stream_label = "开始生成代码...\n"
 
         if task_id:
-            stream_chunk(task_id, "开始生成代码...\n", phase="write", channel="reasoning")
+            stream_chunk(task_id, stream_label, phase="write", channel="reasoning")
 
             if persona_config:
                 for chunk in call_qwen_with_persona(prompt, persona_config, use_stream=True):
@@ -103,40 +118,44 @@ def run_write_step(step, context, events, task_id=None):
     # ===== 4. 提取代码（单文件降级用）=====
     code = extract_code(result, fallback_strategies=True)
 
-    # ===== 5. 解析多文件协议（核心）=====
-    try:
-        file_ops = parse_fileops_v3(result)
-
-        if not file_ops:
-            print("[WARN] 未检测到多文件协议，降级为单文件模式")
-
-            file_op = create_file_op(
-                action="create",
-                path="main.py",
-                content=code,
-                file_type="file",
-                language="python",
-                reason="单文件降级模式",
-                from_step="write",
-                intent=intent
-            )
-            file_ops = [file_op]
-
-        print(f"✅ write_step 生成 {len(file_ops)} 个 FileOp")
-
-        # ⭐ 写入 context（使用 final_file_ops 作为唯一真相源）
-        if "final_file_ops" not in context:
-            context["final_file_ops"] = []
-        
-        # 追加而非覆盖
-        context["final_file_ops"].extend(file_ops)
-        
-        # 向后兼容：仍然保留 file_ops 字段
-        context["file_ops"] = context["final_file_ops"]
-
-    except Exception as e:
-        print(f"[ERROR] 解析 FileOps 失败: {e}")
+    # ===== 5. 解析多文件协议（创意/对话类意图跳过 FileOps）=====
+    if intent in _creative_intents:
+        print(f"[INFO] 创意/对话类意图 ({intent})，跳过 FileOps 解析，直接输出文本")
         file_ops = []
+    else:
+        try:
+            file_ops = parse_fileops_v3(result)
+
+            if not file_ops:
+                print("[WARN] 未检测到多文件协议，降级为单文件模式")
+
+                file_op = create_file_op(
+                    action="create",
+                    path="main.py",
+                    content=code,
+                    file_type="file",
+                    language="python",
+                    reason="单文件降级模式",
+                    from_step="write",
+                    intent=intent
+                )
+                file_ops = [file_op]
+
+            print(f"✅ write_step 生成 {len(file_ops)} 个 FileOp")
+
+            # ⭐ 写入 context（使用 final_file_ops 作为唯一真相源）
+            if "final_file_ops" not in context:
+                context["final_file_ops"] = []
+            
+            # 追加而非覆盖
+            context["final_file_ops"].extend(file_ops)
+            
+            # 向后兼容：仍然保留 file_ops 字段
+            context["file_ops"] = context["final_file_ops"]
+
+        except Exception as e:
+            print(f"[ERROR] 解析 FileOps 失败: {e}")
+            file_ops = []
 
     # ===== 6. 写入输出 =====
     step["output"] = {

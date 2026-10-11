@@ -1,5 +1,5 @@
-from dataclasses import dataclass
-from typing import Tuple
+from dataclasses import dataclass, field
+from typing import Dict, Tuple
 
 
 @dataclass(frozen=True)
@@ -12,6 +12,7 @@ class Skill:
     priority: int
     capabilities: Tuple[str, ...]
     guidance: str
+    output_profile: Dict = field(default_factory=dict)
 
     def match_count(self, prompt: str) -> int:
         normalized = prompt.casefold()
@@ -23,5 +24,6 @@ class Skill:
             "name": self.name,
             "version": self.version,
             "capabilities": list(self.capabilities),
+            "output_profile": dict(self.output_profile),
             "guidance": self.guidance,
         }

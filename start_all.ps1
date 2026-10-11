@@ -338,6 +338,7 @@ $workers = @(
     @{Name="Gemini"; Script="python_worker.agents.gemini.gemini_worker_v2"; EnvId="gemini-worker-1"},
     @{Name="MaaS"; Script="python_worker.agents.maas.maas_worker_v3"; EnvId="maas-worker-1"},
     @{Name="ModelScope"; Script="python_worker.agents.modelscope.modelscope_worker_v3"; EnvId="modelscope-worker-1"},
+    @{Name="DeepSeek"; Script="python_worker.agents.deepeek.deepseek_worker_v3"; EnvId="deepseek-worker-1"},
     @{Name="Local LLM"; Script="python_worker.agents.local_llm.local_worker_v3"; EnvId="local-worker-1"}
 )
 
@@ -390,5 +391,6 @@ Write-Host "   Qwen Worker: ✅ 已启动 (新窗口)" -ForegroundColor White
 Write-Host "   Gemini Worker: ✅ 已启动 (新窗口)" -ForegroundColor White
 Write-Host "   MaaS Worker: ✅ 已启动 (新窗口)" -ForegroundColor White
 Write-Host "   ModelScope Worker: ✅ 已启动 (新窗口)" -ForegroundColor White
+Write-Host "   DeepSeek Worker: ✅ 已启动 (新窗口)" -ForegroundColor White
 Write-Host "   Local LLM Worker: ✅ 已启动 (新窗口)" -ForegroundColor White
 Write-Host ""

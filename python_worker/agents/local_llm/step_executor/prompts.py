@@ -9,6 +9,7 @@ __all__ = [
     "analyze_prompt",
     "plan_prompt",
     "write_prompt",
+    "creative_write_prompt",
     "refine_prompt",
     "test_prompt",
     "fix_prompt",
@@ -109,6 +110,41 @@ project/
 现在 please directly output code file:"""
 
 
+def creative_write_prompt(plan: str, user_request: str = "", intent: str = "creative_writing") -> str:
+    """
+    创意/对话类意图的纯文本输出 prompt（跳过 FileOps，零浪费）
+    不生成 ### 文件分隔符格式，直接输出自然语言内容
+    """
+    intent_label = {
+        "creative_writing": "创作任务",
+        "translate": "翻译任务",
+        "summarization": "摘要任务",
+        "chat": "对话任务",
+        "mentor_explain": "教学讲解任务",
+    }.get(intent, "内容生成任务")
+
+    user_section = f"\n【用户原始请求】：\n{user_request}\n" if user_request else ""
+    analyze_section = f"\n【分析参考】：\n{plan}\n" if plan else ""
+
+    return f"""你正在执行一个 {intent_label}。
+
+这是纯文本输出模式，请不要生成任何代码文件或文件结构。
+禁止使用以下格式：
+- 禁止 ### 文件分隔符
+- 禁止 ### FILE_TREE
+- 禁止代码块包装（```python```）
+- 禁止函数定义包装内容
+{user_section}{analyze_section}
+【输出要求】：
+1. 直接输出最终内容，不要任何格式包装
+2. 内容自然流畅，符合 {intent_label} 场景
+3. 不要添加解释、说明或备注
+4. 如果用户要的是诗，直接输出诗；要的是文章，直接输出文章
+5. 只输出纯文本内容
+
+现在请直接输出："""
+
+
 def refine_prompt(code: str, exec_summary: str) -> str:
     """
     refine 步骤的 prompt：根据执行结果优化代码
@@ -166,18 +202,19 @@ def test_prompt(code: str) -> str:
 """
 
 
-def fix_prompt(code: str, error_message: str) -> str:
+def fix_prompt(code: str, error_message: str, test_code: str = "") -> str:
     """
-    生成自动修复代码的 prompt
+    生成自动修复代码的 prompt（支持测试代码）
     
     参数:
         code: 原始代码字符串
         error_message: 执行错误信息
+        test_code: 测试代码（可选）
     
     返回:
         str: 用于调用 LLM 的完整 prompt
     """
-    return f"""
+    prompt = f"""
 下面是一段 Python 代码和它的执行错误，请分析错误原因并给出修复后的完整代码：
 
 【原始代码】：
@@ -187,6 +224,24 @@ def fix_prompt(code: str, error_message: str) -> str:
 
 【执行错误】：
 {error_message}
+"""
+    
+    if test_code:
+        prompt += f"""
+
+【测试代码】（关键参考，必须满足测试要求）：
+```python
+{test_code}
+```
+
+⭐⭐⭐ 重要提示：
+- 上面的测试代码定义了期望的方法名、参数签名、返回类型
+- 修复后的代码必须与测试代码匹配，否则测试仍会失败
+- 检查方法名、参数顺序、返回类型是否与测试一致
+- 如果测试使用了 fixture 或 mock，确保代码能兼容
+"""
+    
+    prompt += """
 
 要求：
 1. 分析错误的根本原因
@@ -194,6 +249,8 @@ def fix_prompt(code: str, error_message: str) -> str:
 3. 简要说明修复了什么问题
 4. 输出必须是合法 Python 代码，不要包含解释性文字
 """
+    
+    return prompt
 
 
 def profile_prompt(code: str) -> str:

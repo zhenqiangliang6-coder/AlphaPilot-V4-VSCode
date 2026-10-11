@@ -299,7 +299,7 @@ app.post('/task/submit', async (req, res) => {
         console.log(JSON.stringify(task, null, 2));
 
         // ⭐ 根据任务类型路由到专属队列（而非 model 字段）
-        const queueName = getWorkerQueueByType(type);
+        const queueName = getWorkerQueue(type);
         console.log(`🎯 路由到队列: ${queueName} (任务类型: ${type})`);
 
         // ⭐ v2.8 双云架构：根据模型选择 Redis 实例

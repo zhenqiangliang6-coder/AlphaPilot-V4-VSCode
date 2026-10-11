@@ -9,7 +9,7 @@
 
 from ..deepseek_api import call_deepseek, call_deepseek_stream
 from .utils import extract_code
-from .prompts import write_prompt
+from .prompts import write_prompt, creative_write_prompt
 from ....worker_config import create_event, stream_start, stream_chunk, stream_end
 import re
 
@@ -88,7 +88,9 @@ def run_write_step(step, context, events, task_id=None):
         print(f"[WARN] 获取人格配置失败: {e}")
         persona_config = None
 
-    # 1) 获取 plan 步骤的输出
+    # 1) 获取 plan 步骤的输出（若无 plan 则回退到 analyze 输出 + 用户请求）
+    user_request = meta.get("user_request", "")
+
     plan_outputs = [
         item["plan"]
         for item in context["intermediate_results"]
@@ -96,26 +98,44 @@ def run_write_step(step, context, events, task_id=None):
     ]
 
     if not plan_outputs:
-        step["output"] = {"text": "write：未找到 plan 步骤的规划内容。"}
-        return
+        analyze_outputs = [
+            item.get("analysis", "") or item.get("text", "")
+            for item in context.get("intermediate_results", [])
+            if item.get("type") == "analyze"
+        ]
+        if analyze_outputs:
+            plan_text = f"# 任务分析\n{analyze_outputs[-1]}\n\n# 用户原始请求\n{user_request}"
+            print(f"[INFO] write_step 未找到 plan，回退使用 analyze 输出 + 用户请求")
+        else:
+            plan_text = user_request or "请根据上下文生成内容"
+            print(f"[INFO] write_step 未找到 plan 和 analyze，回退使用用户请求")
+    else:
+        plan_text = plan_outputs[-1]
 
-    plan_text = plan_outputs[-1]
+    # 2) 构建完整 prompt（含人格配置，创意意图跳过 FileOps 格式）
+    _creative_intents = {"creative_writing", "translate", "summarization", "chat", "mentor_explain"}
+    intent = meta.get("intent", "write_code")
 
-    # 2) 构建完整 prompt（含人格配置）
-    full_prompt = write_prompt(plan_text)
+    if intent in _creative_intents:
+        base_prompt = creative_write_prompt(plan_text, user_request, intent)
+        stream_label = "开始生成内容...\n"
+    else:
+        base_prompt = write_prompt(plan_text)
+        stream_label = "开始生成代码...\n"
+
+    full_prompt = base_prompt
     if persona_config:
         full_prompt = f"{persona_config['system_prompt']}\n\n{full_prompt}"
 
     # 3) 启动流式输出
     result = ""
     if task_id:
-        stream_start(task_id, "✍️ 正在生成代码...", phase="write")
+        stream_start(task_id, "✍️ 正在生成内容...", phase="write")
 
-    # 4) 调用 LLM 生成代码（流式）
+    # 4) 调用 LLM 生成（流式）
     try:
         if task_id:
-            # 流式调用
-            stream_chunk(task_id, "开始生成代码...\n", phase="write", channel="reasoning")
+            stream_chunk(task_id, stream_label, phase="write", channel="reasoning")
             for chunk in call_deepseek_stream(full_prompt):
                 result += chunk
                 stream_chunk(task_id, chunk, phase="write", channel="content")
@@ -135,15 +155,19 @@ def run_write_step(step, context, events, task_id=None):
     # 6) 提取代码块（向后兼容）
     code = extract_code(result)
 
-    # 7) 解析多文件协议 v3.0
-    file_ops = parse_fileops_v3(result)
-    
-    # ⭐ 更新 final_file_ops（唯一真相源）
-    if "final_file_ops" not in context:
-        context["final_file_ops"] = []
-    
-    context["final_file_ops"].extend(file_ops)
-    context["file_ops"] = context["final_file_ops"]  # 向后兼容别名
+    # 7) 解析多文件协议 v3.0（创意/对话类意图跳过 FileOps）
+    if intent in _creative_intents:
+        print(f"[INFO] 创意/对话类意图 ({intent})，跳过 FileOps 解析，直接输出文本")
+        file_ops = []
+    else:
+        file_ops = parse_fileops_v3(result)
+        
+        # ⭐ 更新 final_file_ops（唯一真相源）
+        if "final_file_ops" not in context:
+            context["final_file_ops"] = []
+        
+        context["final_file_ops"].extend(file_ops)
+        context["file_ops"] = context["final_file_ops"]  # 向后兼容别名
 
     # 8) 写入输出
     step["output"] = {

@@ -54,50 +54,62 @@ def _env_any(*names, default=None):
     return default
 
 
+@dataclass
 class MemoryConfig:
-    """记忆中枢配置"""
+    """记忆中枢配置（dataclass 契约：所有字段均有安全默认值，测试无需传全量字段）"""
 
     # PostgreSQL 连接配置
-    DB_HOST = _env_any("MEMORY_DB_HOST", "DB_HOST", default="localhost")
-    DB_PORT = int(_env_any("MEMORY_DB_PORT", "DB_PORT", default="5432"))
-    DB_USER = _env_any("MEMORY_DB_USER", "DB_USER", default="alphapilot")
-    # 密码不给默认值：必须通过环境变量提供，避免真实密码写进源码随仓库外泄
-    DB_PASSWORD = _env_any("MEMORY_DB_PASSWORD", "DB_PASSWORD", default="")
-    DB_NAME = _env_any("MEMORY_DB_NAME", "DB_NAME", default="alphapilot_memory")
-    
+    DB_HOST: str = "localhost"
+    DB_PORT: int = 5432
+    DB_USER: str = "alphapilot"
+    DB_PASSWORD: str = ""
+    DB_NAME: str = "alphapilot_memory"
+
     # Embedding 提供商配置：dashscope / openai / none
-    EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "dashscope").lower()
-    
-    # DashScope Embedding 配置（阿里云通义千问，国内首选）
-    DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY", "")
-    DASHSCOPE_EMBEDDING_MODEL = os.getenv("DASHSCOPE_EMBEDDING_MODEL", "text-embedding-v2")
-    DASHSCOPE_EMBEDDING_URL = (
+    EMBEDDING_PROVIDER: str = "none"
+    DASHSCOPE_API_KEY: str = ""
+    DASHSCOPE_EMBEDDING_MODEL: str = "text-embedding-v2"
+    DASHSCOPE_EMBEDDING_URL: str = (
         "https://dashscope.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding"
     )
-    
-    # OpenAI Embedding 配置（备选）
-    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-    OPENAI_EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
-    EMBEDDING_DIMENSION = 1536
-    
+    OPENAI_API_KEY: str = ""
+    OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
+    EMBEDDING_DIMENSION: int = 1536
+
     # 记忆生命周期参数
-    ACTIVATION_DECAY_RATE_1D = 0.95      # 1天内衰减率
-    ACTIVATION_DECAY_RATE_7D = 0.85      # 1-7天衰减率
-    ACTIVATION_DECAY_RATE_30D = 0.70     # 7-30天衰减率
-    ACTIVATION_DECAY_RATE_60D = 0.50     # 60天以上衰减率
-    
+    ACTIVATION_DECAY_RATE_1D: float = 0.95
+    ACTIVATION_DECAY_RATE_7D: float = 0.85
+    ACTIVATION_DECAY_RATE_30D: float = 0.70
+    ACTIVATION_DECAY_RATE_60D: float = 0.50
+
     # 剪枝阈值
-    PRUNE_ACTIVATION_THRESHOLD = 0.1     # 激活度低于此值且未访问过 → 删除
-    ARCHIVE_ACTIVATION_THRESHOLD = 0.2   # 激活度低于此值且创建>30天 → 归档
-    MERGE_SIMILARITY_THRESHOLD = 0.92    # 语义相似度高于此值 → 合并
-    
+    PRUNE_ACTIVATION_THRESHOLD: float = 0.1
+    ARCHIVE_ACTIVATION_THRESHOLD: float = 0.2
+    MERGE_SIMILARITY_THRESHOLD: float = 0.92
+
     # 检索参数
-    DEFAULT_TOP_K = 5
-    MIN_ACTIVATION_FOR_SEARCH = 0.3
-    MAX_CONTEXT_TOKENS = 2000
-    RECENT_HIGH_VALUE_DAYS = 7
-    RECENT_HIGH_VALUE_MIN_IMPORTANCE = 0.3
-    RECENT_HIGH_VALUE_LIMIT = 3
+    DEFAULT_TOP_K: int = 5
+    MIN_ACTIVATION_FOR_SEARCH: float = 0.3
+    MAX_CONTEXT_TOKENS: int = 2000
+    RECENT_HIGH_VALUE_DAYS: int = 7
+    RECENT_HIGH_VALUE_MIN_IMPORTANCE: float = 0.3
+    RECENT_HIGH_VALUE_LIMIT: int = 3
+
+    @classmethod
+    def from_env(cls) -> "MemoryConfig":
+        """生产环境专用：从环境变量加载全量配置，覆盖 dataclass 默认值。"""
+        return cls(
+            DB_HOST=_env_any("MEMORY_DB_HOST", "DB_HOST", default="localhost"),
+            DB_PORT=int(_env_any("MEMORY_DB_PORT", "DB_PORT", default="5432")),
+            DB_USER=_env_any("MEMORY_DB_USER", "DB_USER", default="alphapilot"),
+            DB_PASSWORD=_env_any("MEMORY_DB_PASSWORD", "DB_PASSWORD", default=""),
+            DB_NAME=_env_any("MEMORY_DB_NAME", "DB_NAME", default="alphapilot_memory"),
+            EMBEDDING_PROVIDER=os.getenv("EMBEDDING_PROVIDER", "dashscope").lower(),
+            DASHSCOPE_API_KEY=os.getenv("DASHSCOPE_API_KEY", ""),
+            DASHSCOPE_EMBEDDING_MODEL=os.getenv("DASHSCOPE_EMBEDDING_MODEL", "text-embedding-v2"),
+            OPENAI_API_KEY=os.getenv("OPENAI_API_KEY", ""),
+            OPENAI_EMBEDDING_MODEL=os.getenv("EMBEDDING_MODEL", "text-embedding-3-small"),
+        )
 
 
 # ============================================================
@@ -175,44 +187,53 @@ class MemoryService:
     """
     
     def __init__(self, config: MemoryConfig = None):
-        self.config = config or MemoryConfig()
+        self.config = config or MemoryConfig.from_env()
         self._connection = None
         self._embedding_warning_emitted = False
         self._memory_items_has_updated_at = False
         self._has_search_function = False
-        self._embedding_provider = self._resolve_embedding_provider()
-    
+        self.__embedding_provider: Optional[str] = None  # 延迟解析，首次访问时才触发
+
+    @property
+    def _embedding_provider(self) -> str:
+        """懒加载：首次访问时才解析 embedding 提供商，构造时不产生副作用"""
+        if self.__embedding_provider is None:
+            self.__embedding_provider = self._resolve_embedding_provider()
+        return self.__embedding_provider
+
     def _resolve_embedding_provider(self) -> str:
-        """解析实际可用的 embedding 提供商"""
-        provider = self.config.EMBEDDING_PROVIDER
-        
+        """解析实际可用的 embedding 提供商（防御性访问：兼容 SimpleNamespace 等非 dataclass 对象）"""
+        provider = getattr(self.config, "EMBEDDING_PROVIDER", "none")
+        dashscope_key = getattr(self.config, "DASHSCOPE_API_KEY", "")
+        openai_key = getattr(self.config, "OPENAI_API_KEY", "")
+
         if provider == "dashscope":
-            if self.config.DASHSCOPE_API_KEY:
+            if dashscope_key:
                 return "dashscope"
             else:
                 print("[MEMORY] ⚠️ EMBEDDING_PROVIDER=dashscope 但 DASHSCOPE_API_KEY 未配置，"
                       "尝试回退到 OpenAI")
-                if self.config.OPENAI_API_KEY:
+                if openai_key:
                     return "openai"
-        
+
         if provider == "openai":
-            if self.config.OPENAI_API_KEY:
+            if openai_key:
                 return "openai"
             else:
                 print("[MEMORY] ⚠️ EMBEDDING_PROVIDER=openai 但 OPENAI_API_KEY 未配置，"
                       "尝试回退到 DashScope")
-                if self.config.DASHSCOPE_API_KEY:
+                if dashscope_key:
                     return "dashscope"
-        
+
         if provider == "none":
             return "none"
-        
+
         # 自动检测：优先 DashScope（国内），其次 OpenAI
-        if self.config.DASHSCOPE_API_KEY:
+        if dashscope_key:
             return "dashscope"
-        if self.config.OPENAI_API_KEY:
+        if openai_key:
             return "openai"
-        
+
         return "none"
     
     # --------------------------------------------------------

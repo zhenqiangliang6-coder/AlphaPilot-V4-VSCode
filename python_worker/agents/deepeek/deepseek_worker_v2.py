@@ -152,7 +152,7 @@ def main_loop():
             payload = task["payload"]
             
             # ⭐ 二次验证：确保任务类型匹配（尊重 Worker 真相地位）
-            if not task_type.startswith("deepseek_"):
+            if not task_type.startswith("deepseek"):
                 # 如果错误地收到了非 DeepSeek 任务，放回原队列并记录警告
                 redis.lpush(queue_name, task_json)
                 print(f"⚠️ 收到不匹配的任务类型: {task_type}，已放回队列")

@@ -17,7 +17,10 @@ def run_write_step(step, context, events):
     - 输出：生成的 Python 代码
     """
 
-    # 1) 获取 plan 步骤的输出
+    # 1) 获取 plan 步骤的输出（若无 plan 则回退到 analyze 输出 + 用户请求）
+    meta = context.get("meta", {})
+    user_request = meta.get("user_request", "")
+
     plan_outputs = [
         item["plan"]
         for item in context["intermediate_results"]
@@ -25,10 +28,19 @@ def run_write_step(step, context, events):
     ]
 
     if not plan_outputs:
-        step["output"] = {"text": "write：未找到 plan 步骤的规划内容。"}
-        return
-
-    plan_text = plan_outputs[-1]
+        analyze_outputs = [
+            item.get("analysis", "") or item.get("text", "")
+            for item in context.get("intermediate_results", [])
+            if item.get("type") == "analyze"
+        ]
+        if analyze_outputs:
+            plan_text = f"# 任务分析\n{analyze_outputs[-1]}\n\n# 用户原始请求\n{user_request}"
+            print(f"[INFO] write_step 未找到 plan，回退使用 analyze 输出 + 用户请求")
+        else:
+            plan_text = user_request or "请根据上下文生成内容"
+            print(f"[INFO] write_step 未找到 plan 和 analyze，回退使用用户请求")
+    else:
+        plan_text = plan_outputs[-1]
 
     # 2) 调用 LLM 生成代码
     try:

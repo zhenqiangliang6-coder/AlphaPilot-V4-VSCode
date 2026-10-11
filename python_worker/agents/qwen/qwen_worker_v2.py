@@ -414,12 +414,61 @@ def execute_task(
         print(f"\n📋 动态生成 {len(steps)} 个步骤 (意图: {intent})")
     apply_mode_to_steps(steps, mode)
 
-    # 4) Planner 兜底（可选）
+    # 4) ⭐ v4.0 Phase 4: Post-analyze 链重决策
+    #    analyze 步骤执行后，从 LLM 输出提取 ExecutionProfile，
+    #    rebuild 剩余执行链，替换 steps 列表
+    if steps and steps[0].get("type") == "analyze":
+        analyze_step = steps.pop(0)
+        analyze_step["status"] = "running"
+        try:
+            execute_step(task_id, analyze_step, events, context)
+            analyze_step["status"] = "completed"
+
+            analysis_text = analyze_step.get("output", {}).get("text", "")
+            llm_profile = IntentRouter.parse_execution_profile_from_analysis(analysis_text)
+
+            if llm_profile:
+                new_chain = IntentRouter.build_execution_chain(
+                    intent, profile=llm_profile, worker="qwen"
+                )
+                new_chain = [s for s in new_chain if s != "analyze"]
+                if new_chain != [
+                    s["type"] for s in steps if s.get("type") in (
+                        "plan", "workspace", "write", "refine", "test", "fix", "doc", "docstring",
+                        "respond", "profile", "optimize"
+                    )
+                ]:
+                    old_chain = [s["type"] for s in steps]
+                    steps.clear()
+                    steps.extend(create_steps_from_chain(new_chain, prompt, persona_type, intent))
+                    apply_mode_to_steps(steps, mode)
+                    context["meta"]["execution_chain"] = ["analyze"] + new_chain
+                    context["meta"]["execution_plan"]["execution_chain"] = ["analyze"] + new_chain
+                    print(f"\n🔄 [v4.0] LLM 分析重定向: {' → '.join(old_chain)} → {' → '.join(new_chain)}")
+                    if task_id:
+                        stream_chunk(
+                            task_id,
+                            f"🔄 LLM 分析结果调整了执行计划：{' → '.join(new_chain)}\n",
+                            phase="routing",
+                            channel="reasoning",
+                        )
+        except Exception as e:
+            print(f"[WARN] Post-analyze 重决策失败: {e}")
+            steps.insert(0, analyze_step)
+        else:
+            # analyze 成功完成，插入结果到上下文
+            context.setdefault("intermediate_results", []).append({
+                "type": "analyze",
+                "analysis": analysis_text,
+                "llm_success": True,
+            })
+
+    # 5) Planner 兜底（可选）
     if not steps:
         plan_steps = llm_decompose_task(prompt)
         steps.extend(plan_steps)
 
-    # 5) 逐步执行（带取消检查 + 状态管理）
+    # 6) 逐步执行（带取消检查 + 状态管理）
     for step in steps:
         try:
             if requires_authorization_before_step(execution_plan, step.get("type", "")):
@@ -533,7 +582,7 @@ def main_loop():
             payload = task["payload"]
 
             # 只处理 qwen_generate
-            if task_type and not task_type.startswith("qwen_"):
+            if task_type and not task_type.startswith("qwen"):
                 redis.lpush(queue_name, task_json)
                 print(f"⚠️ 收到不匹配的任务类型: {task_type}，已放回队列")
                 time.sleep(1)

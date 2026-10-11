@@ -419,7 +419,7 @@ def main_loop():
             payload = task["payload"]
 
             # 只处理 local_ 开头的任务
-            if task_type and not task_type.startswith("local_"):
+            if task_type and not task_type.startswith("local"):
                 redis.lpush(queue_name, task_json)
                 print(f"⚠️ 收到不匹配的任务类型: {task_type}，已放回队列")
                 time.sleep(1)

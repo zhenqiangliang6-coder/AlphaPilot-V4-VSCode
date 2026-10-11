@@ -1,36 +1,40 @@
-# DeepSeek Worker v2 - 标准化智能体执行引擎
+# DeepSeek Worker v3.0 — 阿里云 MAAS + 本地 Redis 架构
 
 ## 📋 概述
 
-DeepSeek Worker v2 是基于火山引擎 Ark 平台的 DeepSeek 大模型构建的标准化智能体执行引擎，遵循 AlphaPilot 的统一架构规范。
+DeepSeek Worker v3.0 是基于阿里云 MAAS (Model-as-a-Service) 平台的 DeepSeek 大模型构建的标准化智能体执行引擎，已与 Qwen Worker v3.0 完全对齐。
 
 ## 🎯 核心特性
 
-- **强推理能力**：充分发挥 DeepSeek 模型的逻辑推理优势
-- **标准化流程**：遵循 analyze → plan → write → refine → test → fix → profile → doc 的标准执行链
-- **流式输出支持**：实时展示推理过程和生成内容
-- **任务取消机制**：支持分布式任务取消标记
-- **错误恢复**：自动重试和死信队列处理
-- **步骤状态管理**：pending → running → success/error 的完整状态跟踪
+- **三级 API 降级链**: `deepseek-v4-pro-0813` → `deepseek-v4-pro` → 火山引擎 Ark，确保高可用
+- **记忆中枢集成**: 任务前注入历史记忆，任务后自动保存
+- **意图识别与动态路由**: LLM + Regex 联合路由，v4.0 Execution Profile 动态决策
+- **Post-analyze 链重决策**: analyze 完成后重新评估执行链
+- **自清理机制**: 上次生成文件自动清理
+- **协议验证**: Multi-Agent JSON 输出格式验证
+- **死信队列**: 失败任务不丢失，可重试
+- **工作区扫描**: 多语言项目文件自动索引
 
 ## 🏗️ 架构组成
 
 ```
 deepeek/
-├── deepseek_api.py          # API 调用封装（支持流式）
+├── deepseek_api.py          # API 调用封装（三级降级链）
 ├── deepseek_prompts.py      # Agent 级 Prompt 模板
-├── deepseek_worker_v2.py    # Worker 主入口
+├── deepseek_worker_v3.py    # Worker 主入口（v3.0 完全重写）
+├── README.md                # 本文档
 └── step_executor/           # 标准步骤执行器
     ├── __init__.py
     ├── execute_step.py      # 统一调度器
     ├── analyze_step.py
+    ├── workspace_step.py    # 工作区扫描
     ├── plan_step.py
-    ├── write_step.py
+    ├── write_step.py        # 含 creative_write_prompt 创意意图支持
     ├── refine_step.py
     ├── test_step.py
     ├── fix_step.py
-    ├── profile_step.py
-    └── doc_step.py
+    ├── doc_step.py
+    └── docstring_step.py
 ```
 
 ## 🚀 快速开始
@@ -40,157 +44,115 @@ deepeek/
 在 `.env` 文件中配置：
 
 ```bash
-# DeepSeek API Key（火山引擎 Ark 平台）
-VOLC_DEEPSEEK_API_KEY=your_api_key_here
+# DeepSeek MAAS API Key（阿里云）
+DEEPSEEK_MAAS_API_KEY=your_maas_api_key_here
 
-# 可选：指定模型版本
-VOLC_DEEPSEEK_MODEL=deepseek-v3-250324
+# DeepSeek MAAS Base URL
+DEEPSEEK_MAAS_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 
-# Redis 配置（Upstash）
-UPSTASH_REDIS_REST_URL=https://your-redis-url
-UPSTASH_REDIS_REST_TOKEN=your_redis_token
+# 主模型
+DEEPSEEK_MAAS_MODEL=deepseek-v4-pro-0813
 
-# Node API 地址
-NODE_API_URL=http://localhost:3000
+# 降级模型
+DEEPSEEK_MAAS_FALLBACK_MODEL=deepseek-v4-pro
+
+# 本地 Redis（与 Qwen/ModelScope 共享）
+REDIS_HOST=127.0.0.1
+REDIS_PORT=6379
+LOCAL_REDIS_MODELS=maas,modelscope,deepseek
 ```
 
 ### 2. 启动 Worker
 
 ```bash
+# 独立启动
 cd D:\Copilot_Alphapilot\Copilot_Alphapilot
-python -m python_worker.agents.deepeek.deepseek_worker_v2
+python -m python_worker.agents.deepeek.deepseek_worker_v3
+
+# 或通过 start_all.ps1 统一启动
+.\start_all.ps1
 ```
 
-### 3. 提交任务
+## 🔄 API 降级链
 
-通过 Redis 队列提交任务：
-
-```python
-import redis
-import json
-from TaskModel_v2 import TaskModel
-
-r = redis.Redis(...)
-
-# 创建任务
-task = TaskModel.create_task_submit(
-    task_id="task-123",
-    task_type="deepseek_generate",
-    payload={
-        "prompt": "创建一个计算斐波那契数列的函数"
-    }
-)
-
-# 推送到队列
-r.lpush("task_queue", json.dumps(task))
+```
+主模型: deepseek-v4-pro-0813 (阿里云 MAAS)
+  │
+  ├─ 成功 → 返回结果
+  │
+  └─ 失败 (网络/配额/限流)
+       │
+       └─ 降级: deepseek-v4-pro (阿里云 MAAS)
+            │
+            ├─ 成功 → 返回结果
+            │
+            └─ 失败
+                 │
+                 └─ 回退: 火山引擎 Ark (VOLC_DEEPSEEK_API_KEY)
 ```
 
 ## 📊 执行流程
 
-### 标准步骤序列
+### v4.0 动态执行链
 
-1. **analyze** - 需求分析与风险识别
-   - 深入理解问题本质
-   - 识别已知条件和约束
-   - 分析潜在风险点
+执行链由 `IntentRouter.build_execution_chain()` 动态组装，不再使用静态映射：
 
-2. **plan** - 方案设计与伪代码规划
-   - 设计最优解决方案
-   - 考虑多种可能性
-   - 提供伪代码规划
-
-3. **write** - 代码实现
-   - 生成高质量、可维护的代码
-   - 遵循最佳实践
-   - 考虑边界情况
-
-4. **refine** - 代码优化
-   - 执行生成的代码
-   - 根据执行结果优化
-   - 改进代码质量
-
-5. **test** - 测试验证
-   - 自动生成单元测试
-   - 覆盖边界情况
-   - 验证功能正确性
-
-6. **fix** - 错误修复（如需要）
-   - 检测执行错误
-   - 自动修复问题
-   - 验证修复效果
-
-7. **profile** - 性能分析（如需要）
-   - 分析时间/空间复杂度
-   - 提供优化建议
-   - 基准测试
-
-8. **doc** - 文档生成（如需要）
-   - 生成 Markdown 文档
-   - 添加代码注释
-   - 提供使用说明
-
-## 🔧 自定义 API 调用
-
-DeepSeek Worker 支持灵活的 API 调用方式：
-
-```python
-from .deepseek_api import call_deepseek
-
-# 非流式调用
-result = call_deepseek(prompt, stream=False)
-
-# 流式调用
-result = call_deepseek(prompt, stream=True)
+```
+analyze → workspace → plan → write → refine → test → fix → doc → docstring
 ```
 
-## 📝 Prompt 特色
+创意意图（creative_writing/translate/chat）自动裁剪链：
+```
+analyze → plan → respond
+```
 
-DeepSeek Worker 的 Prompt 设计充分体现了模型特色：
+## 🔧 与 Qwen Worker v3.0 对齐清单
 
-- **深度思考框架**：引导模型逐步分析问题
-- **代码审查提示**：从多个维度检查代码质量
-- **结构化输出**：确保输出可被程序解析
-- **能力边界明确**：避免模型越界或幻觉
+| 功能 | Qwen | DeepSeek |
+|------|------|----------|
+| 意图识别 | ✅ | ✅ |
+| 记忆中枢 | ✅ | ✅ |
+| 工作区扫描 | ✅ | ✅ |
+| Post-analyze 重决策 | ✅ | ✅ |
+| Execution Profile | ✅ | ✅ |
+| 自清理机制 | ✅ | ✅ |
+| 协议验证 | ✅ | ✅ |
+| 死信队列 | ✅ | ✅ |
+| 创意意图优化 | ✅ | ✅ |
+| 本地 Redis | ✅ | ✅ |
+| start_all.ps1 | ✅ | ✅ |
 
 ## 🛠️ 故障排查
 
 ### 常见问题
 
-1. **API Key 未设置**
-   - 检查 `.env` 文件是否存在
-   - 确认环境变量名称正确
-   - 验证 API Key 有效性
+1. **MAAS API Key 未设置**
+   - 检查 `.env` 中 `DEEPSEEK_MAAS_API_KEY` 是否正确
+   - 验证 Key 是否在阿里云 DashScope 控制台有效
 
 2. **Redis 连接失败**
-   - 检查 Upstash URL 和 Token
-   - 确认网络连接正常
-   - 验证 Redis 服务状态
+   - 确认本地 Redis 已启动: `redis-cli ping`
+   - 检查 `.env` 中 `LOCAL_REDIS_MODELS` 是否包含 `deepseek`
 
-3. **任务执行超时**
-   - 增加 timeout 参数值
-   - 检查模型响应速度
-   - 考虑使用流式输出
+3. **API 降级触发**
+   - 正常行为，检查主模型是否需要续费/扩容
+   - 查看日志确认降级原因（网络超时/配额不足/限流）
 
-## 📈 性能优化
+## 📈 性能特性
 
-- 使用流式输出提升用户体验
-- 合理设置重试次数和延迟
-- 利用 Redis 缓存中间结果
-- 分布式场景下注意取消标记同步
+- 主模型 `deepseek-v4-pro-0813` 为最新 Pro 版本，编程能力最强
+- 降级模型 `deepseek-v4-pro` 为稳定版本，作为容错保障
+- 火山引擎 Ark 作为最后一层兜底
+- 本地 Redis 零网络延迟
 
-## 🔮 未来扩展
+## 🔮 版本历史
 
-- 支持 Tool Calling（搜索、代码解释器等）
-- 多 Agent 协作能力
-- 更复杂的任务规划策略
-- 增强的错误恢复机制
+| 版本 | 日期 | 说明 |
+|------|------|------|
+| v1.0 | 2026-03 | 初始版本，火山引擎 Ark |
+| v2.0 | 2026-03 | 标准化 step executor |
+| v3.0 | 2026-10 | 完全重写：MAAS 三级降级 + 本地 Redis + Qwen 对齐 |
 
-## 📚 参考文档
+## 👥 维护者
 
-- [Qwen Worker v2 架构](../qwen/ARCHITECTURE_REFACTOR.md)
-- [Task Model v2 规范](../../TASK_MODEL_SPECIFICATION.md)
-- [Worker 配置说明](../../worker_config.py)
-
-## 👥 作者
-
-DavidLiang - 2026-03-31
+DavidLiang — 2026-10-11

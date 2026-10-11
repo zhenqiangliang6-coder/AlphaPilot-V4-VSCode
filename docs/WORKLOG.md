@@ -50,6 +50,181 @@ f822e60 v3.2: JSON unwrap in FileOps parser, language-agnostic architecture, sel
 
 ---
 
+## 2026-10-10 🔧 运行时修复日 — 打通前后端全链路
+
+> **"问题不在于代码写得不对，而在于运行时环境总会背叛你"**
+>
+> 今天的工作集中在发现并修复潜伏已久的配置错误和协议不一致，让系统从"能启动"到"能真正跑通任务"。
+
+### 🐛 Bug 修复
+
+#### ① `@prisma/client` 缺失导致 Node API 启动崩溃
+
+- **现象**：`Cannot find module '@prisma/client'`
+- **根因**：`@prisma/client` 从 5 月就错放在 `devDependencies`，之前因 `npm install` 默认安装 dev 依赖而侥幸运行。近期的部分安装/清理操作触发了 `production` 模式，导致运行时依赖被跳过。
+- **修复**：
+  - 将 `@prisma/client` 从 `devDependencies` 移到 `dependencies`（`node-api/package.json`）
+  - 执行 `npm install` + `npx prisma generate`
+
+#### ② Node API 队列路由错误 — 任务发到错误队列
+
+- **现象**：前端发送 `qwen-turbo` 类型任务，Qwen Worker 收不到
+- **根因**：Node API 用 `getWorkerQueueByType("qwen-turbo")` 做精确匹配 → 查不到 → 兜底到通用队列 `task_queue`；而 Qwen Worker 监听 `task_queue:qwen`
+- **修复**：`node-api/index.js` — `getWorkerQueueByType(type)` → `getWorkerQueue(type)`，后者智能提取前缀：`qwen-turbo` → `qwen` → `task_queue:qwen`
+
+#### ③ 9 个 Worker 的类型校验全部失败 — 任务循环放回队列
+
+- **现象**：任务到达正确队列后，Worker 识别为"不匹配的类型"又把任务放回队列，造成死循环
+- **根因**：前端传 `qwen-turbo` / `deepseek-chat`（`-` 分隔），Worker 校验 `startswith("qwen_")` / `startswith("deepseek_")`（`_` 分隔），永远不匹配
+- **修复**：统一将 9 个 Worker 的验证改为 `startswith("qwen")` / `startswith("deepseek")` 等（去掉分隔符）
+  - `qwen_worker_v2.py`、`maas_worker_v3.py`、`modelscope_worker_v3.py`
+  - `local_worker_v3.py`、`doubao_worker_v3.py`、`doubao_worker_v2.py`
+  - `gemini_worker_v2.py`、`deepseek_worker_v3.py`、`deepseek_worker_v2.py`
+
+#### ④ `analyze_prompt()` 不接受 `context` 参数
+
+- **现象**：`LLM 调用失败: analyze_prompt() got an unexpected keyword argument 'context'`
+- **根因**：`analyze_step.py` 传了 `context=context` 但 `prompts.py` 的函数签名只有 `(user_input)`
+- **修复**：`python_worker/agents/qwen/step_executor/prompts.py` — 添加 `context: dict = None` 参数，并注入上下文记忆到分析 prompt 中
+
+#### ⑤ 前端模型选择器缺少 3 个 Worker
+
+- **现象**：VSCode 插件下拉框看不到 Gemini、MaaS、ModelScope
+- **根因**：源码 `ModelSelector.tsx` 已有全部 7 个模型，但 `webview-dist` 构建产物是旧版
+- **修复**：重新 `npm run build` webview 并 Reload Window
+
+### 📁 文件清单
+
+| 文件 | 改动 |
+|------|------|
+| `node-api/package.json` | `@prisma/client` devDeps → deps |
+| `node-api/index.js` | 队列路由函数修正 |
+| `python_worker/agents/*/worker*.py` (x9) | 类型前缀校验去分隔符 |
+| `python_worker/agents/qwen/step_executor/prompts.py` | analyze_prompt 添加 context 参数 |
+| `vscode-extension/webview-dist/` | 重新打包 |
+
+### 关键洞察
+
+- **`devDependencies` vs `dependencies`**：运行时需要 `require()` 的包必须在 `dependencies`，否则 `NODE_ENV=production` 就炸
+- **前后端协议对齐是最大坑**：`qwen-turbo` vs `qwen_generate` 这类命名不一致会在链路多个节点分别卡死，每个节点的日志看起来都"正常"
+- **构建产物 ≠ 源码**：改了源码后没有 rebuild，表象就是"我已经加了但这个功能怎么没有"
+
+---
+
+## 2026-10-10 🚀 V4.0 执行引擎 — 动态链组装与 LLM 驱动重决策
+
+> **"宁可多花 1000 token 让 LLM 决策怎么做，也不要用 1 行 if/else 把路堵死"**
+>
+> V4.0 执行引擎核心架构升级：从静态 INTENT_TO_CHAIN 硬编码映射 → 三维动态决策矩阵 → LLM analyze 输出驱动链重新路由。分 4 个 Phase 执行。
+
+### Phase 2: Skill 升级 — Output Profile 优先级体系
+
+**背景**：v3.x 中 Skill 仅提供 guidance 文本注入，不参与执行链决策。
+
+**实现**：
+- 为所有 Skill 赋予 `output_profile` 能力合约字段，描述该 Skill 的输出模式
+- `route_skill()` 匹配结果传递到 `plan_request()` → `_resolve_chain()`，Skill profile 优先于意图默认 profile
+- 优先级规则：`Skill.output_profile > 意图默认 profile > 兜底 code 模式`
+- `worker_runtime.py` 中 `route_skill()` 调用提前到 `plan_request()` 之前，确保 matched_skill 变量被真正传入执行链构建流程
+- 新增 4 个 v4.0 Skill：`creative.pure-text`、`creative.document-proposal`、`creative.brand-content`、`vision.image-analysis`
+- 修复 Skill dataclass 字段顺序：`guidance` 移到 `output_profile`（有默认值）之前，消除 TypeError
+
+### Phase 3: 彻底去静态化 — INTENT_TO_CHAIN 字典删除
+
+**背景**：v3.x 中 15 条意图到执行链的映射全部硬编码在 `INTENT_TO_CHAIN` 字典中。
+
+**实现**：
+- 🗑️ 删除 `INTENT_TO_CHAIN` 静态字典（15 条意图→链映射），保留历史注释
+- 🔄 `build_execution_chain()` 移除静态降级逻辑，profile 为 None 时自动调用 `resolve_execution_profile()`
+- 🔄 `execution_chain_for()` 兼容方法内部转调 `_resolve_chain()`，不再依赖静态字典
+- 动态链组装规则（7 维度驱动）：
+
+```
+chain = ["analyze"]
+if workspace_dependency != "none": chain.append("workspace")
+if output_mode != "text": chain.append("plan")
+chain.append("write")
+if output_mode in ("code", "document"): chain.append("refine")
+if output_mode == "code" and requires_test: chain.append("test")
+if output_mode == "code": chain.extend(["fix", "doc", "docstring"])
+```
+
+- chat/mentor 意图强制覆盖为 `["analyze", "plan", "respond"]`
+- external_git worker 过滤掉 write/refine/test/fix/doc 步骤
+
+### Phase 4: LLM 驱动 analyze_step → 执行链重新决策
+
+**核心洞察**：v3.x 中执行链在 analyze 步骤执行前就已确定，但 LLM 在 analyze 阶段对任务有更深刻的理解，应该允许它重新决定后续步骤。
+
+**实现**：
+1. **`analyze_prompt()` 升级**（`prompts.py`）：要求 LLM 在分析末尾输出 `[EXECUTION_PROFILE]` JSON 块，包含 7 个执行维度
+2. **`parse_execution_profile_from_analysis()`**（`intent_router.py`）：从 LLM 输出中提取 profile JSON
+   - 主路径：精确 JSON 解析
+   - 容错路径：逐字段正则提取（畸形 JSON 也能恢复）
+   - 完全失败时返回 None（调用方保持原始链不变）
+3. **Post-analyze 链重路由**（`qwen_worker_v2.py::execute_task()`）：
+   - analyze 步骤从 steps 列表分离，单独先执行
+   - 从输出中提取 profile，调用 `build_execution_chain()` 重建剩余步骤
+   - 仅当新链与旧链不同时才替换（避免无意义重建）
+   - 异常时回退到原始 steps（零破坏性容错）
+
+### Phase 5: diagnosis.runtime-error Skill — LLM 行为约束合约
+
+**背景**：当用户报"端口被占用 Errno 10048"时，LLM 在 `engineer` 人格下可能过度修改业务代码，而不是去改端口号。系统缺少精确的行为约束机制。
+
+**新增 Skill**：`diagnosis.runtime-error`（`skills/diagnosis_runtime_error.py`）
+```python
+Skill(
+    id="diagnosis.runtime-error",
+    priority=90,  # 覆盖默认 backend.python (60)
+    triggers=("端口被占用", "Address already in use", "ConnectionRefused",
+              "Errno 10048", "Errno 13", "Permission denied", ...),
+    capabilities=("workspace.read", "workspace.write", "diagnosis.log"),
+    output_profile=dict(requires_test=False),  # 运行时错误不需要跑测试
+    guidance="MINIMUM-VIABLE fix. DO NOT modify unrelated business logic..."
+)
+```
+
+**三个关键价值**：
+- 🎯 `requires_test: False` — 端口/配置/权限问题不需要 test→doc 链路，Skill 覆盖了 `fix_code` 的默认 `requires_test: True`
+- 🔒 `guidance` 行为约束 — "严禁修改无关业务逻辑，最小化修复"，这是当前系统最缺少的能力
+- 🏷️ `diagnosis.log` 新 capability 维度 — 供 authorization/policy 组件做差异化处理
+
+### V4.0 架构完整性
+
+| 层级 | 机制 | 状态 |
+|---|---|---|
+| 意图分类 | LLM + Regex 联合路由 | v3.5 ✅ |
+| Skill 匹配 | capability 合约 + output_profile 优先级 | Phase 2 ✅ |
+| 执行链组装 | `build_execution_chain()` 7 维度纯规则 | Phase 3 ✅ |
+| LLM 分析重决策 | analyze → profile → rebuild chain | Phase 4 ✅ |
+| 行为约束 | Skill guidance 精确注入 | Phase 5 ✅ |
+
+### 测试验证
+
+- 全量 Python Worker 测试：**136 passed**（8 个已有环境问题：6× EMBEDDING_PROVIDER + 2× qwen_fix_step）
+- Phase 4 新增 6 个 profile 解析测试：有效 JSON、无标记、空输入、部分字段、链差异、chat 覆盖
+- Phase 5 新增 4 个 Skill 测试：注册验证、路由验证、profile 验证、guidance 验证
+- `test_workspace_task_flow.py` 3 个测试适配 v4.0 动态链预期
+
+### 文件变更
+
+| 文件 | 改动 |
+|------|------|
+| `intent_router.py` | Phase 2-4: `ExecutionProfile`、动态链构建、profile 解析 |
+| `qwen_worker_v2.py` | Phase 4: Post-analyze 链重路由 |
+| `prompts.py` | Phase 4: analyze prompt + EXECUTION_PROFILE JSON |
+| `skills/base.py` | Phase 2: 字段顺序修复 |
+| `worker_runtime.py` | Phase 2: Skill 传递衔接 |
+| `skills/diagnosis_runtime_error.py` | Phase 5: 新增 |
+| `skills/creative_*.py` + `vision_*.py` | Phase 2: 新增 4 个 v4.0 Skill |
+| `tests/test_intent_router.py` | Phase 2-4: 动态链验证 + 6 个 Phase 4 测试 |
+| `tests/test_skills.py` | Phase 2+5: v4.0 Skill 注册 + diagnosis 测试 |
+| `tests/test_v35_control_plane.py` | Phase 2: LLM 路由不确定性兼容 |
+| `tests/test_workspace_task_flow.py` | Phase 3: v4.0 链预期适配 |
+
+---
+
 ## 2026-04-02
 
 - 增强 `planner` 的 JSON 修复器（`python_worker/planner.py`）

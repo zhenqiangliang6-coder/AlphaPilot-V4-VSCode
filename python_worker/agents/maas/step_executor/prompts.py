@@ -168,24 +168,56 @@ def test_prompt(code: str) -> str:
 """
 
 
-def fix_prompt(code: str, error_message: str) -> str:
-    return f"""
+def fix_prompt(path: str, code: str, error_message: str, test_code: str = "") -> str:
+    """
+    修复步骤的 prompt（支持测试代码）
+    
+    参数:
+        path: 文件路径
+        code: 原始代码
+        error_message: 错误信息
+        test_code: 测试代码（可选）
+    """
+    prompt = f"""
 下面是一段 Python 代码和它的执行错误，请分析错误原因并给出修复后的完整代码。
 
+【文件路径】：
+{path}
+
 【原始代码】：
-\\`\\`\\`python
+```python
 {code}
-\\`\\`\\`
+```
 
 【执行错误】：
 {error_message}
+"""
+    
+    if test_code:
+        prompt += f"""
+
+【测试代码】（关键参考，必须满足测试要求）：
+```python
+{test_code}
+```
+
+⭐⭐⭐ 重要提示：
+- 上面的测试代码定义了期望的方法名、参数签名、返回类型
+- 修复后的代码必须与测试代码匹配，否则测试仍会失败
+- 检查方法名、参数顺序、返回类型是否与测试一致
+- 如果测试使用了 fixture 或 mock，确保代码能兼容
+"""
+    
+    prompt += """
 
 要求：
 1. 分析错误的根本原因
-2. 给出修复后的完整代码（使用 \\`\\`\\`python 代码块）
+2. 给出修复后的完整代码（使用 ```python 代码块）
 3. 简要说明修复了什么问题（可以用注释形式写在代码里）
 4. 不要输出解释性自然语言。
 """
+    
+    return prompt
 
 
 def profile_prompt(code: str) -> str:

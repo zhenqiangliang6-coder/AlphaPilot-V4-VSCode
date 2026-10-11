@@ -9,6 +9,7 @@ __all__ = [
     "analyze_prompt",
     "plan_prompt",
     "write_prompt",
+    "creative_write_prompt",
     "refine_prompt",
     
     # 扩展步骤 prompt
@@ -24,12 +25,27 @@ __all__ = [
 ]
 
 
-def analyze_prompt(user_input: str) -> str:
+def analyze_prompt(user_input: str, context: dict = None) -> str:
+    memory_section = ""
+    if context:
+        mem = context.get("meta", {})
+        task_goal = mem.get("task_goal", "")
+        prior_files = mem.get("prior_changed_files", [])
+        repair_rounds = mem.get("repair_rounds", 0)
+        if task_goal or prior_files:
+            memory_section = "\n\n【上下文记忆】：\n"
+            if task_goal:
+                memory_section += f"- 任务目标: {task_goal}\n"
+            if prior_files:
+                memory_section += f"- 之前修改的文件: {', '.join(prior_files)}\n"
+            if repair_rounds:
+                memory_section += f"- 已修复轮数: {repair_rounds}\n"
+
     return f"""
 请分析下面的任务描述，并提取关键需求点：
 
 【用户任务描述】：
-{user_input}
+{user_input}{memory_section}
 
 请输出：
 1. 任务的核心目标
@@ -39,6 +55,32 @@ def analyze_prompt(user_input: str) -> str:
 5. 需要注意的风险点
 
 请使用结构化的自然语言，不要生成代码。
+
+---
+【执行维度标记 — 必须输出】
+在分析末尾附加一个 JSON 块，准确标记任务的执行维度。该 JSON 将被引擎解析并决定后续执行步骤。
+
+[EXECUTION_PROFILE]
+{{
+  "output_mode": "text|document|code|mixed",
+  "workspace_dependency": "none|read_only|read_write",
+  "target_format": "py|md|txt|json|html|plain_text",
+  "requires_fileops": true|false,
+  "requires_workspace_scan": true|false,
+  "requires_test": true|false,
+  "estimated_complexity": "simple|moderate|complex"
+}}
+
+字段说明：
+- output_mode: 纯文本文档用 "text"，需生成代码用 "code"，需输出 Markdown/文档用 "document"
+- workspace_dependency: 无需访问项目文件用 "none"，只需读取用 "read_only"，需创建/修改文件用 "read_write"
+- target_format: 输出的主要文件格式
+- requires_fileops: 是否需要创建/修改文件
+- requires_workspace_scan: 是否需要扫描项目文件
+- requires_test: 是否需要生成和运行测试
+- estimated_complexity: 任务复杂度评估
+
+请严格按照你的任务理解填写，不要留空或使用占位符。
 """
 
 
@@ -175,6 +217,49 @@ pytest>=7.0.0
 
 只输出多文件协议内容，不要任何解释性文字。
 """
+
+
+def creative_write_prompt(plan: str, user_request: str = "", intent: str = "creative_writing") -> str:
+    """
+    创意/对话类意图的纯文本输出 prompt（跳过 FileOps，零浪费）
+    不生成 FILE/TEST/DOC/META/DEPENDS 结构，直接输出自然语言内容
+    """
+    intent_label = {
+        "creative_writing": "创作任务",
+        "translate": "翻译任务",
+        "summarization": "摘要任务",
+        "chat": "对话任务",
+        "mentor_explain": "教学讲解任务",
+    }.get(intent, "内容生成任务")
+
+    user_section = ""
+    if user_request:
+        user_section = f"\n【用户原始请求】：\n{user_request}\n"
+    
+    analyze_section = ""
+    if plan:
+        analyze_section = f"\n【分析参考】：\n{plan}\n"
+
+    return f"""你正在执行一个 {intent_label}。
+
+这是纯文本输出模式，请不要生成任何代码文件、测试文件、文档文件或元数据。
+禁止使用以下格式标记：
+- 禁止 # FILE:
+- 禁止 # TEST:
+- 禁止 # DOC:
+- 禁止 # META:
+- 禁止 # DEPENDS:
+- 禁止 # DELETE:
+- 禁止代码块包装（除非内容本身是代码片段示例）
+{user_section}{analyze_section}
+【输出要求】：
+1. 直接输出最终内容，不要任何格式包装
+2. 内容自然流畅，符合 {intent_label} 场景
+3. 不要添加解释、说明或备注
+4. 不要模拟文件结构，不要写函数定义包装内容
+5. 如果用户要的是诗，直接输出诗；要的是文章，直接输出文章
+
+现在请直接输出："""
 
 
 def refine_prompt(code: str, exec_summary: str) -> str:

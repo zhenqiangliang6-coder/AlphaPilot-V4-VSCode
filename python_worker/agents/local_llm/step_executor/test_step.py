@@ -14,7 +14,14 @@ from ..local_api import call_local_llm
   # 你已有的 local_api 封装
 
 
-def run_test_step(step, context, events, task_id=None):
+def run_test_step(
+    step, 
+    context, 
+    events, 
+    task_id=None,
+    llm_client=None,  # ⭐ 依赖注入：LLM 客户端
+    code_executor=None  # ⭐ 依赖注入：代码执行器
+):
     """
     执行 test 步骤（v3.0）：
     - 从 write 步骤获取代码
@@ -55,7 +62,10 @@ def run_test_step(step, context, events, task_id=None):
         return
 
     # 3) ⭐ v3.0：选择 API 调用函数
-    api_func = context.get("_custom_api_func", call_local_llm)
+    if llm_client is not None:
+        api_func = llm_client.call
+    else:
+        api_func = context.get("_custom_api_func", call_local_llm)
 
     # 4) 让 LLM 生成 pytest 风格测试代码（⭐ 支持流式输出）
     test_code_text = ""
@@ -68,7 +78,7 @@ def run_test_step(step, context, events, task_id=None):
             # ⭐ 流式输出模式
             stream_chunk(task_id, "生成测试代码...\n", phase="test", channel="reasoning")
             
-            # 注意：Local LLM 的 call_local_llm 目前不支持真正的流式，这里先同步调用
+            # 使用注入的 LLM 客户端或默认实现
             test_code_text = api_func(prompt)
             stream_chunk(task_id, test_code_text, phase="test", channel="content")
         else:
@@ -94,7 +104,12 @@ def run_test_step(step, context, events, task_id=None):
 
     # 5) 组合执行 fake pytest + 用户代码 + 测试代码
     full_code = FAKE_PYTEST + "\n\n" + code + "\n\n" + test_code
-    test_result = run_python(full_code)
+    
+    # ⭐ 依赖注入：使用注入的代码执行器，或默认使用真实实现
+    if code_executor is not None:
+        test_result = code_executor.execute(full_code)
+    else:
+        test_result = run_python(full_code)
 
     # 6) 输出测试结果
     test_summary = (
@@ -114,9 +129,10 @@ def run_test_step(step, context, events, task_id=None):
     # 7) 写入 context
     context["intermediate_results"].append({
         "type": "test",
-        "test_code": test_code,
+        "test_code": test_code,  # ⭐ 保存测试代码
         "test_result": test_result,
-        "tested_code": code
+        "tested_code": code,
+        "status": "passed" if test_result.get("error") == "None" else "failed"
     })
 
     # ===== 8. 流式输出结束 =====

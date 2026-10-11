@@ -302,7 +302,7 @@ def main_loop():
             task_type = task.get("task_type") or task.get("type")
             payload = task["payload"]
             # 只处理 gemini_generate
-            if task_type and not task_type.startswith("gemini_"):
+            if task_type and not task_type.startswith("gemini"):
                 redis.lpush(queue_name, task_json)
                 print(f"⚠️ 收到不匹配的任务类型: {task_type}，已放回队列")
                 time.sleep(1)

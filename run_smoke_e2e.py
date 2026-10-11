@@ -31,8 +31,8 @@ TURNS = [
         "Architect",
         "设计一个 Python 数据分析工具箱的系统架构",
         "architecture",
-        "engineer",
-        "teacher",
+        "architect",
+        "architect",
     ),
     (
         "Engineer",
@@ -45,7 +45,7 @@ TURNS = [
         "Reviewer",
         "请审查 src/app.py 代码有没有风险",
         "code_review",
-        "engineer",
+        "reviewer",
         "reviewer",
     ),
     (
