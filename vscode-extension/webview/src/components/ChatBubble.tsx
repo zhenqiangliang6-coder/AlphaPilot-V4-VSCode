@@ -1,5 +1,5 @@
 // src/components/ChatBubble.tsx
-import React, { useMemo } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { PersonaIcon } from './PersonaIcon';
 import { IntentBadge } from './IntentBadge';
 import { StepTree } from './StepTree';
@@ -61,6 +61,18 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({
     // 剥离 ```mermaid...``` 代码块，避免与 artifact 卡片双重渲染
     return (contentChannel || content).replace(/```mermaid\s*\n[\s\S]*?```/g, '');
   }, [contentChannel, content, artifacts, isStreaming]);
+
+  // P1：延迟切换渲染模式，确保最后一帧 stream_chunk 内容被 React 处理完毕
+  const [renderFinal, setRenderFinal] = useState(false);
+
+  useEffect(() => {
+    if (!isStreaming) {
+      const timer = setTimeout(() => setRenderFinal(true), 200);
+      return () => clearTimeout(timer);
+    } else {
+      setRenderFinal(false);
+    }
+  }, [isStreaming]);
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'} animate-fade-in gap-3`}>
@@ -124,16 +136,16 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({
           {/* 最终产出 */}
           {(contentChannel || content) && (
             <div>
-              {isStreaming ? (
+              {!renderFinal ? (
                 <EnhancedStreamingOutput 
                   content={contentChannel || content} 
-                  isStreaming={isStreaming}
+                  isStreaming={isStreaming || !renderFinal}
                   channel="content"
                 />
               ) : (
                 <div>
                   {/* P1：artifact 卡片（mermaid_diagram 用 MermaidBlock 渲染） */}
-                  {artifacts && artifacts.length > 0 && !isStreaming && (
+                  {artifacts && artifacts.length > 0 && (
                     <div className="space-y-3 mb-4">
                       {artifacts.map((artifact) => {
                         if (artifact.artifact_type === 'mermaid_diagram') {

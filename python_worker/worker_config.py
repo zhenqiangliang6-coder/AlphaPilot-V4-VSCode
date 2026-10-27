@@ -443,20 +443,27 @@ def stream_start(task_id: str, title: str = "Qwen 正在生成...", phase: str =
         print(f"⚠️ stream_start 失败：{e}")
 
 
-def stream_chunk(task_id: str, content: str, phase: str = None, channel: str = None):
-    try:
-        payload = {"task_id": task_id, "content": content}
-        if phase is not None:
-            payload["phase"] = phase
-        if channel is not None:
-            payload["channel"] = channel
-        requests.post(
-            f"{NODE_API_URL}/task/stream_chunk/{task_id}",
-            json=payload,
-            timeout=5,
-        )
-    except Exception as e:
-        print(f"⚠️ stream_chunk 失败：{e}")
+def stream_chunk(task_id: str, content: str, phase: str = None, channel: str = None, max_retries: int = 2):
+    payload = {"task_id": task_id, "content": content}
+    if phase is not None:
+        payload["phase"] = phase
+    if channel is not None:
+        payload["channel"] = channel
+
+    last_error = None
+    for attempt in range(max_retries + 1):
+        try:
+            requests.post(
+                f"{NODE_API_URL}/task/stream_chunk/{task_id}",
+                json=payload,
+                timeout=10,
+            )
+            return
+        except Exception as e:
+            last_error = e
+            if attempt < max_retries:
+                time.sleep(0.3 * (attempt + 1))
+    print(f"⚠️ stream_chunk 最终失败（{max_retries + 1}次尝试）: {last_error}")
 
 
 def step_started(task_id: str, step_id: str, step_type: str, phase: str = None):
