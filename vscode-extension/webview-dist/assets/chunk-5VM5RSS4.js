@@ -1,4 +1,4 @@
-import{_ as e}from"./mermaid.core.js";var l=e(()=>`
+import{_ as e}from"./index.js";var l=e(()=>`
   /* Font Awesome icon styling - consolidated */
   .label-icon {
     display: inline-block;

@@ -1,8 +1,63 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useMemo } from 'react';
+import mermaid from 'mermaid';
 
 interface MermaidBlockProps {
   code: string;
   label?: string;
+}
+
+const MERMAID_INITIALIZED = Symbol('mermaid_initialized');
+
+let _mermaidReady = false;
+
+function ensureMermaidInit() {
+  if (_mermaidReady) return;
+  mermaid.initialize({
+    startOnLoad: false,
+    theme: 'dark',
+    suppressErrorRendering: true,
+    themeVariables: {
+      primaryColor: '#3b82f6',
+      primaryTextColor: '#e2e8f0',
+      primaryBorderColor: '#60a5fa',
+      lineColor: '#94a3b8',
+      secondaryColor: '#1e293b',
+      tertiaryColor: '#334155',
+    },
+    flowchart: {
+      useMaxWidth: true,
+      htmlLabels: true,
+      curve: 'basis',
+    },
+  });
+  _mermaidReady = true;
+}
+
+function sanitizeMermaidCode(code: string): string {
+  let sanitized = code;
+
+  sanitized = sanitized.replace(
+    /(\[[^\]]*\[[^\]]*\][^\]]*\])/g,
+    (_match: string) => {
+      const inner = _match.slice(1, -1);
+      return '["' + inner.replace(/"/g, '\\"') + '"]';
+    }
+  );
+
+  sanitized = sanitized.replace(/[\u{1F600}-\u{1F9FF}\u{2600}-\u{27BF}\u{2702}-\u{27B0}]/gu, '');
+
+  sanitized = sanitized.replace(/(\w+)\.(\w+)/g, (_match: string) => {
+    const knownModules = ['python_worker', 'vscode_extension', 'node_api', 'src', 'tests'];
+    const parts = _match.split('.');
+    if (knownModules.includes(parts[0])) {
+      return _match;
+    }
+    return _match;
+  });
+
+  sanitized = sanitized.replace(/<br\s*\/?>/gi, '#lt;br/#gt;');
+
+  return sanitized;
 }
 
 export const MermaidBlock: React.FC<MermaidBlockProps> = ({ code, label }) => {
@@ -10,34 +65,17 @@ export const MermaidBlock: React.FC<MermaidBlockProps> = ({ code, label }) => {
   const [error, setError] = useState<string | null>(null);
   const [svgContent, setSvgContent] = useState<string | null>(null);
 
+  const sanitizedCode = useMemo(() => sanitizeMermaidCode(code), [code]);
+
   useEffect(() => {
     let cancelled = false;
 
     const renderDiagram = async () => {
       try {
-        const mermaid = (await import('mermaid')).default;
-
-        mermaid.initialize({
-          startOnLoad: false,
-          theme: 'dark',
-          suppressErrorRendering: true,
-          themeVariables: {
-            primaryColor: '#3b82f6',
-            primaryTextColor: '#e2e8f0',
-            primaryBorderColor: '#60a5fa',
-            lineColor: '#94a3b8',
-            secondaryColor: '#1e293b',
-            tertiaryColor: '#334155',
-          },
-          flowchart: {
-            useMaxWidth: true,
-            htmlLabels: true,
-            curve: 'basis',
-          },
-        });
+        ensureMermaidInit();
 
         const id = `mermaid-${Math.random().toString(36).substr(2, 9)}`;
-        const { svg } = await mermaid.render(id, code);
+        const { svg } = await mermaid.render(id, sanitizedCode);
 
         if (!cancelled) {
           setSvgContent(svg);
@@ -45,6 +83,9 @@ export const MermaidBlock: React.FC<MermaidBlockProps> = ({ code, label }) => {
         }
       } catch (err: any) {
         if (!cancelled) {
+          console.error('[MermaidBlock] 渲染失败, code 前200字符:', sanitizedCode.substring(0, 200));
+          console.error('[MermaidBlock] 错误:', err.message || err);
+
           setError(err.message || 'Mermaid 渲染失败');
           setSvgContent(null);
         }
@@ -56,7 +97,7 @@ export const MermaidBlock: React.FC<MermaidBlockProps> = ({ code, label }) => {
     return () => {
       cancelled = true;
     };
-  }, [code]);
+  }, [sanitizedCode]);
 
   if (error) {
     return (
@@ -74,6 +115,14 @@ export const MermaidBlock: React.FC<MermaidBlockProps> = ({ code, label }) => {
           </summary>
           <pre className="mt-2 text-xs text-gray-400 whitespace-pre-wrap overflow-x-auto bg-gray-900/50 p-3 rounded">
             {code}
+          </pre>
+        </details>
+        <details className="mt-1">
+          <summary className="text-xs text-gray-400 cursor-pointer hover:text-gray-300">
+            查看清洗后的 Mermaid 源码
+          </summary>
+          <pre className="mt-2 text-xs text-gray-400 whitespace-pre-wrap overflow-x-auto bg-gray-900/50 p-3 rounded">
+            {sanitizedCode}
           </pre>
         </details>
       </div>
@@ -97,6 +146,7 @@ export const MermaidBlock: React.FC<MermaidBlockProps> = ({ code, label }) => {
         </div>
       )}
       <div
+        ref={containerRef}
         className="mermaid-container flex justify-center"
         dangerouslySetInnerHTML={{ __html: svgContent }}
       />
