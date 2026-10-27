@@ -3,6 +3,7 @@ const { spawn } = require('child_process');
 
 const fileOpsHandler = require('../fileOpsHandler');
 const memoryService = require('../services/memoryService');
+const { resolveStatus } = require('../taskStateContract');
 
 // export a factory so index.js can pass the Socket.IO `io` instance
 module.exports = function(io) {
@@ -45,9 +46,16 @@ module.exports = function(io) {
 
     // 更新 Memory（尽量降级容错）
     try {
-        const status = payload.status || 'done';
-        const summary = payload.summary || '';
-        await memoryService.updateTaskStatus(task_id, status, summary);
+        const resolved = resolveStatus(payload);
+        if (resolved.valid) {
+            if (resolved.warnings.length > 0) {
+                console.warn(`[V4 Router] ⚠️ Contract WARNING:`, resolved.warnings.map(w => `${w.field}: ${w.message}`).join('; '));
+            }
+            const summary = payload.summary || '';
+            await memoryService.updateTaskStatus(task_id, resolved.status, summary);
+        } else {
+            console.error(`[V4 Router] ⛔ Contract VIOLATION:`, resolved.violations.map(v => `${v.field}: ${v.message}`).join('; '));
+        }
     } catch (err) {
         console.error('[V4 Router] 更新 Memory 失败:', err.message);
     }

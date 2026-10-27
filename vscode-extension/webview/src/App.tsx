@@ -1,5 +1,5 @@
 // src/App.tsx
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { useChatStore } from './store/chatStore';
 import { Toolbar } from './components/Toolbar';
 import { ModelSelector } from './components/ModelSelector';
@@ -20,7 +20,8 @@ function App() {
     setStreaming, 
     addStep, 
     updateStep,
-    setCurrentPhase
+    setCurrentPhase,
+    addArtifact,  // P1
   } = useChatStore();
 
   // ⭐ v2.7 新增：FileOps 状态管理
@@ -39,6 +40,8 @@ function App() {
   const [selectedFilePath, setSelectedFilePath] = useState<string>('');
   const [selectedProjectId, setSelectedProjectId] = useState<number>(1);  // 默认项目 ID
   const [selectedProjectName, setSelectedProjectName] = useState<string>('Default Project');
+
+  const processedTaskIds = useRef<Set<string>>(new Set());
 
   // 监听来自 Extension 的消息
   useEffect(() => {
@@ -87,6 +90,12 @@ function App() {
           console.log('📁 Webview 收到 file_ops:', message.payload);
           handleFileOps(message.payload);
           break;
+        
+        // P1：监听产物事件
+        case 'artifact_created':
+          console.log('[P1] Webview 收到 artifact_created:', message.payload.artifact_id);
+          handleArtifactCreated(message.payload);
+          break;
       }
     };
 
@@ -95,6 +104,13 @@ function App() {
   }, []);
 
   const handleTaskStarted = (payload: any) => {
+    // === 去重守卫：同一 task_id 只处理一次，防止 HTTP+WebSocket 双重推送 ===
+    if (processedTaskIds.current.has(payload.task_id)) {
+      console.log('⚠️ 跳过重复的 task_started:', payload.task_id);
+      return;
+    }
+    processedTaskIds.current.add(payload.task_id);
+
     setCurrentTaskId(payload.task_id);
     setStreaming(true);
     
@@ -228,6 +244,20 @@ function App() {
     setCurrentTaskIdForFileOps(taskId);
     setCurrentFileOps(fileOps);
     setShowFileOps(true);
+  };
+
+  // P1：处理 artifact_created 消息
+  const handleArtifactCreated = (payload: any) => {
+    const artifact = {
+      artifact_id: payload.artifact_id,
+      artifact_type: payload.artifact_type,
+      format: payload.format,
+      content: payload.content,
+      label: payload.label,
+      sequence: payload.sequence || 0,
+      created_at: payload.created_at || Date.now(),
+    };
+    addArtifact(payload.task_id, artifact);
   };
 
   // ⭐ v2.7 新增：应用文件操作

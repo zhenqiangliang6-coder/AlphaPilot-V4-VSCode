@@ -237,14 +237,16 @@ class MemoryIntegration:
             
             saved_count = 0
             for insight in insights:
-                # 守门人决策
+                # 守门人决策（传入 source_type 以区分可信度）
                 decision = service.should_remember(
                     user_id=user_id,
                     content=insight["content"],
                     context={
                         "task_id": task_id,
                         "task_outcome": insight.get("outcome", "success"),
-                        "task_complexity": insight.get("complexity", 0.5)
+                        "task_complexity": insight.get("complexity", 0.5),
+                        "source_type": insight.get("source_type", "model_output"),
+                        "source_id": task_id,
                     }
                 )
                 
@@ -255,15 +257,18 @@ class MemoryIntegration:
                         continue
 
                     # 导入 MemoryItem 和 MemoryType
-                    from .memory_service import MemoryItem, MemoryType
+                    from .memory_service import MemoryItem, MemoryType, MemoryStatus
                     
-                    # 创建记忆
+                    # 创建记忆（含来源追踪 + 验证状态）
                     memory = MemoryItem(
                         user_id=user_id,
                         content=insight["content"],
-                        memory_type=decision.memory_type or MemoryType.INSIGHT,
+                        memory_type=decision.memory_type or MemoryType.KNOWLEDGE,
                         importance_score=decision.importance,
-                        domain_tags=insight.get("tags", [])
+                        domain_tags=insight.get("tags", []),
+                        source_type=getattr(decision, "source_type", "") or insight.get("source_type", "model_output"),
+                        source_id=getattr(decision, "source_id", "") or task_id,
+                        status=getattr(decision, "verification_status", MemoryStatus.ACTIVE),
                     )
                     
                     # 保存
@@ -311,14 +316,16 @@ class MemoryIntegration:
                     ),
                     "outcome": "success",
                     "complexity": 0.7,
-                    "tags": ["task-continuity", "success"]
+                    "tags": ["task-continuity", "success"],
+                    "source_type": "tool_result",
                 })
             elif isinstance(code_content, str) and len(code_content) > 100:
                 insights.append({
                     "content": f"成功生成代码: {code_content[:200]}...",
                     "outcome": "success",
                     "complexity": 0.7,
-                    "tags": ["code-generation", "success"]
+                    "tags": ["code-generation", "success"],
+                    "source_type": "tool_result",
                 })
             
             # 提取修复经验
@@ -329,7 +336,8 @@ class MemoryIntegration:
                         "content": f"修复了代码问题: {fix.get('output', '')[:200]}",
                         "outcome": "success",
                         "complexity": 0.6,
-                        "tags": ["bug-fix", "debugging"]
+                        "tags": ["bug-fix", "debugging"],
+                        "source_type": "tool_result",
                     })
         
         # 2. 提取用户偏好（从上下文中）
@@ -339,7 +347,8 @@ class MemoryIntegration:
                 "content": f"用户偏好使用 {preferred_language.strip()} 进行开发",
                 "outcome": "success",
                 "complexity": 0.3,
-                "tags": ["preference", "coding-style"]
+                "tags": ["preference", "coding-style"],
+                "source_type": "user_message",
             })
         
         # 3. 提取技术事实
@@ -349,7 +358,8 @@ class MemoryIntegration:
                     "content": fact,
                     "outcome": "success",
                     "complexity": 0.5,
-                    "tags": ["technical-fact"]
+                    "tags": ["technical-fact"],
+                    "source_type": "user_message",
                 })
         
         return insights

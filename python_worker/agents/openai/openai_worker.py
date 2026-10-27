@@ -52,11 +52,16 @@ def stream_start(task_id: str, title: str = "OpenAI 正在生成..."):
         print(f"⚠️ stream_start 失败：{e}")
 
 
-def stream_chunk(task_id: str, content: str):
+def stream_chunk(task_id: str, content: str, phase: str = None, channel: str = None):
     try:
+        payload = {"task_id": task_id, "content": content}
+        if phase is not None:
+            payload["phase"] = phase
+        if channel is not None:
+            payload["channel"] = channel
         requests.post(
             f"{NODE_API_URL}/task/stream_chunk/{task_id}",
-            json={"task_id": task_id, "content": content},
+            json=payload,
             timeout=5,
         )
     except Exception as e:

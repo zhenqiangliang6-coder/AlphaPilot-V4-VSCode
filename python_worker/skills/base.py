@@ -13,6 +13,7 @@ class Skill:
     capabilities: Tuple[str, ...]
     guidance: str
     output_profile: Dict = field(default_factory=dict)
+    read_only: bool = False
 
     def match_count(self, prompt: str) -> int:
         normalized = prompt.casefold()

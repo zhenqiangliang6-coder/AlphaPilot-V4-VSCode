@@ -23,12 +23,14 @@ from ...worker_config import (
     clear_stop_flag,
     get_worker_queue,
     NODE_API_URL,
+    stream_chunk,
 )
 
 from ...planner import llm_decompose_task
 from ...intent_router import IntentRouter, requires_authorization_before_step
 from ...collaboration_modes import apply_mode_to_persona, apply_mode_to_steps, enforce_file_operation_policy, prepare_collaboration_mode
-from .step_executor.execute_step import execute_step
+from ..vision_api import has_vision_support
+from .step_executor import execute_step
 from .personas import get_persona_config
 from ...TaskModel_v2 import TaskModel
 from ...protocol import PROTOCOL_VERSION, validate_worker_task
@@ -114,6 +116,11 @@ def create_steps_from_chain(execution_chain: list, prompt: str, persona: str, in
     """
     steps = []
     step_templates = {
+        # ⭐ v4.3 vision_analysis 一等公民步骤
+        "vision_analysis": {
+            "type": "vision_analysis",
+            "input": {"prompt": prompt, "images": []}
+        },
         "analyze": {
             "type": "analyze",
             "input": {"prompt": prompt}
@@ -196,6 +203,7 @@ def execute_task(
         payload, task_id, task_type, "ModelScope", protocol_metadata
     )
     prompt = prepared["prompt"]
+
     execution_plan = prepared["execution_plan"]
     intent = execution_plan["intent"]
     persona_type = execution_plan["persona"]
@@ -211,6 +219,11 @@ def execute_task(
     )
     if intent == "workspace_maintenance" and not prepared["meta"]["workspace_scan"]["fixable_issue_count"]:
         execution_chain = [step for step in execution_chain if step != "fix"]
+
+    # ⭐ v4.3 Vision: vision_analysis 作为一等公民步骤插入执行链最前面
+    if has_vision_support(payload):
+        execution_chain = ["vision_analysis"] + [s for s in execution_chain if s != "vision_analysis"]
+
     execution_plan["execution_chain"] = list(execution_chain)
     persona_config = apply_mode_to_persona(get_persona_config(persona_type), mode)
 
@@ -239,6 +252,37 @@ def execute_task(
         print(f"\n📋 动态生成 {len(steps)} 个步骤 (意图: {intent})")
     apply_mode_to_steps(steps, mode)
 
+    # ⭐ v4.3: 填充 vision_analysis 步骤的图片引用与模型类型
+    if has_vision_support(payload):
+        for step in steps:
+            if step.get("type") == "vision_analysis":
+                step["input"]["images"] = payload.get("images", [])
+                step["input"]["model_type"] = task_type
+                step["input"]["workspace_path"] = payload.get("workspace_path", os.getcwd())
+                break
+
+    # ⭐ v4.4 Vision: vision_analysis 一等公民步骤先行执行
+    #    不走旁路、不另建分类器。结果写入 context，后续 analyze → write 等步骤通过上下文加载。
+    if has_vision_support(payload):
+        _vision_idx = next((i for i, s in enumerate(steps) if s.get("type") == "vision_analysis"), -1)
+        if _vision_idx >= 0:
+            vision_step = steps.pop(_vision_idx)
+            vision_step["status"] = "running"
+            try:
+                execute_step(task_id, vision_step, events, context)
+                vision_step["status"] = "completed"
+                context.setdefault("intermediate_results", []).append({
+                    "type": "vision_analysis",
+                    "text": vision_step.get("output", {}).get("text", ""),
+                    "image_count": vision_step.get("output", {}).get("image_count", 0),
+                    "elapsed_ms": vision_step.get("output", {}).get("elapsed_ms", 0),
+                    "llm_success": True,
+                })
+            except Exception as _ve:
+                print(f"[Vision] ⚠️ vision_analysis 执行失败: {_ve}")
+                vision_step["status"] = "failed"
+                steps.insert(0, vision_step)
+
     # 4) Planner 兜底（可选）
     if not steps:
         plan_steps = llm_decompose_task(prompt)
@@ -247,6 +291,11 @@ def execute_task(
     # 5) 逐步执行（带取消检查 + 状态管理）
     for step in steps:
         if step.get("status") == "completed":
+            continue
+        # ⭐ v4.4: vision_analysis 已在 Post-Vision 阶段执行，跳过重复执行
+        if context.get("_vision_result") and step.get("type") == "vision_analysis":
+            step["status"] = "skipped"
+            step["output"] = {"text": "视觉分析已在上一阶段完成"}
             continue
         try:
             if requires_authorization_before_step(execution_plan, step.get("type", "")):
@@ -269,6 +318,14 @@ def execute_task(
                 raise Exception("任务已被用户取消")
 
             step["status"] = "running"
+
+            # ⭐ v4.3: 将视觉分析结果自动注入到下游步骤 prompt
+            if context.get("_vision_result") and step.get("type") != "vision_analysis":
+                step.setdefault("input", {})["prompt"] = (
+                    f"[图片分析结果]\n{context['_vision_result']}\n\n"
+                    f"---\n\n[用户原始请求]\n{step.get('input', {}).get('prompt', '')}\n\n"
+                    f"以上分析结果作为参考，请基于用户请求直接回答。"
+                )
 
             # 交给通用 step_executor.execute_step
             execute_step(task_id, step, events, context)

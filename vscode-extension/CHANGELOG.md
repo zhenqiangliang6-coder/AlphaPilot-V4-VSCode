@@ -1,5 +1,79 @@
 # 变更日志 (CHANGELOG)
 
+## 2026-10-24 — 🔧 前端输出显示修复（三层治理）
+
+### 概述
+修复 AI 输出的 Markdown 内容在前端无法正常显示的问题：Markdown 表格被 AI 压缩为单行导致 react-markdown 无法识别、超长行无溢出保护导致布局破坏、Node API 重复路由导致流式事件丢失。
+
+### 改动范围
+
+#### Webview (webview/src/)
+| 文件 | 改动 |
+|---|---|
+| `components/MarkdownRenderer.tsx` | 新增 `normalizeMarkdownTables()` 预处理函数，将 AI 压缩的单行 Markdown 表格还原为标准多行格式；导入 `useMemo` 缓存 |
+| `index.css` | `.markdown-renderer` 和 `.markdown-renderer p` 添加 `overflow-wrap: anywhere` + `word-break: break-word` |
+
+#### Node API (node-api/)
+| 文件 | 改动 |
+|---|---|
+| `index.js` | 删除第 7.5 节旧版重复 `stream_chunk` 处理器（第 479-506 行），避免两个处理器消费同一请求导致新版 `stream_chunk` 事件丢失 |
+
+### 核心设计决策
+- **表格规范化在渲染层**：不在 Worker 侧修改输出（Worker = 真相），只在 Webview 投影层预处理，不破坏宪法信条
+- **useMemo 缓存**：`normalizeMarkdownTables` 仅在 content 变化时重算，不增加渲染开销
+- **算法兼容性**：通过连续 `---` cell 计数推断列数，正确处理 `| |` 产生的行边界 artifact
+
+---
+
+## 2026-10-19 — G1.2 结构化产物协议（Artifact Protocol）
+
+### 概述
+实现 G1 阶段结构化事件协议改造：Worker 产生的展示产物（Mermaid 架构图等）通过类型化信封，经 Extension 映射层抵达 Webview，具有明确身份、完整内容和唯一展示责任。严格遵循"Worker = 真相、Extension = 映射、Webview = 投影、协议 = 宪法"原则，不新增通信旁路。
+
+### 改动范围
+
+#### Worker (python_worker/)
+| 文件 | 改动 |
+|---|---|
+| `worker_config.py` | 新增 `emit_artifact()` + `extract_and_emit_artifacts()`，复用 `/task/stream_chunk/:task_id` 路由 |
+| `worker_respond_step.py` | LLM 输出完成后提取 Mermaid 产物，`stream_end` 之前发射 |
+| `agents/openai/openai_worker.py` | 统一 `stream_chunk(task_id, content, phase, channel)` 签名 |
+| `agents/deepeek/deepseek_worker.py` | 统一 `stream_chunk(task_id, content, phase, channel)` 签名 |
+
+#### Node API (node-api/)
+| 文件 | 改动 |
+|---|---|
+| `index.js` | `message_type` 分支判断（artifact_created / stream_chunk）；`completedTasks` Set 终态标记；`artifact_created` 字段校验与终态拒绝 |
+
+#### Extension (vscode-extension/)
+| 文件 | 改动 |
+|---|---|
+| `src/panels/reactPanel.ts` | 新增 `websocketService.on('artifact_created')` 监听，原样转发到 Webview |
+| `webview/src/store/chatStore.ts` | 新增 `Artifact` 接口；`addArtifact` 幂等存储（按 task_id + artifact_id 去重）；persist 版本 3→4，迁移 qwen-turbo→qwen_generate；补全 `pendingImages`/`visionLimits` |
+| `webview/src/utils/vscode.ts` | 补全 `ImageAttachment`/`BROWSER_SAFETY_MAX_RAW_BYTES`；`submitTask` 支持 images 参数 |
+| `webview/src/App.tsx` | 新增 `artifact_created` 消息处理分支 |
+| `webview/src/components/MessageList.tsx` | 传递 `artifacts` 属性到 ChatBubble |
+| `webview/src/components/ChatBubble.tsx` | 产物卡片渲染 + Mermaid 去重剥离 |
+| `webview/src/components/MermaidBlock.tsx` | 新增 `label` 属性 |
+
+### 核心设计决策
+- **复用现有路由**：所有产物事件通过现有 `stream_chunk` HTTP 路由 + `message_type` 字段区分
+- **不新增通信旁路**：Extension 沿用 G0 已确认的实际 Socket.IO 监听路径，不引入第二套 WS 机制
+- **任务状态机不动**：artifact_created 不触发任务完成/失败/流结束，Node API 的 completedTasks 为终态权威来源
+- **去重渲染**：artifact 到达后由独立展示路径负责，MarkdownRenderer 剥离对应 Mermaid 块
+- **传输顺序**：Worker 先 `await emit_artifact()` 再 `stream_end()`，确保产物在任务终态前完成传输
+
+### 待验证 (G3)
+- [ ] 端到端 Mermaid SVG 渲染
+- [ ] 旧消息兼容（无 message_type 的 stream_chunk）
+- [ ] 未知 message_type 不误当作文本广播
+- [ ] 重复事件幂等去重
+- [ ] 终态后产物被拒
+- [ ] Mermaid 不双重渲染
+- [ ] 传输失败不伪造成功产物
+
+---
+
 ## 版本 0.1.0 - 流式输出 + 任务历史
 
 ### ✨ 新增功能

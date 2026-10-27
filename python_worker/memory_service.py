@@ -13,6 +13,7 @@ AlphaPilot 记忆中枢 - 核心服务模块
 """
 
 import os
+import sys
 import json
 import hashlib
 import re
@@ -67,6 +68,8 @@ class MemoryConfig:
 
     # Embedding 提供商配置：dashscope / openai / none
     EMBEDDING_PROVIDER: str = "none"
+    # 新增：本地 BGE embedding (local=免费离线, cloud=API)
+    ALPHAPILOT_EMBEDDING: str = "local"
     DASHSCOPE_API_KEY: str = ""
     DASHSCOPE_EMBEDDING_MODEL: str = "text-embedding-v2"
     DASHSCOPE_EMBEDDING_URL: str = (
@@ -74,7 +77,7 @@ class MemoryConfig:
     )
     OPENAI_API_KEY: str = ""
     OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
-    EMBEDDING_DIMENSION: int = 1536
+    EMBEDDING_DIMENSION: int = 512  # 默认 BGE-small-zh (512维) 优先级高于旧的 1536
 
     # 记忆生命周期参数
     ACTIVATION_DECAY_RATE_1D: float = 0.95
@@ -116,20 +119,30 @@ class MemoryConfig:
 # 枚举类型
 # ============================================================
 class MemoryType(str, Enum):
-    """记忆类型"""
-    PREFERENCE = "preference"      # 用户偏好
-    FACT = "fact"                  # 事实知识
-    SKILL = "skill"                # 技能经验
-    CONVERSATION = "conversation"  # 对话记忆
-    INSIGHT = "insight"            # 洞察领悟
+    """记忆类型（v2.0：六大记忆分类体系）"""
+    PREFERENCE = "preference"          # 用户偏好：语言、风格、工作习惯
+    PROJECT_FACT = "project_fact"      # 项目事实：技术栈、架构约束、路径约定
+    DECISION = "decision"              # 决策：已采纳/待确认的技术决策
+    TASK_EPISODE = "task_episode"      # 任务情景：文件修改、中断点、下一步
+    KNOWLEDGE = "knowledge"            # 知识经验：验证过的修复方法、已知陷阱
+    FEEDBACK = "feedback"              # 反馈纠错：用户否决、测试推翻的结论
+    CONVERSATION = "conversation"      # 对话记忆（低价值，默认不持久化）
+    SKILL = "skill"                    # 技能经验
+    FACT = "fact"                      # 事实知识（向后兼容）
 
 
 class MemoryStatus(str, Enum):
-    """记忆状态"""
-    ACTIVE = "active"              # 活跃
-    ARCHIVED = "archived"          # 归档
-    PRUNED = "pruned"              # 已剪枝
-    MERGED = "merged"              # 已合并
+    """记忆状态（v2.0：六态验证生命周期）"""
+    ACTIVE = "active"                  # 当前有效
+    PROPOSED = "proposed"              # 模型候选，未确认
+    CONFIRMED = "confirmed"            # 用户/流程确认
+    VERIFIED = "verified"              # 工具/测试验证通过
+    SUPERSEDED = "superseded"          # 已被新版本替代
+    EXPIRED = "expired"                # 已过期不再适用
+    REJECTED = "rejected"              # 已被明确拒绝
+    ARCHIVED = "archived"              # 归档保留
+    PRUNED = "pruned"                  # 已剪枝
+    MERGED = "merged"                  # 已合并
 
 
 class RelationType(str, Enum):
@@ -145,7 +158,7 @@ class RelationType(str, Enum):
 # ============================================================
 @dataclass
 class MemoryItem:
-    """记忆条目数据模型"""
+    """记忆条目数据模型（v2.0：来源追踪 + 有效时间）"""
     id: Optional[str] = None
     user_id: str = ""
     content: str = ""
@@ -160,16 +173,25 @@ class MemoryItem:
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     status: MemoryStatus = MemoryStatus.ACTIVE
     merged_into: Optional[str] = None
+    source_type: str = ""
+    source_id: str = ""
+    valid_from: Optional[datetime] = None
+    valid_until: Optional[datetime] = None
+    similarity: float = 0.0
 
 
 @dataclass
 class GatekeeperDecision:
-    """守门人决策结果"""
+    """守门人决策结果（v2.0：来源追踪 + 候选验证状态）"""
     remember: bool
     memory_type: Optional[MemoryType] = None
     importance: float = 0.5
-    target: str = ""  # "user_profiles" 或 "memory_items"
+    target: str = ""
     reason: str = ""
+    verification_status: MemoryStatus = MemoryStatus.PROPOSED
+    source_type: str = ""
+    source_id: str = ""
+    merge_candidate_id: Optional[str] = None
 
 
 # ============================================================
@@ -193,6 +215,22 @@ class MemoryService:
         self._memory_items_has_updated_at = False
         self._has_search_function = False
         self.__embedding_provider: Optional[str] = None  # 延迟解析，首次访问时才触发
+        self._local_provider = None
+        self._embedding_dim = 512  # 默认 BGE-small-zh (512维)
+
+        # 优先本地 BGE embedding（零 API 成本）
+        use_cloud = os.getenv("ALPHAPILOT_EMBEDDING", "local").lower() in ("cloud", "api", "dashscope", "openai")
+        if not use_cloud:
+            try:
+                from local_embedding import get_embedding_provider
+                self._local_provider = get_embedding_provider()
+                if self._local_provider is not None:
+                    self._embedding_dim = self._local_provider.dimension
+                    print(f"[MEMORY] embedding: 本地 BGE ({self._embedding_dim}维, 零 API 成本)", flush=True)
+                else:
+                    print("[MEMORY] 本地 embedding 模型未加载，降级到云端 embedding", flush=True)
+            except Exception as e:
+                print(f"[MEMORY] 本地 embedding 加载失败: {e}（降级到云端 embedding）", flush=True)
 
     @property
     def _embedding_provider(self) -> str:
@@ -255,14 +293,107 @@ class MemoryService:
                 password=self.config.DB_PASSWORD,
                 dbname=self.config.DB_NAME
             )
+            connection.autocommit = True
             try:
                 register_vector(connection)
+                self._ensure_schema(connection)
                 self._detect_memory_schema(connection)
             except Exception:
                 connection.close()
                 raise
             self._connection = connection
         return self._connection
+
+    def _ensure_schema(self, connection) -> None:
+        """Auto-initialize core memory tables and functions if they don't exist yet."""
+        cursor = connection.cursor()
+        try:
+            cursor.execute("""
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.tables
+                    WHERE table_schema = current_schema()
+                      AND table_name = 'user_profiles'
+                )
+            """)
+            schema_exists = cursor.fetchone()[0]
+
+            if schema_exists:
+                print("[MEMORY] ℹ️ 数据库 schema 已就绪，跳过初始化")
+                return
+
+            print("[MEMORY] 🔧 数据库 schema 未初始化，正在自动创建表和函数...")
+            sys.stdout.flush()
+
+            schema_sql = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                "init_memory_schema.sql"
+            )
+
+            if not os.path.isfile(schema_sql):
+                print(f"[MEMORY] ⚠️ 未找到 schema 文件: {schema_sql}")
+                return
+
+            with open(schema_sql, "r", encoding="utf-8") as f:
+                sql_text = f.read()
+
+            print(f"[MEMORY] 📄 已加载 schema 文件 ({len(sql_text)} 字符)")
+
+            statements = self._split_sql(sql_text)
+            print(f"[MEMORY] 🔀 拆分为 {len(statements)} 条 SQL 语句")
+
+            failed = 0
+            for stmt in statements:
+                stmt = stmt.strip()
+                if not stmt:
+                    continue
+                try:
+                    cursor.execute(stmt)
+                except Exception as e:
+                    failed += 1
+                    preview = stmt[:120].replace("\n", " ")
+                    print(f"[MEMORY] ⚠️  语句执行失败 ({e.__class__.__name__}): {e} — {preview}...")
+                    sys.stdout.flush()
+
+            if failed:
+                print(f"[MEMORY] ⚠️ {failed}/{len(statements)} 条 SQL 语句执行失败，检查 pgvector 扩展是否已安装")
+            else:
+                print(f"[MEMORY] ✅ 数据库 schema 自动初始化完成 ({len(statements)} 条语句)")
+
+        finally:
+            cursor.close()
+
+    @staticmethod
+    def _is_comment_only(text: str) -> bool:
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped and not stripped.startswith('--'):
+                return False
+        return True
+
+    @staticmethod
+    def _split_sql(sql_text: str) -> list:
+        statements = []
+        current = []
+        depth = 0
+        i = 0
+        while i < len(sql_text):
+            ch = sql_text[i]
+            current.append(ch)
+            if ch == '$' and i + 1 < len(sql_text) and sql_text[i + 1] == '$':
+                current.append('$')
+                i += 2
+                depth = 1 - depth
+                continue
+            if ch == ';' and depth == 0:
+                stmt = ''.join(current).strip()
+                if stmt and not MemoryService._is_comment_only(stmt):
+                    statements.append(stmt)
+                current = []
+            i += 1
+        stmt = ''.join(current).strip()
+        if stmt and not MemoryService._is_comment_only(stmt):
+            statements.append(stmt)
+        return statements
 
     def _detect_memory_schema(self, connection) -> None:
         """Detect optional columns and functions to keep writes compatible with older schemas."""
@@ -283,7 +414,7 @@ class MemoryService:
                 SELECT EXISTS (
                     SELECT 1
                     FROM pg_proc p
-                    WHERE p.proname = 'search_similar_memories'
+                    WHERE p.proname IN ('search_similar_memories', 'search_similar_memories_v2')
                       AND p.pronamespace IN (
                           SELECT oid FROM pg_namespace
                           WHERE nspname IN ('public', current_schema())
@@ -314,26 +445,33 @@ class MemoryService:
     # --------------------------------------------------------
     def _get_embedding(self, text: str) -> Optional[List[float]]:
         """
-        生成文本的 embedding 向量（多提供商支持）
-        
+        生成文本的 embedding 向量（本地 BGE 优先 → 云端 API 备选）
+
         参数:
             text: 输入文本
-            
+
         返回:
-            List[float]: 1536维向量
+            List[float]: 向量 (BGE=512维 / DashScope=1536维 / OpenAI=1536维)
         """
+        # 优先使用本地 BGE embedding（零 API 成本）
+        if self._local_provider is not None:
+            try:
+                return self._local_provider.embed(text)
+            except Exception as e:
+                print(f"[MEMORY] 本地 embedding 失败: {e}，降级到云端", flush=True)
+
         if self._embedding_provider == "none":
             self._warn_embedding_unavailable(
                 "未配置任何 embedding 提供商（DASHSCOPE_API_KEY / OPENAI_API_KEY）"
             )
             return None
-        
+
         if self._embedding_provider == "dashscope":
             return self._get_embedding_dashscope(text)
-        
+
         if self._embedding_provider == "openai":
             return self._get_embedding_openai(text)
-        
+
         self._warn_embedding_unavailable(f"未知的 embedding 提供商: {self._embedding_provider}")
         return None
     
@@ -404,59 +542,115 @@ class MemoryService:
     # --------------------------------------------------------
     def should_remember(self, user_id: str, content: str, context: Dict = None) -> GatekeeperDecision:
         """
-        记忆写入守门人 - 决定什么该记、什么该忘
+        记忆写入守门人 v2.0 — 六态验证生命周期
         
         参数:
             user_id: 用户ID
-            content: 内容
-            context: 上下文信息
+            content: 待写入内容
+            context: 上下文信息（含 source_type 区分来源可信度）
             
         返回:
-            GatekeeperDecision: 决策结果
+            GatekeeperDecision: 含验证状态的决策结果
         """
         context = context or {}
-        
+        source_type = context.get("source_type", "model_output")
+        source_id = context.get("source_id", "")
+
         # 规则1：闲聊、寒暄、无信息量的内容 → 不记
         if self._is_chitchat(content):
             return GatekeeperDecision(
-                remember=False,
-                reason="chitchat"
+                remember=False, reason="chitchat",
+                source_type=source_type, source_id=source_id,
             )
-        
-        # 规则2：用户明确表达的偏好 → 高优先级写入 user_profiles
+
+        # 规则2：用户明确表达的偏好 → 高优先级写入 user_profiles（已验证）
         if preference := self._extract_preference(content):
             return GatekeeperDecision(
                 remember=True,
                 memory_type=MemoryType.PREFERENCE,
                 importance=0.9,
                 target="user_profiles",
-                reason="explicit_preference"
+                reason="explicit_preference",
+                verification_status=MemoryStatus.VERIFIED,
+                source_type=source_type,
+                source_id=source_id,
             )
-        
-        # 规则3：技术事实、代码模式、调试经验 → 写入 memory_items
-        if fact := self._extract_technical_fact(content, context):
+
+        # 规则3：用户反馈/纠错 → 高优先级，已验证
+        if source_type == "feedback":
             return GatekeeperDecision(
                 remember=True,
-                memory_type=MemoryType.SKILL,
+                memory_type=MemoryType.FEEDBACK,
+                importance=0.85,
+                target="memory_items",
+                reason="user_feedback",
+                verification_status=MemoryStatus.VERIFIED,
+                source_type=source_type,
+                source_id=source_id,
+            )
+
+        # 规则4：项目事实/技术约束 → 写入，状态取决于来源
+        if fact := self._extract_technical_fact(content, context):
+            verification = MemoryStatus.PROPOSED
+            if source_type in ("user_message", "feedback"):
+                verification = MemoryStatus.CONFIRMED
+            elif source_type in ("tool_result", "test_result"):
+                verification = MemoryStatus.VERIFIED
+
+            return GatekeeperDecision(
+                remember=True,
+                memory_type=MemoryType.PROJECT_FACT if source_type == "user_message" else MemoryType.KNOWLEDGE,
                 importance=self._calculate_importance(fact, context),
                 target="memory_items",
-                reason="technical_insight"
+                reason=f"{source_type}_technical_insight",
+                verification_status=verification,
+                source_type=source_type,
+                source_id=source_id,
             )
-        
-        # 规则4：任务执行中的关键决策 → 写入 memory_items
+
+        # 规则5：任务成功模式 → 经验沉淀（已验证）
         if context.get("task_outcome") == "success":
             return GatekeeperDecision(
                 remember=True,
-                memory_type=MemoryType.INSIGHT,
+                memory_type=MemoryType.KNOWLEDGE,
+                importance=0.65,
+                target="memory_items",
+                reason="successful_pattern",
+                verification_status=MemoryStatus.VERIFIED,
+                source_type=source_type,
+                source_id=source_id,
+            )
+
+        # 规则6：任务失败诊断 → 经验沉淀（已验证，留作警示）
+        if context.get("task_outcome") == "failure":
+            return GatekeeperDecision(
+                remember=True,
+                memory_type=MemoryType.KNOWLEDGE,
                 importance=0.7,
                 target="memory_items",
-                reason="successful_pattern"
+                reason="failure_insight",
+                verification_status=MemoryStatus.VERIFIED,
+                source_type=source_type,
+                source_id=source_id,
             )
-        
-        # 默认：不记录
+
+        # 规则7：模型输出的候选方案（未确认）→ PROPOSED 状态
+        if source_type == "model_output" and len(content) > 100:
+            return GatekeeperDecision(
+                remember=True,
+                memory_type=MemoryType.DECISION,
+                importance=0.35,
+                target="memory_items",
+                reason="model_proposed_solution",
+                verification_status=MemoryStatus.PROPOSED,
+                source_type=source_type,
+                source_id=source_id,
+            )
+
+        # 默认：低信号，不记录
         return GatekeeperDecision(
-            remember=False,
-            reason="low_signal"
+            remember=False, reason="low_signal",
+            source_type=source_type, source_id=source_id,
         )
     
     def _is_chitchat(self, content: str) -> bool:
@@ -527,11 +721,12 @@ class MemoryService:
             )
             
             # 插入记忆
+            dim = self._embedding_dim
             cursor.execute(f"""
                 INSERT INTO memory_items (
                     user_id, content, summary, embedding, memory_type,
                     domain_tags, importance_score, activation_score, status
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ) VALUES (%s, %s, %s, %s::vector({dim}), %s, %s, %s, %s, %s)
                 ON CONFLICT DO NOTHING
                 RETURNING id
             """, (
@@ -547,12 +742,13 @@ class MemoryService:
             ))
             saved_row = cursor.fetchone()
             if saved_row is None:
+                dim = self._embedding_dim
                 cursor.execute(f"""
                     UPDATE memory_items
-                    SET status = 'active',
+                    SET status = %s,
                         importance_score = GREATEST(importance_score, %s),
                         activation_score = GREATEST(activation_score, %s),
-                        embedding = COALESCE(%s, embedding),
+                        embedding = COALESCE(%s::vector({dim}), embedding),
                         summary = COALESCE(%s, summary),
                         last_accessed_at = NOW(){updated_at_update}
                     WHERE user_id = %s
@@ -560,6 +756,7 @@ class MemoryService:
                       AND content = %s
                     RETURNING id
                 """, (
+                    memory.status.value if memory.status != MemoryStatus.ACTIVE else 'active',
                     memory.importance_score,
                     memory.activation_score,
                     embedding,
@@ -576,7 +773,15 @@ class MemoryService:
 
             memory_id = saved_row[0]
             
-            # 记录审计日志
+            # 记录审计日志（含来源追踪）
+            audit_meta = {"content_preview": memory.content[:100]}
+            if memory.source_type:
+                audit_meta["source_type"] = memory.source_type
+            if memory.source_id:
+                audit_meta["source_id"] = memory.source_id
+            if memory.status.value != "active":
+                audit_meta["verification_status"] = memory.status.value
+
             cursor.execute("""
                 INSERT INTO memory_audit_log (user_id, memory_id, action, metadata)
                 VALUES (%s, %s, %s, %s)
@@ -584,7 +789,7 @@ class MemoryService:
                 memory.user_id,
                 memory_id,
                 "upsert",
-                Json({"content_preview": memory.content[:100]})
+                Json(audit_meta)
             ))
             
             conn.commit()
@@ -656,9 +861,13 @@ class MemoryService:
         min_activation: float = None
     ) -> List[MemoryItem]:
         """
-        向量相似度搜索
-
-        如果数据库未初始化向量搜索函数，自动降级为关键词匹配搜索。
+        混合检索 v2.0 — 向量语义 + 关键词精准 + 时间权重重排
+        
+        检索策略：
+        1. 向量语义检索（pgvector HNSW）
+        2. 关键词精准匹配（路径、文件名、错误码等精确标识符）
+        3. 合并去重 → 按「验证状态 × 时间衰减 × 重要性」重排
+        4. 向量不可用时自动降级为纯关键词检索
         
         参数:
             user_id: 用户ID
@@ -667,62 +876,126 @@ class MemoryService:
             min_activation: 最小激活度
             
         返回:
-            List[MemoryItem]: 相似记忆列表
+            List[MemoryItem]: 合并排序后的记忆列表
         """
         top_k = top_k or self.config.DEFAULT_TOP_K
         min_activation = min_activation or self.config.MIN_ACTIVATION_FOR_SEARCH
-        
+
         conn = self._get_connection()
         cursor = conn.cursor()
-        
+        vector_results: List[MemoryItem] = []
+        keyword_results: List[MemoryItem] = []
+
         try:
             query_embedding = self._get_embedding(query)
 
+            # Path 1: 向量语义检索
             if query_embedding is not None and self._has_search_function:
-                cursor.execute("""
-                    SELECT * FROM search_similar_memories(%s::vector(1536), %s, %s, %s)
-                """, (query_embedding, user_id, top_k, min_activation))
-
-                results = []
-                for row in cursor.fetchall():
-                    memory = MemoryItem(
-                        id=str(row[0]),
-                        user_id=user_id,
-                        content=row[1],
-                        summary=row[2],
-                        memory_type=MemoryType(row[3]),
-                        importance_score=row[4],
-                        activation_score=row[5]
+                try:
+                    dim = self._embedding_dim
+                    cursor.execute(
+                        f"SELECT * FROM search_similar_memories_v2(%s::vector({dim}), %s, %s, %s, %s)",
+                        (query_embedding, 'default', user_id, max(top_k * 2, 10), min_activation)
                     )
-                    results.append(memory)
-                    self._bump_activation(memory.id)
+                    for row in cursor.fetchall():
+                        mem = MemoryItem(
+                            id=str(row[0]), user_id=user_id,
+                            content=row[1], summary=row[2],
+                            memory_type=MemoryType(row[3]),
+                            importance_score=float(row[4]),
+                            activation_score=float(row[5])
+                        )
+                        mem.similarity = float(row[6]) if len(row) > 6 else 0.0
+                        vector_results.append(mem)
+                except Exception as e:
+                    print(f"[MEMORY] 向量检索异常: {e}（继续使用关键词检索）")
 
-                if results:
-                    return results
-
-            if not self._has_search_function:
-                print(
-                    "[MEMORY] 向量搜索不可用，使用关键词匹配作为降级方案"
-                )
-
-            results = self._keyword_search_memories(
-                user_id, query, top_k, min_activation
+            # Path 2: 关键词精准匹配（与向量检索并行进行，确保精确标识符不遗漏）
+            keyword_results = self._keyword_search_memories(
+                user_id, query, max(top_k * 2, 10), min_activation
             )
-            return results
+
+            # Merge: 合并去重 + 混合排序
+            if vector_results or keyword_results:
+                return self._merge_and_rank(vector_results, keyword_results, top_k)
+
+            return []
 
         except Exception as e:
-            print(f"[ERROR] 向量搜索失败 (降级到关键词搜索): {e}")
-            try:
-                conn.rollback()
-                results = self._keyword_search_memories(
-                    user_id, query, top_k, min_activation
-                )
-                return results
-            except Exception as fallback_error:
-                print(f"[ERROR] 关键词搜索也失败: {fallback_error}")
-                return []
+            print(f"[ERROR] 混合检索失败: {e}")
+            conn.rollback()
+            return []
         finally:
             cursor.close()
+
+    def _merge_and_rank(
+        self,
+        vector_results: List[MemoryItem],
+        keyword_results: List[MemoryItem],
+        top_k: int
+    ) -> List[MemoryItem]:
+        """合并向量和关键词检索结果，去重后按混合权重排序"""
+        seen: Dict[str, MemoryItem] = {}
+
+        for mem in vector_results:
+            if mem.id:
+                # 已有 similarity 字段来自 pgvector cosine similarity
+                seen[mem.id] = mem
+
+        for mem in keyword_results:
+            if mem.id and mem.id not in seen:
+                mem.similarity = 0.45  # 关键词匹配给中等相似度
+                seen[mem.id] = mem
+            elif mem.id and mem.id in seen:
+                # 已有向量结果，提升其重要性（双重命中）
+                seen[mem.id].importance_score = min(
+                    1.0, seen[mem.id].importance_score + 0.15
+                )
+
+        # 排序：验证状态权重 × 相似度 × 时间新鲜度 × 重要性
+        now = datetime.now(timezone.utc)
+        ranked = sorted(
+            seen.values(),
+            key=lambda m: (
+                self._status_weight(m.status) *
+                (m.similarity * 0.5 + m.importance_score * 0.3 + self._time_decay(m, now) * 0.2)
+            ),
+            reverse=True
+        )
+
+        for mem in ranked[:top_k]:
+            if mem.id:
+                self._bump_activation(mem.id)
+
+        return ranked[:top_k]
+
+    @staticmethod
+    def _status_weight(status: MemoryStatus) -> float:
+        """验证状态权重：已验证 > 已确认 > 候选 > 普通活跃"""
+        weights = {
+            MemoryStatus.VERIFIED: 1.2,
+            MemoryStatus.CONFIRMED: 1.1,
+            MemoryStatus.ACTIVE: 1.0,
+            MemoryStatus.PROPOSED: 0.7,
+            MemoryStatus.EXPIRED: 0.3,
+            MemoryStatus.REJECTED: 0.0,
+        }
+        return weights.get(status, 1.0)
+
+    @staticmethod
+    def _time_decay(mem: MemoryItem, now: datetime) -> float:
+        """时间衰减：7天内记忆权重高，超过60天衰减严重"""
+        if mem.last_accessed_at is None:
+            return 0.5
+        delta_days = (now - mem.last_accessed_at).total_seconds() / 86400.0
+        if delta_days < 7:
+            return 1.0
+        elif delta_days < 30:
+            return 0.75
+        elif delta_days < 60:
+            return 0.4
+        else:
+            return 0.15
 
     def _keyword_search_memories(
         self,
@@ -774,7 +1047,7 @@ class MemoryService:
                     user_id=user_id,
                     content=str(row[1] or ''),
                     summary=str(row[2] or ''),
-                    memory_type=MemoryType(row[3]) if row[3] else MemoryType.INSIGHT,
+                    memory_type=MemoryType(row[3]) if row[3] else MemoryType.FACT,
                     importance_score=float(row[4] or 0),
                     activation_score=float(row[5] or 0)
                 )

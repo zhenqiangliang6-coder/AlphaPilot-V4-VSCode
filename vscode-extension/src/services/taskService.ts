@@ -149,6 +149,12 @@ class TaskService {
     options: TaskSubmissionOptions = {}
   ): Promise<string> {
     try {
+      if (!options.workspace_path) {
+        const workspaceFolders = vscode.workspace.workspaceFolders;
+        if (workspaceFolders && workspaceFolders.length > 0) {
+          options.workspace_path = workspaceFolders[0].uri.fsPath;
+        }
+      }
       const body = taskProtocolAdapter.createSubmission(type, prompt, options);
 
       const response = await fetch(`${NODE_API_BASE_URL}/task/submit`, {

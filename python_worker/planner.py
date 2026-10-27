@@ -47,19 +47,15 @@ def llm_decompose_task(prompt: str) -> list:
 
     user_prompt = f"用户任务：{prompt}"
 
-    url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation"
-    headers = {"Authorization": f"Bearer {DASHSCOPE_API_KEY}"}
+    url = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {DASHSCOPE_API_KEY}", "Content-Type": "application/json"}
     body = {
-        "model": "qwen-turbo",
-        "input": {
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ]
-        },
-        "parameters": {
-            "result_format": "json"
-        }
+        "model": "qwen-max",
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        "temperature": 0.3,
     }
 
     r = requests.post(url, headers=headers, json=body, timeout=30)
@@ -67,14 +63,18 @@ def llm_decompose_task(prompt: str) -> list:
     data = r.json()
 
     # -------------------------------
-    # 兼容所有 DashScope 返回格式
+    # 兼容所有 DashScope 返回格式（compatible-mode + 原生）
     # -------------------------------
-    output = data.get("output", {})
-
-    if "text" in output:
-        raw = output["text"]
-    elif "choices" in output:
-        raw = output["choices"][0]["message"]["content"]
+    if "choices" in data:
+        raw = data["choices"][0]["message"]["content"]
+    elif "output" in data:
+        output = data["output"]
+        if "text" in output:
+            raw = output["text"]
+        elif "choices" in output:
+            raw = output["choices"][0]["message"]["content"]
+        else:
+            raise ValueError(f"LLM 返回格式异常：{data}")
     else:
         raise ValueError(f"LLM 返回格式异常：{data}")
 

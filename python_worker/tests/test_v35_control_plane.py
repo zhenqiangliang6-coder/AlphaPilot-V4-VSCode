@@ -41,7 +41,8 @@ def test_mentor_request_is_read_only_and_needs_workspace_context():
     assert plan["mode"] in ("MENTOR_EXPLAIN", "ENGINEER_EXECUTE"), f"mode: {plan['mode']}"
     if plan["mode"] == "MENTOR_EXPLAIN":
         assert plan["persona"] == "mentor"
-        assert plan["execution_chain"] == ["analyze", "plan", "respond"]
+        # Phase B fix: mentor_explain 含"项目"触发 workspace_dependency="read_only"，链含 workspace
+        assert plan["execution_chain"] == ["analyze", "workspace", "plan", "respond"]
         assert "write" not in plan["execution_chain"]
         assert plan["side_effects"] == []
         assert plan["approval"]["required"] is False

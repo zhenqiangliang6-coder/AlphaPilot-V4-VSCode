@@ -2,12 +2,14 @@
 # modelscope_api.py
 # ---------------------------------------------------------
 # ModelScope API 调用封装（ModelScope 平台）
+# - 模型降级链：环境变量配置，按顺序自动降级
 # ---------------------------------------------------------
 
 import json
 import os
 import time
 from pathlib import Path
+from typing import List
 
 import requests
 from dotenv import load_dotenv
@@ -43,6 +45,25 @@ REQUEST_TIMEOUT = (
 )
 
 
+def _get_fallback_chain() -> List[str]:
+    """从环境变量构建模型降级链"""
+    chain = []
+    for key in [
+        "MODELSCOPE_MODEL",
+        "MODELSCOPE_FALLBACK_1",
+        "MODELSCOPE_FALLBACK_2",
+        "MODELSCOPE_FALLBACK_3",
+        "MODELSCOPE_FALLBACK_4",
+        "MODELSCOPE_FALLBACK_5",
+    ]:
+        val = os.getenv(key)
+        if val and val not in chain:
+            chain.append(val)
+    if not chain:
+        chain = ["Qwen/Qwen3.8-Flash-Next"]
+    return chain
+
+
 def _make_session(read_retries: int) -> requests.Session:
     retry = Retry(
         total=MODELSCOPE_MAX_RETRIES,
@@ -75,13 +96,13 @@ def _headers() -> dict:
     }
 
 
-def _payload(prompt: str, stream: bool, system_prompt: str = None) -> dict:
+def _payload(prompt: str, stream: bool, system_prompt: str = None, model: str = None) -> dict:
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": prompt})
     return {
-        "model": MODELSCOPE_MODEL,
+        "model": model or MODELSCOPE_MODEL,
         "stream": stream,
         "messages": messages,
     }
@@ -110,9 +131,9 @@ def _stream_chunks(response):
                 yield content
 
 
-def _request_stream(prompt: str, system_prompt: str = None):
+def _request_stream(prompt: str, system_prompt: str = None, model: str = None):
     headers = _headers()
-    payload = _payload(prompt, stream=True, system_prompt=system_prompt)
+    payload = _payload(prompt, stream=True, system_prompt=system_prompt, model=model)
     last_error = None
 
     for attempt in range(MODELSCOPE_MAX_RETRIES + 1):
@@ -158,6 +179,7 @@ def call_modelscope(prompt: str, stream: bool = False, system_prompt: str = None
     """
     调用 ModelScope API 进行文本生成。
 
+    模型降级链：按环境变量 MODELSCOPE_MODEL → MODELSCOPE_FALLBACK_1 → ... 顺序尝试。
     连接超时、响应读取超时和指定的服务端错误会有限次自动重试。
     
     参数:
@@ -166,12 +188,21 @@ def call_modelscope(prompt: str, stream: bool = False, system_prompt: str = None
         system_prompt: 系统提示词（人格配置等），可选
     """
     if stream:
-        return "".join(_request_stream(prompt, system_prompt=system_prompt))
+        return _call_with_fallback_stream(prompt, system_prompt)
 
-    headers = _headers()
-    payload = _payload(prompt, stream=False, system_prompt=system_prompt)
-    for attempt in range(MODELSCOPE_MAX_RETRIES + 1):
+    return _call_with_fallback(prompt, system_prompt)
+
+
+def _call_with_fallback(prompt: str, system_prompt: str = None) -> str:
+    """非流式调用 + 模型降级"""
+    chain = _get_fallback_chain()
+    last_error = None
+
+    for model in chain:
+        headers = _headers()
+        payload = _payload(prompt, stream=False, system_prompt=system_prompt, model=model)
         try:
+            print(f"[ModelScope] 调用模型: {model}")
             response = SESSION.post(
                 MODELSCOPE_URL,
                 headers=headers,
@@ -187,15 +218,84 @@ def call_modelscope(prompt: str, stream: bool = False, system_prompt: str = None
             content = choices[0].get("message", {}).get("content", "")
             if not content:
                 raise ValueError(f"ModelScope API 返回空内容：{data}")
+            if model != chain[0]:
+                print(f"[ModelScope] 降级模型 {model} 调用成功")
             return content
-        except requests.exceptions.ReadTimeout:
-            if attempt >= MODELSCOPE_MAX_RETRIES:
+
+        except requests.exceptions.ReadTimeout as e:
+            last_error = e
+            print(f"[ModelScope] 模型 {model} 读超时，尝试下一个...")
+            continue
+        except requests.RequestException as e:
+            last_error = e
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            if status is not None and status not in RETRYABLE_STATUS_CODES:
+                print(f"[ModelScope] 模型 {model} 返回 {status}，尝试下一个...")
+                continue
+            if model == chain[-1]:
                 raise
-            delay = MODELSCOPE_RETRY_BACKOFF_SECONDS * (2**attempt)
-            if delay:
-                time.sleep(delay)
+            print(f"[ModelScope] 模型 {model} 失败: {e}，尝试下一个...")
+            continue
+        except ValueError as e:
+            last_error = e
+            print(f"[ModelScope] 模型 {model} 返回无效: {e}，尝试下一个...")
+            if model == chain[-1]:
+                raise
+            continue
+
+    raise RuntimeError(f"所有 ModelScope 模型均不可用 ({', '.join(chain)}): {last_error}")
+
+
+def _call_with_fallback_stream(prompt: str, system_prompt: str = None) -> str:
+    """流式调用 + 模型降级"""
+    chain = _get_fallback_chain()
+    last_error = None
+
+    for model in chain:
+        try:
+            print(f"[ModelScope] 流式调用: {model}")
+            result = "".join(_request_stream(prompt, system_prompt=system_prompt, model=model))
+            if result:
+                if model != chain[0]:
+                    print(f"[ModelScope] 降级模型 {model} 流式调用成功")
+                return result
+            last_error = ValueError(f"模型 {model} 返回空流内容")
+        except requests.RequestException as e:
+            last_error = e
+            print(f"[ModelScope] 模型 {model} 流式失败: {e}，尝试下一个...")
+            continue
+        except ValueError as e:
+            last_error = e
+            print(f"[ModelScope] 模型 {model} 流式返回无效: {e}，尝试下一个...")
+            continue
+
+    raise RuntimeError(f"所有 ModelScope 模型流式均不可用 ({', '.join(chain)}): {last_error}")
 
 
 def call_modelscope_stream(prompt: str, system_prompt: str = None):
-    """以生成器方式流式调用 ModelScope API。"""
-    yield from _request_stream(prompt, system_prompt=system_prompt)
+    """以生成器方式流式调用 ModelScope API（带模型降级链）。"""
+    chain = _get_fallback_chain()
+    last_error = None
+
+    for model in chain:
+        try:
+            print(f"[ModelScope] 流式生成: {model}")
+            emitted = False
+            for chunk in _request_stream(prompt, system_prompt=system_prompt, model=model):
+                emitted = True
+                yield chunk
+            if emitted:
+                if model != chain[0]:
+                    print(f"[ModelScope] 降级模型 {model} 流式生成成功")
+                return
+            last_error = ValueError(f"模型 {model} 返回空流内容")
+        except requests.RequestException as e:
+            last_error = e
+            print(f"[ModelScope] 模型 {model} 流式失败: {e}，尝试下一个...")
+            continue
+        except ValueError as e:
+            last_error = e
+            print(f"[ModelScope] 模型 {model} 流式返回无效: {e}，尝试下一个...")
+            continue
+
+    raise RuntimeError(f"所有 ModelScope 模型流式均不可用 ({', '.join(chain)}): {last_error}")

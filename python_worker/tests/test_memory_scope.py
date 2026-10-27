@@ -94,7 +94,7 @@ def test_successful_task_memory_keeps_user_request_and_result(monkeypatch):
             return SimpleNamespace(
                 remember=True,
                 target="memory_items",
-                memory_type=MemoryType.INSIGHT,
+                memory_type=MemoryType.KNOWLEDGE,
                 importance=0.7,
                 reason="successful_pattern",
             )
@@ -207,7 +207,7 @@ def test_save_memory_persists_when_embedding_is_unavailable(monkeypatch, capsys)
         MemoryItem(
             user_id="project-scope-hash",
             content="用户请求：设计项目\n任务成果摘要：方案",
-            memory_type=MemoryType.INSIGHT,
+            memory_type=MemoryType.TASK_EPISODE,
         )
     )
 
@@ -262,7 +262,7 @@ def test_legacy_unique_index_conflict_updates_existing_memory(monkeypatch):
         MemoryItem(
             user_id="project-scope-hash",
             content="existing memory",
-            memory_type=MemoryType.INSIGHT,
+            memory_type=MemoryType.KNOWLEDGE,
         )
     )
 
@@ -304,8 +304,8 @@ def test_legacy_database_without_updated_at_is_detected_without_ddl():
     service._detect_memory_schema(connection)
 
     assert service._memory_items_has_updated_at is False
-    assert len(connection.test_cursor.queries) == 1
-    assert "ALTER TABLE" not in connection.test_cursor.queries[0]
+    assert len(connection.test_cursor.queries) == 2
+    assert all("ALTER TABLE" not in q for q in connection.test_cursor.queries)
     assert connection.committed
     assert connection.test_cursor.closed
 
@@ -327,7 +327,7 @@ def test_recent_memory_is_included_when_vector_search_returns_no_hits():
         id="memory-1",
         user_id="project-scope-hash",
         content="用户请求：设计项目\n任务成果摘要：方案",
-        memory_type=MemoryType.INSIGHT,
+        memory_type=MemoryType.TASK_EPISODE,
         importance_score=0.7,
     )
     service._get_user_profile = lambda _user_id: None

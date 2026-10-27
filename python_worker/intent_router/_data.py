@@ -13,6 +13,7 @@ ALL_INTENTS = (
     "fix_code", "explain_and_fix", "explain_code",
     "creative_writing", "analysis", "architecture",
     "refactor", "generate_doc", "set_preference",
+    "vision_analysis",
 )
 
 ALL_TARGET_TYPES = ("file", "code", "test", "config", "infra", "dep", "none")
@@ -21,7 +22,7 @@ LITE_CLASSIFY_PROMPT = """你是意图路由器。根据用户输入，只输出
 
     可选意图（intent）：
     - chat: 纯对话/闲聊/问候/问好/感谢
-    - mentor_explain: 需要教育性解释/教学/原理讲解
+    - mentor_explain: 需要教育性解释/教学/原理讲解/展示项目结构/画架构图/画结构图/描述系统组成
     - code_review: 代码审查/安全检查/质量评估
     - delete_files: 删除文件/目录/模块/依赖
     - workspace_maintenance: 项目级别维护（缩进/格式化/语法检查）
@@ -35,6 +36,7 @@ LITE_CLASSIFY_PROMPT = """你是意图路由器。根据用户输入，只输出
     - refactor: 重构/抽取/拆分/迁移（改进现有代码结构）
     - generate_doc: 生成文档/注释/API文档
     - set_preference: 设定项目偏好/记录约定/记住规则（不是教学解释。如"记住XX放YY"、"以后都用ZZ"、"默认遵循AA规范"）
+    - vision_analysis: 图片/截图/设计稿/图表分析（用户上传了图片或明确提到图片分析）
 
     目标类型（target_type）：
     - code: 源代码/业务逻辑
@@ -82,6 +84,7 @@ LITE_CLASSIFY_PROMPT = """你是意图路由器。根据用户输入，只输出
     输出：{"intent":"set_preference","target_type":"config","confidence":0.94,"reasoning":"设定默认技术选型偏好"}
 
     重要：运行测试、执行测试、run test 属于 write_code 而不是 workspace_maintenance。workspace_maintenance 仅限缩进/格式化/语法检查/环境安装。"记住""以后都""默认用""统一放"这类设定偏好的指令属于 set_preference 而不是 mentor_explain。
+    "画项目结构图""画架构图""展示系统组成""描述模块关系""项目有哪些模块"这类请求属于 mentor_explain（教学解释性展示），而不是 generate_doc。generate_doc 仅限生成代码注释、API 文档、README 等技术文档。
 
     现在分类（只输出 JSON）："""
 
@@ -255,6 +258,9 @@ INTENT_PATTERNS: Dict[str, list] = {
         r"(?:教我|告诉我|说明).{0,20}(?:如何|怎么).{0,16}(?:使用|运行|启动|操作).{0,20}(?:这个|该|本)?(?:项目|仓库|应用|代码库)",
         r"(?:如何|怎么).{0,16}(?:使用|运行|启动|操作).{0,20}(?:这个|该|本)?(?:项目|仓库|应用|代码库)",
         r"how.{0,16}(?:to use|to run|to start).{0,24}(?:project|repository|application|repo)",
+        r"(?:画|展示|显示|描述|介绍|说明|帮我看看|看看).{0,8}(?:项目)?(?:结构图|架构图|系统架构|模块关系|目录结构|项目组成|系统组成|整体结构)",
+        r"(?:项目|系统|仓库).{0,8}(?:有哪些|包含哪些|由哪些).{0,8}(?:模块|组件|目录|文件)",
+        r"(?:what|show|draw|describe).{0,12}(?:project|system).{0,12}(?:structure|architecture|diagram|module|component)",
     ],
 
     "external_git": [
@@ -342,6 +348,19 @@ INTENT_PATTERNS: Dict[str, list] = {
         r"生成.*文档", r"写.*注释",
         r"generate.*documentation", r"write.*comments"
     ],
+
+    "vision_analysis": [
+        r"(?:看|分析|识别|理解|解释|描述|讲解).{0,12}(?:图|图片|照片|截图|画面)",
+        r"(?:图|图片|照片|截图|画面).{0,12}(?:分析|识别|理解|解释|描述|讲解|里|中)",
+        r"(?:这个|这张|那个|那张).{0,10}(?:分析|识别|检查|修复|优化|重构|解释|讲解|描述)",
+        r"(?:设计稿|原型图|mockup|UI图|UI截图|界面截图)",
+        r"(?:报错截图|错误截图|调试截图|bug截图)",
+        r"(?:架构图|流程图|UML图|ER图|时序图)",
+        r"(?:图表|数据图|统计图|饼图|柱状图|折线图)",
+        r"what.{0,8}(?:this|in this).{0,8}(?:image|picture|screenshot|photo)",
+        r"(?:describe|analyze|explain).{0,12}(?:image|picture|screenshot)",
+        r"screenshot|看图|OCR|图片识别",
+    ],
 }
 
 # =========================================================
@@ -364,6 +383,7 @@ INTENT_TO_PERSONA: Dict[str, str] = {
     "refactor": "engineer",
     "generate_doc": "engineer",
     "set_preference": "engineer",
+    "vision_analysis": "engineer",
 }
 
 # =========================================================
@@ -423,6 +443,7 @@ _INTENT_DEFAULT_PROFILE: Dict[str, dict] = {
     "refactor":          dict(output_mode="code", ws_dep="rw", fileops=True, scan=True, test=True, fmt="py", complexity="moderate"),
     "generate_doc":      dict(output_mode="document", ws_dep="read_only", fileops=True, scan=True, test=False, fmt="md", complexity="simple"),
     "set_preference":    dict(output_mode="text", ws_dep="read_write", fileops=True, scan=False, test=False, fmt="plain_text", complexity="simple"),
+    "vision_analysis":  dict(output_mode="code", ws_dep="rw", fileops=True, scan=True, test=True, fmt="py", complexity="moderate"),
 }
 
 # 测试执行请求的正则模式 — 用于硬覆盖 LLM 误判为 workspace_maintenance 的情况

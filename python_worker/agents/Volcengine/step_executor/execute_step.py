@@ -28,11 +28,17 @@ from .profile_step import run_profile_step
 from .doc_step import run_doc_step
 from .docstring_step import run_docstring_step   # ⭐ v3.0 docstring 步骤
 
+# ⭐ v4.3 vision_analysis — 一等公民视觉分析步骤
+from ...vision_step import run_vision_step
+
 
 # ---------------------------------------------------------
 # 步骤类型 → 执行函数 的映射表（协议 = 宪法）
 # ---------------------------------------------------------
 STEP_DISPATCHER = {
+    # ⭐ v4.3 vision 一等公民步骤
+    "vision_analysis": run_vision_step,
+
     "analyze": run_analyze_step,
     "plan": run_plan_step,
     "write": run_write_step,

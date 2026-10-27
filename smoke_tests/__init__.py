@@ -1,0 +1,1 @@
+# AlphaPilot E2E Smoke Test Package

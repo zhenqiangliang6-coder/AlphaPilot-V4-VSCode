@@ -12,6 +12,7 @@ def run_workspace_step(step, context, events, task_id=None):
     environment_request = detect_environment_requests(request)
     operations = []
 
+    scan = scan or {}
     workspace_root = scan.get("root") or meta.get("workspace_path")
     if workspace_root and not _os.path.isdir(_os.path.join(workspace_root, ".venv")):
         environment_request["create_venv"] = True

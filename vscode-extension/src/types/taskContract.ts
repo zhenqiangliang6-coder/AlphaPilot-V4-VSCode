@@ -29,6 +29,7 @@ export interface TaskSubmission {
     collaboration_mode?: string;
     context?: Record<string, unknown>;
     workspace_path?: string;
+    model?: string;
   };
   source: string;
 }

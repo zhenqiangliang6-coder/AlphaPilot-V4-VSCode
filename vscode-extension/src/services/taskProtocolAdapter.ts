@@ -10,6 +10,7 @@ export interface TaskSubmissionOptions {
   context?: Record<string, unknown>;
   workspace_path?: string;
   source?: string;
+  model?: string;
 }
 
 export class TaskProtocolAdapter {
@@ -20,6 +21,9 @@ export class TaskProtocolAdapter {
       type,
       payload: {
         prompt,
+        ...(options.model
+          ? { model: options.model }
+          : {}),
         ...(options.collaboration_mode
           ? { collaboration_mode: options.collaboration_mode }
           : {}),

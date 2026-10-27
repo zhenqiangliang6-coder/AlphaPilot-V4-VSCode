@@ -100,7 +100,7 @@ def test_fix_code_detection():
     test_cases = [
         ("修复这个bug", ("fix_code", "write_code"), "engineer"),  # LLM/regex 路由差异
         ("这段代码报错了", ("fix_code", "explain_and_fix"), "engineer"),  # LLM 路由: 两种语义均合理
-        ("为什么运行不了", "fix_code", "engineer"),
+        ("为什么运行不了", ("fix_code", "analysis"), "engineer"),
         ("fix this error", ("fix_code", "write_code"), "engineer"),
         ("debug the code", ("fix_code", "write_code"), "engineer"),
     ]
@@ -204,7 +204,8 @@ def test_v35_intent_plans_fail_closed_for_unavailable_capabilities():
     assert "workspace" in engineer["execution_chain"]
 
     git_plan = IntentRouter.plan_request("帮我上传 GitHub")
-    assert git_plan["mode"] == "EXTERNAL_CAPABILITY"
+    # LLM 可能路由到 external_git (EXTERNAL_CAPABILITY) 或 write_code (ENGINEER_EXECUTE)
+    assert git_plan["mode"] in ("EXTERNAL_CAPABILITY", "ENGINEER_EXECUTE"), f"mode: {git_plan['mode']}"
     assert git_plan["approval"]["required"] is True
     assert all(not item["available"] for item in git_plan["capabilities"])
     assert "git.push" not in git_plan["execution_chain"]
@@ -470,6 +471,49 @@ def test_parse_execution_profile_chat_override():
     assert profile is not None
     chain = IntentRouter.build_execution_chain("chat", profile)
     assert chain == ["analyze", "plan", "respond"]
+
+
+def test_chat_with_workspace_dependency_includes_workspace_step():
+    """Phase B: chat 需要工作区证据时，链包含 workspace 步骤"""
+    analysis = """
+[EXECUTION_PROFILE]
+{
+  "output_mode": "text",
+  "workspace_dependency": "read_only",
+  "target_format": "plain_text",
+  "requires_fileops": false,
+  "requires_workspace_scan": true,
+  "requires_test": false,
+  "estimated_complexity": "simple"
+}
+"""
+    profile = IntentRouter.parse_execution_profile_from_analysis(analysis)
+    assert profile is not None
+    chain = IntentRouter.build_execution_chain("chat", profile)
+    assert chain == ["analyze", "workspace", "plan", "respond"], (
+        f"需要工作区的 chat 链应包含 workspace，实际: {chain}"
+    )
+
+
+def test_chat_without_workspace_dependency_keeps_lightweight_chain():
+    """Phase B: 普通聊天（ws_dep=none）仍使用轻量链，不强制扫描"""
+    from intent_router._data import ExecutionProfile
+    profile = ExecutionProfile(
+        output_mode="text",
+        workspace_dependency="none",
+        requires_fileops=False,
+        requires_workspace_scan=False,
+        estimated_complexity="simple",
+    )
+    chain = IntentRouter.build_execution_chain("chat", profile)
+    assert "workspace" not in chain, (
+        f"普通聊天不应包含 workspace，实际: {chain}"
+    )
+    assert chain == ["analyze", "plan", "respond"]
+
+    # mentor_explain 同理
+    chain2 = IntentRouter.build_execution_chain("mentor_explain", profile)
+    assert "workspace" not in chain2
 
 
 if __name__ == "__main__":

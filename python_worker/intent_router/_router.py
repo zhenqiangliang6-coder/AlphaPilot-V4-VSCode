@@ -32,6 +32,7 @@ from ._data import (
     ExecutionProfile, _INTENT_DEFAULT_PROFILE, _TEST_EXECUTION_PATTERNS,
 )
 from ._classification import llm_classify, get_provider_config, call_provider_for_classify
+from ._planning_contract import get_impl_plan_requirement, validate_replan, needs_reauthorization
 
 # ⭐ v4.0: Skill 集成 — 技能系统参与执行决策
 try:
@@ -186,9 +187,18 @@ class IntentRouter:
         if profile.output_mode == "code":
             chain.append("docstring")
 
+        # respond — generate_doc 需要 respond 步骤触发产物提取（Mermaid 架构图等）
+        if intent == "generate_doc":
+            chain.append("respond")
+
         # 特殊意图覆盖 — chat/mentor 直接 respond
+        # v4.x Phase B: 仅当不需要工作区时才使用轻量链；
+        # 需要工作区时插入 workspace 步骤
         if intent in ("chat", "mentor_explain"):
-            chain = ["analyze", "plan", "respond"]
+            if profile.workspace_dependency != "none":
+                chain = ["analyze", "workspace", "plan", "respond"]
+            else:
+                chain = ["analyze", "plan", "respond"]
 
         # set_preference — 只需理解约定并写入
         if intent == "set_preference":
@@ -229,7 +239,7 @@ class IntentRouter:
             return None
 
         _PROFILE_MARKER = "[EXECUTION_PROFILE]"
-        marker_idx = analysis_output.find(_PROFILE_MARKER)
+        marker_idx = analysis_output.rfind(_PROFILE_MARKER)
 
         if marker_idx == -1:
             return None
@@ -587,6 +597,7 @@ class IntentRouter:
             "mode": mode,
             "intent": intent,
             "persona": persona,
+            "implementation_plan_requirement": get_impl_plan_requirement(intent),
             "context_requirements": context_requirements,
             "capabilities": capabilities,
             "execution_chain": list(chain),

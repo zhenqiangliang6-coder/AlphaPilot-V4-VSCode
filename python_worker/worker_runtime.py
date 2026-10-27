@@ -1,9 +1,12 @@
 """Shared request preparation for provider-specific workers."""
 
+import re
+
 from .context_builder import (
     inspect_python_project,
     read_project_context,
     read_requested_python_files,
+    search_project_files,
 )
 from .intent_router import IntentRouter
 from .memory_integration import project_memory_user_id
@@ -20,6 +23,74 @@ except ImportError as error:
     build_memory_context = None
     enhance_prompt_with_memory = None
     save_task_memories = None
+
+
+_WORKSPACE_PROMPT_PATTERNS = [
+    re.compile(r"(?:项目|当前代码|这个项目|工作区|workspace|代码库|仓库|repo|源码)"),
+    re.compile(r"(?:分析|解释|说明|查看|了解|检查|审查).{0,12}(?:项目|代码|系统|架构|机制|流程|设计|模块)"),
+    re.compile(r"(?:状态|status|流转|机制|架构|设计|模块|接口|合同|契约|contract).{0,12}(?:项目|系统|代码|当前|这个)"),
+    re.compile(r"(?:怎么|如何|是怎样|是怎样实现的|实现方式|工作原理).{0,12}(?:项目|代码|系统)"),
+]
+
+_EXPLORATORY_KEYWORDS = [
+    "task_state", "contract", "state_machine", "status",
+    "memory", "schema", "router", "intent",
+    "worker", "step", "chain", "execution",
+    "protocol", "event", "message", "queue",
+]
+
+_CN_TO_KEYWORD = {
+    "状态": "status",
+    "流转": "state",
+    "状态机": "state_machine",
+    "机制": "state_machine",
+    "合同": "contract",
+    "契约": "contract",
+    "任务": "task",
+    "步骤": "step",
+    "链路": "chain",
+    "执行": "execution",
+    "架构": "schema",
+    "设计": "schema",
+    "记忆": "memory",
+    "事件": "event",
+    "消息": "message",
+    "队列": "queue",
+    "协议": "protocol",
+    "路由": "router",
+    "角色": "persona",
+    "意图": "intent",
+}
+
+
+def _prompt_requires_workspace(prompt: str) -> bool:
+    """判断用户请求是否依赖当前项目的工作区证据。"""
+    prompt_lower = prompt.lower()
+    for pattern in _WORKSPACE_PROMPT_PATTERNS:
+        if pattern.search(prompt_lower):
+            return True
+    return False
+
+
+def _extract_keywords(prompt: str) -> list:
+    """从 prompt 中提取搜索关键词。"""
+    keywords = []
+    prompt_lower = prompt.lower()
+    for kw in _EXPLORATORY_KEYWORDS:
+        if kw in prompt_lower:
+            keywords.append(kw)
+    if not keywords:
+        for cn, en in _CN_TO_KEYWORD.items():
+            if cn in prompt_lower and en not in keywords:
+                keywords.append(en)
+    if not keywords:
+        for cn, en in _CN_TO_KEYWORD.items():
+            if cn in prompt and en not in keywords:
+                keywords.append(en)
+    if not keywords:
+        words = prompt_lower.replace("？", " ").replace("?", " ").replace("，", " ").replace(",", " ").split()
+        keywords = [w for w in words if len(w) >= 2 and w.isascii()][:5]
+    return keywords
 
 
 def prepare_worker_request(payload, task_id, task_type, model_name, protocol_metadata=None):
@@ -48,6 +119,8 @@ def prepare_worker_request(payload, task_id, task_type, model_name, protocol_met
     source_files = {}
     workspace_scan = None
     workspace_report = ""
+    workspace_evidence = {}
+    evidence_search_hits = []
 
     if detected_intent in {"mentor_explain", "explain_code", "code_review"}:
         project_context, project_context_files = read_project_context(workspace_path)
@@ -74,6 +147,24 @@ def prepare_worker_request(payload, task_id, task_type, model_name, protocol_met
                 for file_path, content in source_files.items()
             )
             prompt += f"\n\n[只读目标源码]\n{source_context}"
+    elif detected_intent in ("chat", "mentor_explain") and workspace_path and _prompt_requires_workspace(original_prompt):
+        keywords = _extract_keywords(original_prompt)
+        if keywords:
+            evidence = search_project_files(workspace_path, keywords, max_files=8, max_chars=50_000)
+            if evidence["files"]:
+                evidence_header = "\n\n[工作区证据 — 关键词: " + ", ".join(keywords) + "]\n"
+                evidence_header += "以下为只读项目文件，仅作为事实参考。如未找到相关证据，请如实告知用户。\n\n"
+                workspace_evidence = evidence["files"]
+                evidence_search_hits = evidence["hits"]
+                evidence_sections = []
+                for file_path, content in evidence["files"].items():
+                    evidence_sections.append(f"### {file_path}\n```\n{content}\n```")
+                prompt += evidence_header + "\n\n".join(evidence_sections)
+            elif evidence["errors"]:
+                prompt += (
+                    "\n\n[工作区搜索未找到匹配文件"
+                    + ("，" + "; ".join(evidence["errors"])) + "]"
+                )
     elif detected_intent == "workspace_maintenance":
         workspace_scan = inspect_python_project(workspace_path)
         project_context_files = [
@@ -131,6 +222,8 @@ def prepare_worker_request(payload, task_id, task_type, model_name, protocol_met
         ),
         "workspace_scan": workspace_scan,
         "workspace_report": workspace_report,
+        "workspace_evidence": workspace_evidence,
+        "evidence_search_hits": evidence_search_hits,
         "project_context_files": project_context_files,
         "source_files": source_files,
         "has_memory": memory_context.has_memory if memory_context else False,

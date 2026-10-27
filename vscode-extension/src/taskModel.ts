@@ -1,9 +1,81 @@
 export type TaskStatus = "pending" | "done" | "error";
 
+export const TASK_STATE_COMPLETED = "COMPLETED";
+export const TASK_STATE_FAILED = "FAILED";
+export const TASK_STATE_WAITING_AUTHORIZATION = "WAITING_AUTHORIZATION";
+export const TASK_STATE_RUNNING = "RUNNING";
+export const TASK_STATE_PENDING = "PENDING";
+
+const TASK_STATE_VALUES = new Set<string>([
+    TASK_STATE_PENDING,
+    TASK_STATE_RUNNING,
+    TASK_STATE_COMPLETED,
+    TASK_STATE_FAILED,
+    TASK_STATE_WAITING_AUTHORIZATION,
+]);
+
+const TASK_STATE_TO_STATUS: Record<string, string> = {
+    [TASK_STATE_COMPLETED]: "done",
+    [TASK_STATE_FAILED]: "error",
+    [TASK_STATE_WAITING_AUTHORIZATION]: "awaiting_authorization",
+    [TASK_STATE_RUNNING]: "pending",
+    [TASK_STATE_PENDING]: "pending",
+};
+
+interface ResolvedStatus {
+    status: string | null;
+    valid: boolean;
+}
+
+const VALID_STATUS_VALUES = new Set<string>(["done", "error", "pending", "awaiting_authorization"]);
+
+export function resolveTaskStatus(result: any): ResolvedStatus {
+    if (!result) {
+        return { status: null, valid: false };
+    }
+
+    const hasTaskState = result && typeof result.task_state === "string" && result.task_state.trim() !== "";
+    const hasStatus = result && typeof result.status === "string" && result.status.trim() !== "";
+    const taskState = hasTaskState ? result.task_state.trim() : null;
+    const rawStatus = hasStatus ? result.status.trim() : null;
+
+    if (!hasTaskState && !hasStatus) {
+        return { status: null, valid: false };
+    }
+
+    if (!hasTaskState) {
+        if (rawStatus && VALID_STATUS_VALUES.has(rawStatus)) {
+            return { status: rawStatus, valid: true };
+        }
+        return { status: null, valid: false };
+    }
+
+    if (!TASK_STATE_VALUES.has(taskState)) {
+        return { status: null, valid: false };
+    }
+
+    const expectedStatus = TASK_STATE_TO_STATUS[taskState];
+
+    if (!hasStatus) {
+        return { status: expectedStatus, valid: true };
+    }
+
+    if (rawStatus === expectedStatus) {
+        return { status: rawStatus, valid: true };
+    }
+
+    if (taskState === TASK_STATE_COMPLETED && rawStatus === "completed") {
+        return { status: "done", valid: true };
+    }
+
+    return { status: null, valid: false };
+}
+
 export interface TaskResultSuccess {
     version: string;
     task_id: string;
     type: string;
+    task_state?: typeof TASK_STATE_COMPLETED | typeof TASK_STATE_WAITING_AUTHORIZATION;
     status: "done";
     result: {
         value?: any;
@@ -22,6 +94,7 @@ export interface TaskResultError {
     version: string;
     task_id: string;
     type: string;
+    task_state?: typeof TASK_STATE_FAILED;
     status: "error";
     result: null;
     error: {
@@ -47,22 +120,31 @@ export interface TaskResultPending {
 export type TaskResult = TaskResultSuccess | TaskResultError;
 
 export function isTaskSuccess(result: any): result is TaskResultSuccess {
-    return result && result.status === "done";
+    if (!result) return false;
+    const resolved = resolveTaskStatus(result);
+    return resolved.valid && resolved.status === "done";
 }
 
 export function isTaskError(result: any): result is TaskResultError {
-    return result && result.status === "error";
+    if (!result) return false;
+    const resolved = resolveTaskStatus(result);
+    return resolved.valid && resolved.status === "error";
 }
 
 export function isTaskPending(result: any): result is TaskResultPending {
-    return result && result.status === "pending";
+    if (!result) return false;
+    const resolved = resolveTaskStatus(result);
+    return resolved.valid && resolved.status === "pending";
 }
 
 export function validateTaskResult(result: any): { valid: boolean; errors: string[] } {
     const errors: string[] = [];
 
     if (!result.task_id) errors.push("task_id missing");
-    if (!result.status) errors.push("status missing");
+    if (!result.status && !result.task_state) errors.push("both status and task_state missing");
+    if (result.task_state && !["COMPLETED", "FAILED", "WAITING_AUTHORIZATION", "RUNNING", "PENDING"].includes(result.task_state)) {
+        errors.push(`unknown task_state: ${result.task_state}`);
+    }
 
     return { valid: errors.length === 0, errors };
 }

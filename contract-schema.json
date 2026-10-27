@@ -1,0 +1,264 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AlphaPilot Task State Contract",
+  "description": "Machine-readable cross-language contract for task state lifecycle, legacy status mapping, and validation rules. This is the single source of truth for Python Worker, Node API, and TypeScript Extension.",
+  "version": "1.0.0",
+  "stability": "stable",
+  "last_updated": "2026-10-15",
+
+  "meta": {
+    "authority": "Python Worker (task_state_contract.py) is the authoritative source. Node and Extension consume and validate; they do not originate state changes.",
+    "conflict_rule": "task_state is authoritative. If task_state and legacy status conflict, the result is invalid — no silent resolution."
+  },
+
+  "task_states": {
+    "description": "Task lifecycle states. Five legal values, no others permitted.",
+    "values": [
+      "PENDING",
+      "RUNNING",
+      "WAITING_AUTHORIZATION",
+      "COMPLETED",
+      "FAILED"
+    ],
+    "terminal": ["COMPLETED", "FAILED"],
+    "non_terminal": ["PENDING", "RUNNING", "WAITING_AUTHORIZATION"],
+    "requires_authorization": ["WAITING_AUTHORIZATION"],
+    "semantic_notes": {
+      "WAITING_AUTHORIZATION": "Task is blocked pending user authorization via Extension. It is NOT a failure, NOT a completion, and must not be forwarded as done/error/pending. The Extension gate may allow partial FileOps only when matching authorization_requests exist in the payload."
+    }
+  },
+
+  "step_states": {
+    "description": "Per-step execution states within a task. Six legal values.",
+    "values": [
+      "pending",
+      "running",
+      "completed",
+      "failed",
+      "awaiting_authorization",
+      "skipped"
+    ],
+    "terminal": ["completed", "failed", "skipped"],
+    "compatibility": {
+      "description": "For each task_state, which step_states are legal.",
+      "PENDING": ["pending"],
+      "RUNNING": ["pending", "running", "completed", "failed", "awaiting_authorization", "skipped"],
+      "WAITING_AUTHORIZATION": ["completed", "awaiting_authorization", "failed", "skipped"],
+      "COMPLETED": ["completed", "skipped", "failed"],
+      "FAILED": ["completed", "failed", "skipped", "pending"]
+    }
+  },
+
+  "transitions": {
+    "description": "Legal task_state → task_state transitions. from=null means initial creation. Any transition not listed in 'legal' is illegal. The 'illegal' list below is Python's explicit enumeration for test assertions; it is illustrative, not exhaustive.",
+    "legal": [
+      {"from": null,                             "to": "PENDING"},
+      {"from": "PENDING",                        "to": "RUNNING"},
+      {"from": "PENDING",                        "to": "FAILED"},
+      {"from": "RUNNING",                        "to": "WAITING_AUTHORIZATION"},
+      {"from": "RUNNING",                        "to": "COMPLETED"},
+      {"from": "RUNNING",                        "to": "FAILED"},
+      {"from": "WAITING_AUTHORIZATION",           "to": "COMPLETED"},
+      {"from": "WAITING_AUTHORIZATION",           "to": "FAILED"}
+    ],
+    "illegal_explicit": [
+      {"from": null,                             "to": "RUNNING"},
+      {"from": null,                             "to": "COMPLETED"},
+      {"from": null,                             "to": "FAILED"},
+      {"from": "PENDING",                        "to": "COMPLETED"},
+      {"from": "PENDING",                        "to": "WAITING_AUTHORIZATION"},
+      {"from": "RUNNING",                        "to": "PENDING"},
+      {"from": "COMPLETED",                      "to": "RUNNING"},
+      {"from": "COMPLETED",                      "to": "FAILED"},
+      {"from": "COMPLETED",                      "to": "COMPLETED"},
+      {"from": "FAILED",                         "to": "RUNNING"},
+      {"from": "FAILED",                         "to": "COMPLETED"},
+      {"from": "FAILED",                         "to": "FAILED"},
+      {"from": "WAITING_AUTHORIZATION",           "to": "RUNNING"},
+      {"from": "WAITING_AUTHORIZATION",           "to": "PENDING"}
+    ]
+  },
+
+  "legacy_status_mapping": {
+    "description": "Bidirectional mapping between task_state and legacy 'status' field (used by older Workers and protocol v3).",
+    "forward": {
+      "PENDING":                  "pending",
+      "RUNNING":                  "pending",
+      "WAITING_AUTHORIZATION":     "awaiting_authorization",
+      "COMPLETED":                "done",
+      "FAILED":                   "error"
+    },
+    "reverse": {
+      "pending":                   "PENDING",
+      "awaiting_authorization":    "WAITING_AUTHORIZATION",
+      "done":                      "COMPLETED",
+      "error":                     "FAILED"
+    },
+    "compatibility_aliases": {
+      "completed": {
+        "maps_to": "done",
+        "condition": "Only accepted when task_state is COMPLETED. Treated as a warning-level compatibility alias, not a separate legal value.",
+        "example": "{ task_state: 'COMPLETED', status: 'completed' } → valid (with warning), resolved status = 'done'"
+      }
+    }
+  },
+
+  "validation_rules": {
+    "description": "Rules applied by resolveStatus() (Node) / resolveTaskStatus() (TS) / validate_result_contract() (Python). All three layers must produce identical validity judgments for the same input.",
+    "scenarios": [
+      {
+        "id": "S1",
+        "input": "both task_state and status missing",
+        "expected": "valid=false, status=null",
+        "rationale": "Cannot determine task outcome. Must not default to done or error."
+      },
+      {
+        "id": "S2",
+        "input": "task_state present and in legal set, status missing",
+        "expected": "valid=true, status=forward_mapping[task_state] (with warning about missing status)",
+        "rationale": "task_state is authoritative; derive status."
+      },
+      {
+        "id": "S3",
+        "input": "task_state missing, status present and in reverse mapping",
+        "expected": "valid=true, status=status_value (with warning about missing task_state)",
+        "rationale": "Backward compatibility for old Workers that only emit status."
+      },
+      {
+        "id": "S4",
+        "input": "task_state missing, status present but NOT in reverse mapping (unknown value)",
+        "expected": "valid=false, status=null",
+        "rationale": "Cannot trust unknown status values. Must not map unknown → done."
+      },
+      {
+        "id": "S5",
+        "input": "task_state present but NOT in legal set (unknown value)",
+        "expected": "valid=false, status=null",
+        "rationale": "Unknown task_state is a hard contract violation."
+      },
+      {
+        "id": "S6",
+        "input": "both present, task_state → status matches forward mapping",
+        "expected": "valid=true, status=status_value",
+        "rationale": "Clean case; no violations or warnings."
+      },
+      {
+        "id": "S7",
+        "input": "both present, task_state → status conflicts with forward mapping (field conflict)",
+        "expected": "valid=false, status=null",
+        "rationale": "task_state is authoritative; conflicting status is a contract violation. Must not silently pick one."
+      },
+      {
+        "id": "S8",
+        "input": "task_state=COMPLETED, status='completed'",
+        "expected": "valid=true, status='done' (with warning about compatibility alias)",
+        "rationale": "Legacy alias 'completed' accepted only when task_state is COMPLETED. Other combinations with 'completed' are S7 conflicts."
+      }
+    ]
+  },
+
+  "audit_events": {
+    "description": "Contract-level audit events recorded during task execution.",
+    "values": [
+      "task_created",
+      "task_started",
+      "task_completed",
+      "task_failed",
+      "task_awaiting_authorization",
+      "chain_rebuilt",
+      "step_started",
+      "step_completed",
+      "step_failed",
+      "step_skipped"
+    ],
+    "event_sets_by_task_state": {
+      "COMPLETED": ["task_started", "task_completed", "step_started", "step_completed", "step_skipped"],
+      "FAILED": ["task_started", "task_failed", "step_started", "step_completed", "step_failed", "step_skipped"],
+      "WAITING_AUTHORIZATION": ["task_started", "task_awaiting_authorization", "step_started", "step_completed", "step_failed", "step_skipped"],
+      "RUNNING": ["task_started", "step_started", "step_completed", "step_failed", "step_skipped"]
+    },
+    "forbidden_event_pairs": [
+      ["task_completed", "task_failed"],
+      ["task_completed", "task_awaiting_authorization"],
+      ["task_failed", "task_completed"]
+    ],
+    "idempotency_key_format": "{task_id}:{event_type}:{sequence}"
+  },
+
+  "error_codes": {
+    "description": "Protocol-level error codes emitted by Worker and validated by Node.",
+    "values": [
+      "TASK_CANCELLED",
+      "TASK_PROTOCOL_ERROR",
+      "MODEL_CALL_ERROR",
+      "CONTRACT_VIOLATION",
+      "STEP_EXECUTION_ERROR",
+      "UNKNOWN_ERROR"
+    ],
+    "notes": {
+      "CONTRACT_VIOLATION": "Raised when an illegal state transition is attempted (replaces assert transition_is_legal). Must not be silently downgraded to MODEL_CALL_ERROR or UNKNOWN_ERROR."
+    }
+  },
+
+  "migration": {
+    "description": "Versioning and migration strategy for this contract.",
+    "current_version": "1.0.0",
+    "first_released": "2026-10-15",
+    "backward_compatibility": {
+      "old_worker_status_only": true,
+      "unknown_status_values": false,
+      "unknown_task_state_values": false
+    },
+    "changelog": [
+      {
+        "version": "1.0.0",
+        "date": "2026-10-15",
+        "changes": [
+          "Initial machine-readable contract extracted from Python task_state_contract.py v0.2 (G1.1), Node taskStateContract.js (G3.1), and TypeScript taskModel.ts (G3.1).",
+          "All five task states, their terminal classification, and legal/illegal transitions defined.",
+          "All six step states and their compatibility matrix with task states defined.",
+          "Bidirectional legacy status mapping with compatibility alias 'completed'.",
+          "Eight validation scenarios (S1–S8) as the cross-language truth table.",
+          "Ten audit events, forbidden pairs, and idempotency key format.",
+          "Six protocol error codes."
+        ]
+      }
+    ],
+    "known_divergences": [],
+    "migration": {
+      "status": "complete",
+      "completed_at": "G3.2-3",
+      "note": "All three known divergences resolved. 59/59 shared vectors pass across Python, Node.js, and TypeScript.",
+      "changes": {
+        "python": "Added .trim() processing, unknown status rejection, 'completed' alias in validate_result_contract(). Added VALID_LEGACY_STATUS_VALUES constant.",
+        "node": "Added .trim() processing for task_state and status in resolveStatus().",
+        "typescript": "Rewrote resolveTaskStatus(): now rejects unknown status-only values (S4), detects field conflicts (S7), handles 'completed' alias (S3), trims whitespace (S8). Added VALID_STATUS_VALUES constant."
+      }
+    }
+  },
+
+  "usage": {
+    "description": "How each layer should consume this Schema.",
+    "python": {
+      "file": "python_worker/task_state_contract.py",
+      "action": "Load constants and mappings from this JSON via json.load(). Remove hand-written TASK_STATES_ALL, TASK_STATE_TO_LEGACY_STATUS, LEGAL_TRANSITIONS, etc. Keep validate_result_contract() logic; it reads the loaded data.",
+      "authority": "Python Worker remains the authority for state transitions. Schema is a reference, not a runtime enforcement replacement."
+    },
+    "node": {
+      "file": "node-api/taskStateContract.js",
+      "action": "Load via require('./contract-schema.json'). Replace hand-written TASK_STATE_VALUES, TASK_STATE_TO_STATUS, TERMINAL_TASK_STATES. Keep resolveStatus() logic; it reads the loaded data.",
+      "authority": "Node API validates and forwards. It does not originate state changes."
+    },
+    "typescript": {
+      "file": "vscode-extension/src/taskModel.ts",
+      "action": "Import via import schema from '../../contract-schema.json' (with resolveJsonModule). Replace hand-written TASK_STATE_VALUES, TASK_STATE_TO_STATUS. Fix resolveTaskStatus() to match S4 and S7 validation rules. Keep isTaskSuccess/Error/Pending and validateTaskResult().",
+      "authority": "Extension validates before consuming side effects (FileOps, UI). It does not originate state changes."
+    }
+  },
+
+  "test_vectors": {
+    "description": "Placeholder for G3.2-2: a separate JSON array of test vectors consumed by Python, Node, and TypeScript test suites to verify identical validation behavior.",
+    "note": "Will be defined in contract-test-vectors.json (G3.2-2). Each vector: { input: {task_state?, status?}, expected: {valid, status?, violations?, warnings?} }.",
+    "status": "not_yet_created"
+  }
+}

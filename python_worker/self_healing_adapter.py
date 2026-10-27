@@ -230,6 +230,7 @@ ERROR_PATTERNS = [
     (r"AssertionError", 'assertion_error'),
     (r"AttributeError:\s*'([^']+)' object has no attribute", 'attribute_error'),
     (r"FileNotFoundError:.*'([^']+)'", 'file_not_found'),
+    (r"TypeError:\s*([^\n]+)", 'type_error'),
 ]
 
 PRIORITY = {
@@ -240,6 +241,7 @@ PRIORITY = {
     'fixture_not_found': 6,
     'file_not_found': 5,
     'name_error': 4,
+    'type_error': 4,
     'attribute_error': 3,
     'assertion_error': 3,
     'unknown': 1,
@@ -411,7 +413,7 @@ def _route_fix(error_type, error_info, source_files, test_output,
         return _fix_import_enhanced(error_info, source_files, test_output,
                                     project_dir, llm_call_fn, symbol_index)
 
-    elif error_type in ('assertion_error', 'attribute_error'):
+    elif error_type in ('assertion_error', 'attribute_error', 'type_error'):
         contracts_text = _format_contracts_for_prompt(
             _build_contract_stubs(source_files)
         )
@@ -474,16 +476,23 @@ def _fix_import_enhanced(error_info, source_files, test_output,
             f"  (定义于 {sym['file']}:{sym['line']})\n"
         )
 
+    fixed_files = {}
+
     for fp, code in source_files.items():
-        if 'tests' not in fp:
-            continue  # 只修测试文件
         rel = os.path.relpath(fp, project_dir)
+
+        # v3.4: 源码文件也可以修复缺 import（如忘记 import json / hashlib 等）
+        if 'tests' in fp:
+            file_label = '测试文件'
+        else:
+            file_label = '源码文件'
 
         prompt = f"""{import_hint}
 你是 Python import 修复专家。
 
 【错误】: 缺少导入 '{import_name}'，导致 NameError
-【文件】: {rel}
+【文件类型】: {file_label}
+【文件路径】: {rel}
 
 【错误输出】:
 {test_output[-1000:]}
@@ -495,8 +504,10 @@ def _fix_import_enhanced(error_info, source_files, test_output,
 
 规则:
 1. 根据【正确导入路径】添加缺失的 import 语句
-2. 严禁删除或修改已有 import 中的逗号(,)
-3. 严禁修改代码逻辑，只添加缺失的 import
+2. 如果是标准库或第三方模块，直接添加 import 语句（如 import json, import hashlib）
+3. 严禁删除或修改已有 import 中的逗号(,)
+4. 严禁修改代码逻辑，只添加缺失的 import
+5. 如果代码中已存在正确的 import，不要重复添加
 只输出 ```python 代码块。"""
 
         try:
@@ -505,6 +516,10 @@ def _fix_import_enhanced(error_info, source_files, test_output,
             if fixed and len(fixed) > len(code) * 0.4 and _commas_preserved(code, fixed):
                 try:
                     compile(fixed, fp, 'exec')
+                    fixed_files[fp] = fixed
+                    if 'tests' not in fp:
+                        # 源文件修复成功，继续检查其他文件
+                        continue
                     return {
                         'status': 'fixed',
                         'action': f'import_fix:{rel}',
@@ -514,6 +529,13 @@ def _fix_import_enhanced(error_info, source_files, test_output,
                     pass
         except Exception:
             pass
+
+    if fixed_files:
+        return {
+            'status': 'fixed',
+            'action': 'import_fix:multi',
+            'updated_files': fixed_files,
+        }
 
     return {'status': 'failed', 'reason': f'import {import_name} fix failed'}
 

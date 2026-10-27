@@ -123,6 +123,8 @@ body {
 .markdown-renderer {
   font-size: 13px;
   line-height: 1.6;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .markdown-renderer h1,
@@ -155,6 +157,8 @@ body {
 
 .markdown-renderer p {
   margin-bottom: 1em;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .markdown-renderer code {

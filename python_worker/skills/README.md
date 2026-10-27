@@ -24,7 +24,7 @@ Built-in skills are deliberately advisory:
 - `creative.pure-text`: 纯文本创作（诗、文章、方案说明），极简链 [analyze, write]
 - `creative.document-proposal`: 招商方案/商业文档创作
 - `creative.brand-content`: 品牌文案/社交媒体内容创作
-- `vision.image-analysis`: 图片分析（需 vision-capable LLM）
+- `vision.image-analysis`: 👁️ **输入模态一等公民扩展点的第一个实例** — 图片/截图/设计稿分析，profile 已对齐为 code-capable（fileops+scan+test 全开），让 Post-analyze LLM 根据实际图片内容（报错/设计稿/架构图）自主决定是否启用代码能力。**audio、video、3D 等未来输入模态当循同一契约：Skill 定义 + Step Executor + 宪法通道。**
 
 ### V4.0 Diagnosis Skill
 - `diagnosis.runtime-error` (priority=90): 运行时错误诊断与最小化修复。处理端口冲突、权限错误、配置/环境变量问题。**严禁修改无关业务逻辑**。覆盖 `backend.python` (60) 的默认 guidance。

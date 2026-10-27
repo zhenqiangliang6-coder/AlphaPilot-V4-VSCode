@@ -36,6 +36,15 @@ class VSCodeAPI {
 
 export const vscodeAPI = new VSCodeAPI();
 
+export interface ImageAttachment {
+  id: string;
+  name: string;
+  file: File;
+  base64?: string;
+}
+
+export const BROWSER_SAFETY_MAX_RAW_BYTES = 10 * 1024 * 1024; // 10 MiB
+
 /**
  * 消息类型定义
  */
@@ -47,12 +56,13 @@ export interface WebviewMessage {
 /**
  * 便捷方法: 提交任务
  */
-export function submitTask(prompt: string, model: string): void {
+export function submitTask(prompt: string, model: string, images?: ImageAttachment[]): void {
   vscodeAPI.postMessage({
     type: 'submit_task',
     payload: {
       prompt,
       model,
+      images,
     }
   });
 }

@@ -4,7 +4,8 @@
 
 import json
 import os
-from typing import Dict
+import time
+from typing import Dict, List
 
 from ._data import ALL_INTENTS, ALL_TARGET_TYPES, LITE_CLASSIFY_PROMPT
 
@@ -17,12 +18,95 @@ def _get_env(key: str, default: str = "") -> str:
         return os.environ.get(key, default)
 
 
-def llm_classify(prompt: str, model_name: str = "qwen") -> Dict:
+_CHAIN_CACHE = None
+_CHAIN_CACHE_TS = 0
+_CHAIN_CACHE_TTL = 3600
+
+
+def _resolve_qwen_classify_chain() -> List[str]:
+    """从 Qwen 模型探测中动态获取可用的文本模型降级链。
+
+    绝不硬编码任何模型名。每次调用均从探针缓存读取最新的
+    /v1/models + 可用性验证结果，构造真实验证的降级链。
+
+    优先级：
+      1. INTENT_CLASSIFY_MODEL 环境变量（显式指定）
+      2. 模型探测 text 链（API 返回 + 可用性验证的全部文本模型）
+      3. 模型探测 best_text（至少一个经过验证的模型）
+      4. QWEN_MODEL 环境变量
+      5. 绝对兜底（单模型）
+    """
+    global _CHAIN_CACHE, _CHAIN_CACHE_TS
+
+    env_model = os.environ.get("INTENT_CLASSIFY_MODEL", "").strip()
+    if env_model:
+        return [env_model]
+
+    now = time.time()
+    if _CHAIN_CACHE is not None and (now - _CHAIN_CACHE_TS) < _CHAIN_CACHE_TTL:
+        return _CHAIN_CACHE
+
     try:
-        full_prompt = LITE_CLASSIFY_PROMPT + "\n用户：" + prompt
-        result_text = call_provider_for_classify(full_prompt, model_name, max_timeout=10)
+        try:
+            from ..agents.qwen.qwen_model_probe import probe_qwen_models
+        except ImportError:
+            from agents.qwen.qwen_model_probe import probe_qwen_models
+
+        probed = probe_qwen_models()
+        text_chain = probed.get("text", [])
+        if text_chain:
+            _CHAIN_CACHE = text_chain
+            _CHAIN_CACHE_TS = now
+            return text_chain
+
+        best = probed.get("best_text", "")
+        if best:
+            _CHAIN_CACHE = [best]
+            _CHAIN_CACHE_TS = now
+            return [best]
+    except Exception as e:
+        print(f"\n⚠️ [Intent Router] 模型探测失败: {type(e).__name__}: {e}")
+
+    qwen_model = os.environ.get("QWEN_MODEL", "").strip()
+    if qwen_model:
+        _CHAIN_CACHE = [qwen_model]
+        _CHAIN_CACHE_TS = now
+        return [qwen_model]
+
+    print("⚠️ [Intent Router] 无法探测模型池，使用绝对兜底")
+    fallback = ["qwen3.8-max"]
+    _CHAIN_CACHE = fallback
+    _CHAIN_CACHE_TS = now
+    return fallback
+
+
+def llm_classify(prompt: str, model_name: str = "qwen") -> Dict:
+    full_prompt = LITE_CLASSIFY_PROMPT + "\n用户：" + prompt
+
+    if model_name == "qwen":
+        chain = _resolve_qwen_classify_chain()
+    else:
+        chain = [None]
+
+    last_error = None
+    for idx, model in enumerate(chain):
+        try:
+            result_text = call_provider_for_classify(
+                full_prompt, model_name, model_override=model, max_timeout=10
+            )
+        except Exception as e:
+            last_error = e
+            if len(chain) > 1:
+                print(f"   ⚠️ [Intent Router] 模型 '{model}' 调用异常，尝试下一个...")
+            continue
+
         if not result_text:
-            return None
+            if len(chain) > 1:
+                print(f"   ⚠️ [Intent Router] 模型 '{model}' 不可用，尝试下一个...")
+            continue
+
+        if idx == 0:
+            print(f"   ✅ [Intent Router] 模型 '{model}' 分类成功")
 
         json_text = result_text.strip()
         if json_text.startswith("```"):
@@ -31,15 +115,24 @@ def llm_classify(prompt: str, model_name: str = "qwen") -> Dict:
                 json_text = json_text[4:]
             json_text = json_text.strip()
 
-        parsed = json.loads(json_text)
+        try:
+            parsed = json.loads(json_text)
+        except json.JSONDecodeError as e:
+            if len(chain) > 1:
+                print(f"   ⚠️ [Intent Router] 模型 '{model}' 返回非 JSON，尝试下一个...")
+            continue
+
         intent = parsed.get("intent", "")
         target_type = parsed.get("target_type", "none")
         confidence = float(parsed.get("confidence", 0))
 
         if intent not in ALL_INTENTS:
-            return None
+            continue
         if target_type not in ALL_TARGET_TYPES:
             target_type = "none"
+
+        if idx > 0:
+            print(f"   ✅ [Intent Router] 模型 '{model}' 重试成功 (链索引 {idx})")
 
         return {
             "intent": intent,
@@ -47,8 +140,8 @@ def llm_classify(prompt: str, model_name: str = "qwen") -> Dict:
             "confidence": confidence,
             "reasoning": parsed.get("reasoning", ""),
         }
-    except Exception:
-        return None
+
+    return None
 
 
 def get_provider_config(model_name: str) -> Dict:
@@ -56,10 +149,10 @@ def get_provider_config(model_name: str) -> Dict:
 
     configs = {
         "qwen": {
-            "url": "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation",
-            "model": "qwen-turbo",
+            "url": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+            "model": "qwen3.8-max",
             "auth_key": "DASHSCOPE_API_KEY",
-            "format": "dashscope",
+            "format": "openai",
         },
         "gemini": {
             "url": lambda: f"{_get_env('GEMINI_PROXY_URL', 'http://localhost:8000')}/gemini/v1beta/models/{_get_env('GEMINI_MODEL', 'gemini-3.5-flash')}:generateContent",
@@ -90,12 +183,12 @@ def get_provider_config(model_name: str) -> Dict:
     return configs.get(model_lower, configs["qwen"])
 
 
-def call_provider_for_classify(prompt: str, model_name: str, max_timeout: int = 5) -> str:
+def call_provider_for_classify(prompt: str, model_name: str, model_override: str = None, max_timeout: int = 5) -> str:
     import requests
     cfg = get_provider_config(model_name)
 
     api_format = cfg.get("format", "openai")
-    model = cfg["model"]() if callable(cfg["model"]) else cfg["model"]
+    model = model_override if model_override else (cfg["model"]() if callable(cfg["model"]) else cfg["model"])
     url = cfg["url"]() if callable(cfg["url"]) else cfg["url"]
 
     auth_key = None
@@ -164,5 +257,16 @@ def call_provider_for_classify(prompt: str, model_name: str, max_timeout: int = 
                 return choices[0].get("message", {}).get("content", "")
             return ""
 
-    except Exception:
+    except Exception as e:
+        # ⭐ v4.0: 不再静默吞错——打印诊断信息
+        print(f"\n⚠️ [Intent Router] LLM 分类 API 调用失败 ({model_name}/{model}):")
+        print(f"   URL: {url}")
+        err_msg = str(e)
+        if hasattr(e, 'response') and e.response is not None:
+            try:
+                err_body = e.response.text[:300] if hasattr(e.response, 'text') else ''
+                err_msg += f" | HTTP {e.response.status_code}: {err_body}"
+            except Exception:
+                pass
+        print(f"   错误: {err_msg[:500]}")
         return ""

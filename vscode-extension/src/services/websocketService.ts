@@ -49,6 +49,8 @@ class WebSocketService {
             this.send(message);
           }
           
+          this.handleMessage({ 'connected': null });
+          
           resolve();
         });
 

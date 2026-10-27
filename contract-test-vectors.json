@@ -1,0 +1,466 @@
+{
+  "$schema": "./contract-schema.json",
+  "title": "Cross-Language Contract Test Vectors",
+  "description": "Shared test inputs and expected outputs for Python (task_state_contract.py), Node.js (taskStateContract.js), and TypeScript (taskModel.ts). Each layer reads this file and asserts its resolve/validate function produces the expected output. Any mismatch is a test failure — no silent divergence.",
+  "version": "1.0.0",
+  "contract_version": "1.0.0",
+  "test_runner_notes": {
+    "python": "Load via json.load(open('contract-test-vectors.json')). Feed each vector.input into validate_result_contract(). Assert vector.expected.",
+    "node": "Load via require('./contract-test-vectors.json'). Feed each vector.input into resolveStatus(). Assert vector.expected.",
+    "typescript": "Load via import from JSON (resolveJsonModule: true). Feed each vector.input into resolveTaskStatus(). Assert vector.expected."
+  },
+
+  "vectors": [
+    {
+      "id": "V001",
+      "category": "scenario:S1",
+      "description": "Both task_state and status missing → invalid, must not default to done",
+      "input": {},
+      "expected": { "valid": false, "status": null, "reason": "BOTH_MISSING" }
+    },
+    {
+      "id": "V002",
+      "category": "scenario:S1",
+      "description": "Null input → invalid",
+      "input": null,
+      "expected": { "valid": false, "status": null, "reason": "NULL_INPUT" }
+    },
+    {
+      "id": "V003",
+      "category": "scenario:S1",
+      "description": "Undefined-equivalent: input with no relevant fields → invalid",
+      "input": { "task_id": "abc", "meta": {} },
+      "expected": { "valid": false, "status": null, "reason": "BOTH_MISSING" }
+    },
+    {
+      "id": "V004",
+      "category": "scenario:S1",
+      "description": "Empty string task_state and empty string status → invalid",
+      "input": { "task_state": "", "status": "" },
+      "expected": { "valid": false, "status": null, "reason": "BOTH_MISSING" }
+    },
+
+    {
+      "id": "V010",
+      "category": "scenario:S2",
+      "description": "task_state=COMPLETED, no status → valid, derived status='done'",
+      "input": { "task_state": "COMPLETED" },
+      "expected": { "valid": true, "status": "done", "reason": "DERIVED_FROM_TASK_STATE" }
+    },
+    {
+      "id": "V011",
+      "category": "scenario:S2",
+      "description": "task_state=FAILED, no status → valid, derived status='error'",
+      "input": { "task_state": "FAILED" },
+      "expected": { "valid": true, "status": "error", "reason": "DERIVED_FROM_TASK_STATE" }
+    },
+    {
+      "id": "V012",
+      "category": "scenario:S2",
+      "description": "task_state=WAITING_AUTHORIZATION, no status → valid, derived status='awaiting_authorization'",
+      "input": { "task_state": "WAITING_AUTHORIZATION" },
+      "expected": { "valid": true, "status": "awaiting_authorization", "reason": "DERIVED_FROM_TASK_STATE" }
+    },
+    {
+      "id": "V013",
+      "category": "scenario:S2",
+      "description": "task_state=RUNNING, no status → valid, derived status='pending'",
+      "input": { "task_state": "RUNNING" },
+      "expected": { "valid": true, "status": "pending", "reason": "DERIVED_FROM_TASK_STATE" }
+    },
+    {
+      "id": "V014",
+      "category": "scenario:S2",
+      "description": "task_state=PENDING, no status → valid, derived status='pending'",
+      "input": { "task_state": "PENDING" },
+      "expected": { "valid": true, "status": "pending", "reason": "DERIVED_FROM_TASK_STATE" }
+    },
+
+    {
+      "id": "V020",
+      "category": "scenario:S3",
+      "description": "No task_state, status='done' → valid (backward compat for old Worker)",
+      "input": { "status": "done" },
+      "expected": { "valid": true, "status": "done", "reason": "BACKWARD_COMPAT" }
+    },
+    {
+      "id": "V021",
+      "category": "scenario:S3",
+      "description": "No task_state, status='error' → valid (backward compat)",
+      "input": { "status": "error" },
+      "expected": { "valid": true, "status": "error", "reason": "BACKWARD_COMPAT" }
+    },
+    {
+      "id": "V022",
+      "category": "scenario:S3",
+      "description": "No task_state, status='pending' → valid (backward compat)",
+      "input": { "status": "pending" },
+      "expected": { "valid": true, "status": "pending", "reason": "BACKWARD_COMPAT" }
+    },
+    {
+      "id": "V023",
+      "category": "scenario:S3",
+      "description": "No task_state, status='awaiting_authorization' → valid (backward compat)",
+      "input": { "status": "awaiting_authorization" },
+      "expected": { "valid": true, "status": "awaiting_authorization", "reason": "BACKWARD_COMPAT" }
+    },
+
+    {
+      "id": "V030",
+      "category": "scenario:S4",
+      "description": "No task_state, status='bogus' (unknown value) → invalid, must not default to done",
+      "input": { "status": "bogus" },
+      "expected": { "valid": false, "status": null, "reason": "UNKNOWN_STATUS" }
+    },
+    {
+      "id": "V031",
+      "category": "scenario:S4",
+      "description": "No task_state, status='success' (unknown value) → invalid",
+      "input": { "status": "success" },
+      "expected": { "valid": false, "status": null, "reason": "UNKNOWN_STATUS" }
+    },
+    {
+      "id": "V032",
+      "category": "scenario:S4",
+      "description": "No task_state, status='running' (NOT in reverse mapping, only 'pending' is) → invalid",
+      "input": { "status": "running" },
+      "expected": { "valid": false, "status": null, "reason": "UNKNOWN_STATUS" }
+    },
+    {
+      "id": "V033",
+      "category": "scenario:S4",
+      "description": "No task_state, status='finished' (unknown value) → invalid, must not default to done",
+      "input": { "status": "finished" },
+      "expected": { "valid": false, "status": null, "reason": "UNKNOWN_STATUS" }
+    },
+
+    {
+      "id": "V040",
+      "category": "scenario:S5",
+      "description": "Unknown task_state 'BOGUS' → invalid",
+      "input": { "task_state": "BOGUS" },
+      "expected": { "valid": false, "status": null, "reason": "UNKNOWN_TASK_STATE" }
+    },
+    {
+      "id": "V041",
+      "category": "scenario:S5",
+      "description": "Unknown task_state 'done' (status value used as task_state) → invalid",
+      "input": { "task_state": "done" },
+      "expected": { "valid": false, "status": null, "reason": "UNKNOWN_TASK_STATE" }
+    },
+    {
+      "id": "V042",
+      "category": "scenario:S5",
+      "description": "Unknown task_state 'error' (status value used as task_state) → invalid",
+      "input": { "task_state": "error" },
+      "expected": { "valid": false, "status": null, "reason": "UNKNOWN_TASK_STATE" }
+    },
+
+    {
+      "id": "V050",
+      "category": "scenario:S6",
+      "description": "task_state=COMPLETED, status='done' → valid, clean (no warnings)",
+      "input": { "task_state": "COMPLETED", "status": "done" },
+      "expected": { "valid": true, "status": "done", "reason": "CLEAN_MATCH" }
+    },
+    {
+      "id": "V051",
+      "category": "scenario:S6",
+      "description": "task_state=FAILED, status='error' → valid, clean",
+      "input": { "task_state": "FAILED", "status": "error" },
+      "expected": { "valid": true, "status": "error", "reason": "CLEAN_MATCH" }
+    },
+    {
+      "id": "V052",
+      "category": "scenario:S6",
+      "description": "task_state=WAITING_AUTHORIZATION, status='awaiting_authorization' → valid, clean",
+      "input": { "task_state": "WAITING_AUTHORIZATION", "status": "awaiting_authorization" },
+      "expected": { "valid": true, "status": "awaiting_authorization", "reason": "CLEAN_MATCH" }
+    },
+    {
+      "id": "V053",
+      "category": "scenario:S6",
+      "description": "task_state=PENDING, status='pending' → valid, clean",
+      "input": { "task_state": "PENDING", "status": "pending" },
+      "expected": { "valid": true, "status": "pending", "reason": "CLEAN_MATCH" }
+    },
+    {
+      "id": "V054",
+      "category": "scenario:S6",
+      "description": "task_state=RUNNING, status='pending' → valid, clean",
+      "input": { "task_state": "RUNNING", "status": "pending" },
+      "expected": { "valid": true, "status": "pending", "reason": "CLEAN_MATCH" }
+    },
+
+    {
+      "id": "V060",
+      "category": "scenario:S7",
+      "description": "task_state=COMPLETED vs status='error' → invalid, field conflict",
+      "input": { "task_state": "COMPLETED", "status": "error" },
+      "expected": { "valid": false, "status": null, "reason": "STATUS_CONFLICT" }
+    },
+    {
+      "id": "V061",
+      "category": "scenario:S7",
+      "description": "task_state=FAILED vs status='done' → invalid, field conflict",
+      "input": { "task_state": "FAILED", "status": "done" },
+      "expected": { "valid": false, "status": null, "reason": "STATUS_CONFLICT" }
+    },
+    {
+      "id": "V062",
+      "category": "scenario:S7",
+      "description": "task_state=COMPLETED vs status='pending' → invalid, field conflict",
+      "input": { "task_state": "COMPLETED", "status": "pending" },
+      "expected": { "valid": false, "status": null, "reason": "STATUS_CONFLICT" }
+    },
+    {
+      "id": "V063",
+      "category": "scenario:S7",
+      "description": "task_state=WAITING_AUTHORIZATION vs status='done' → invalid",
+      "input": { "task_state": "WAITING_AUTHORIZATION", "status": "done" },
+      "expected": { "valid": false, "status": null, "reason": "STATUS_CONFLICT" }
+    },
+    {
+      "id": "V064",
+      "category": "scenario:S7",
+      "description": "task_state=FAILED vs status='pending' → invalid",
+      "input": { "task_state": "FAILED", "status": "pending" },
+      "expected": { "valid": false, "status": null, "reason": "STATUS_CONFLICT" }
+    },
+    {
+      "id": "V065",
+      "category": "scenario:S7",
+      "description": "task_state=RUNNING vs status='done' → field conflict, invalid",
+      "input": { "task_state": "RUNNING", "status": "done" },
+      "expected": { "valid": false, "status": null, "reason": "STATUS_CONFLICT" }
+    },
+    {
+      "id": "V066",
+      "category": "scenario:S7",
+      "description": "task_state=PENDING vs status='done' → field conflict, invalid",
+      "input": { "task_state": "PENDING", "status": "done" },
+      "expected": { "valid": false, "status": null, "reason": "STATUS_CONFLICT" }
+    },
+
+    {
+      "id": "V070",
+      "category": "scenario:S8",
+      "description": "task_state=COMPLETED, status='completed' → valid, compatibility alias accepted",
+      "input": { "task_state": "COMPLETED", "status": "completed" },
+      "expected": { "valid": true, "status": "done", "reason": "COMPATIBILITY_ALIAS" }
+    },
+    {
+      "id": "V071",
+      "category": "scenario:S3",
+      "description": "task_state=COMPLETED, status='completed' → valid compatibility alias, normalized to 'done'",
+      "input": { "task_state": "COMPLETED", "status": "completed" },
+      "expected": { "valid": true, "status": "done", "reason": "COMPATIBILITY_ALIAS" }
+    },
+
+    {
+      "id": "V080",
+      "category": "task_state:WAITING_AUTHORIZATION",
+      "description": "WAITING_AUTHORIZATION must NOT be terminal",
+      "input": { "task_state": "WAITING_AUTHORIZATION" },
+      "expected": { "valid": true, "status": "awaiting_authorization", "reason": "DERIVED_FROM_TASK_STATE" }
+    },
+    {
+      "id": "V081",
+      "category": "task_state:WAITING_AUTHORIZATION",
+      "description": "WAITING_AUTHORIZATION with status done → conflict, NOT terminal success",
+      "input": { "task_state": "WAITING_AUTHORIZATION", "status": "done" },
+      "expected": { "valid": false, "status": null, "reason": "STATUS_CONFLICT" }
+    },
+    {
+      "id": "V082",
+      "category": "task_state:WAITING_AUTHORIZATION",
+      "description": "WAITING_AUTHORIZATION with status error → conflict, NOT failure",
+      "input": { "task_state": "WAITING_AUTHORIZATION", "status": "error" },
+      "expected": { "valid": false, "status": null, "reason": "STATUS_CONFLICT" }
+    },
+
+    {
+      "id": "V090",
+      "category": "legacy:completed_alias",
+      "description": "status='completed' without task_state → invalid (alias only valid when task_state=COMPLETED)",
+      "input": { "status": "completed" },
+      "expected": { "valid": false, "status": null, "reason": "UNKNOWN_STATUS" }
+    },
+    {
+      "id": "V091",
+      "category": "scenario:S4",
+      "description": "status='completed' without task_state → invalid (alias only valid with task_state=COMPLETED)",
+      "input": { "status": "completed" },
+      "expected": { "valid": false, "status": null, "reason": "UNKNOWN_STATUS" }
+    },
+
+    {
+      "id": "V100",
+      "category": "forward_mapping",
+      "description": "Forward: PENDING → 'pending'",
+      "input": { "task_state": "PENDING" },
+      "expected": { "valid": true, "status": "pending", "reason": "DERIVED_FROM_TASK_STATE" }
+    },
+    {
+      "id": "V101",
+      "category": "forward_mapping",
+      "description": "Forward: RUNNING → 'pending' (same as PENDING)",
+      "input": { "task_state": "RUNNING" },
+      "expected": { "valid": true, "status": "pending", "reason": "DERIVED_FROM_TASK_STATE" }
+    },
+    {
+      "id": "V102",
+      "category": "forward_mapping",
+      "description": "Forward: COMPLETED → 'done'",
+      "input": { "task_state": "COMPLETED" },
+      "expected": { "valid": true, "status": "done", "reason": "DERIVED_FROM_TASK_STATE" }
+    },
+    {
+      "id": "V103",
+      "category": "forward_mapping",
+      "description": "Forward: FAILED → 'error'",
+      "input": { "task_state": "FAILED" },
+      "expected": { "valid": true, "status": "error", "reason": "DERIVED_FROM_TASK_STATE" }
+    },
+    {
+      "id": "V104",
+      "category": "forward_mapping",
+      "description": "Forward: WAITING_AUTHORIZATION → 'awaiting_authorization'",
+      "input": { "task_state": "WAITING_AUTHORIZATION" },
+      "expected": { "valid": true, "status": "awaiting_authorization", "reason": "DERIVED_FROM_TASK_STATE" }
+    },
+
+    {
+      "id": "V110",
+      "category": "reverse_mapping",
+      "description": "Reverse: status='pending' → compatible (maps to PENDING in reverse table)",
+      "input": { "status": "pending" },
+      "expected": { "valid": true, "status": "pending", "reason": "BACKWARD_COMPAT" }
+    },
+    {
+      "id": "V111",
+      "category": "reverse_mapping",
+      "description": "Reverse: status='done' → compatible (maps to COMPLETED in reverse table)",
+      "input": { "status": "done" },
+      "expected": { "valid": true, "status": "done", "reason": "BACKWARD_COMPAT" }
+    },
+    {
+      "id": "V112",
+      "category": "reverse_mapping",
+      "description": "Reverse: status='error' → compatible (maps to FAILED in reverse table)",
+      "input": { "status": "error" },
+      "expected": { "valid": true, "status": "error", "reason": "BACKWARD_COMPAT" }
+    },
+    {
+      "id": "V113",
+      "category": "reverse_mapping",
+      "description": "Reverse: status='awaiting_authorization' → compatible",
+      "input": { "status": "awaiting_authorization" },
+      "expected": { "valid": true, "status": "awaiting_authorization", "reason": "BACKWARD_COMPAT" }
+    },
+
+    {
+      "id": "V120",
+      "category": "termination",
+      "description": "COMPLETED is terminal — must not transition further (transitions tested separately by Python)",
+      "input": { "task_state": "COMPLETED", "status": "done" },
+      "expected": { "valid": true, "status": "done", "reason": "CLEAN_MATCH" }
+    },
+    {
+      "id": "V121",
+      "category": "termination",
+      "description": "FAILED is terminal",
+      "input": { "task_state": "FAILED", "status": "error" },
+      "expected": { "valid": true, "status": "error", "reason": "CLEAN_MATCH" }
+    },
+
+    {
+      "id": "V130",
+      "category": "side_effect_boundary",
+      "description": "Invalid result (conflict) must NOT be usable as success — isTaskSuccess must return false",
+      "input": { "task_state": "COMPLETED", "status": "error" },
+      "expected": { "valid": false, "status": null, "reason": "STATUS_CONFLICT", "is_success": false, "is_error": false }
+    },
+    {
+      "id": "V131",
+      "category": "side_effect_boundary",
+      "description": "COMPLETED with done → isTaskSuccess must return true",
+      "input": { "task_state": "COMPLETED", "status": "done" },
+      "expected": { "valid": true, "status": "done", "reason": "CLEAN_MATCH", "is_success": true, "is_error": false }
+    },
+    {
+      "id": "V132",
+      "category": "side_effect_boundary",
+      "description": "FAILED with error → isTaskError must return true",
+      "input": { "task_state": "FAILED", "status": "error" },
+      "expected": { "valid": true, "status": "error", "reason": "CLEAN_MATCH", "is_success": false, "is_error": true }
+    },
+    {
+      "id": "V133",
+      "category": "side_effect_boundary",
+      "description": "Both missing → neither isTaskSuccess nor isTaskError",
+      "input": {},
+      "expected": { "valid": false, "status": null, "reason": "BOTH_MISSING", "is_success": false, "is_error": false }
+    },
+    {
+      "id": "V134",
+      "category": "scenario:S7",
+      "description": "task_state=COMPLETED vs status='error' → field conflict, invalid; isTaskSuccess must NOT return true for invalid results",
+      "input": { "task_state": "COMPLETED", "status": "error" },
+      "expected": { "valid": false, "status": null, "reason": "STATUS_CONFLICT", "is_success": false, "is_error": false }
+    },
+
+    {
+      "id": "V140",
+      "category": "WAITING_AUTHORIZATION:semantics",
+      "description": "WAITING_AUTHORIZATION is NOT done",
+      "input": { "task_state": "WAITING_AUTHORIZATION" },
+      "expected": { "valid": true, "status": "awaiting_authorization", "is_success": false, "is_error": false }
+    },
+    {
+      "id": "V141",
+      "category": "WAITING_AUTHORIZATION:semantics",
+      "description": "WAITING_AUTHORIZATION is NOT error",
+      "input": { "task_state": "WAITING_AUTHORIZATION", "status": "awaiting_authorization" },
+      "expected": { "valid": true, "status": "awaiting_authorization", "is_success": false, "is_error": false }
+    },
+
+    {
+      "id": "V150",
+      "category": "scenario:S8",
+      "description": "task_state with surrounding whitespace → trimmed and recognized as COMPLETED → done",
+      "input": { "task_state": "  COMPLETED  " },
+      "expected": { "valid": true, "status": "done", "reason": "DERIVED_FROM_TASK_STATE" }
+    },
+    {
+      "id": "V151",
+      "category": "scenario:S8",
+      "description": "status with surrounding whitespace → trimmed and recognized as 'done'",
+      "input": { "status": "  done  " },
+      "expected": { "valid": true, "status": "done", "reason": "BACKWARD_COMPAT" }
+    }
+  ],
+
+  "summary": {
+    "total_vectors": 59,
+    "by_category": {
+      "scenario:S1": 4,
+      "scenario:S2": 5,
+      "scenario:S3": 4,
+      "scenario:S4": 4,
+      "scenario:S5": 3,
+      "scenario:S6": 5,
+      "scenario:S7": 7,
+      "scenario:S8": 2,
+      "task_state:WAITING_AUTHORIZATION": 3,
+      "legacy:completed_alias": 2,
+      "forward_mapping": 5,
+      "reverse_mapping": 4,
+      "termination": 2,
+      "side_effect_boundary": 5,
+      "WAITING_AUTHORIZATION:semantics": 2
+    },
+    "known_divergence_vectors": 0,
+    "note": "G3.2-3 migration complete. All 59 vectors pass across Python, Node.js, and TypeScript. Zero known divergences remain."
+  }
+}

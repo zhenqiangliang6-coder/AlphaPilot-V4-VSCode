@@ -75,7 +75,7 @@ const MemoryPanel: React.FC = () => {
           user_id: 'default_user',
           content: 'Docker 容器化部署 PostgreSQL 时需要注意端口映射',
           summary: 'Docker PostgreSQL 部署经验',
-          memory_type: MemoryType.INSIGHT,
+          memory_type: MemoryType.KNOWLEDGE,
           domain_tags: ['docker', 'postgresql', 'deployment'],
           importance_score: 0.8,
           activation_score: 0.75,
@@ -180,10 +180,14 @@ const MemoryPanel: React.FC = () => {
   const getMemoryTypeInfo = (type: MemoryType) => {
     const info: Record<MemoryType, { label: string; color: string; icon: string }> = {
       [MemoryType.PREFERENCE]: { label: '偏好', color: 'bg-blue-500', icon: '⭐' },
+      [MemoryType.PROJECT_FACT]: { label: '项目事实', color: 'bg-teal-500', icon: '🏗️' },
+      [MemoryType.DECISION]: { label: '决策', color: 'bg-indigo-500', icon: '🎯' },
+      [MemoryType.TASK_EPISODE]: { label: '任务情景', color: 'bg-cyan-500', icon: '📋' },
+      [MemoryType.KNOWLEDGE]: { label: '知识', color: 'bg-pink-500', icon: '💡' },
+      [MemoryType.FEEDBACK]: { label: '反馈', color: 'bg-orange-500', icon: '🔄' },
       [MemoryType.FACT]: { label: '事实', color: 'bg-green-500', icon: '📚' },
       [MemoryType.SKILL]: { label: '技能', color: 'bg-purple-500', icon: '🛠️' },
       [MemoryType.CONVERSATION]: { label: '对话', color: 'bg-yellow-500', icon: '💬' },
-      [MemoryType.INSIGHT]: { label: '洞察', color: 'bg-pink-500', icon: '💡' }
     };
     return info[type] || { label: type, color: 'bg-gray-500', icon: '📝' };
   };
@@ -192,9 +196,15 @@ const MemoryPanel: React.FC = () => {
   const getStatusInfo = (status: MemoryStatus) => {
     const info: Record<MemoryStatus, { label: string; color: string }> = {
       [MemoryStatus.ACTIVE]: { label: '活跃', color: 'text-green-500' },
+      [MemoryStatus.PROPOSED]: { label: '候选', color: 'text-yellow-500' },
+      [MemoryStatus.CONFIRMED]: { label: '已确认', color: 'text-blue-500' },
+      [MemoryStatus.VERIFIED]: { label: '已验证', color: 'text-green-600' },
+      [MemoryStatus.SUPERSEDED]: { label: '已替代', color: 'text-gray-400' },
+      [MemoryStatus.EXPIRED]: { label: '已过期', color: 'text-gray-500' },
+      [MemoryStatus.REJECTED]: { label: '已拒绝', color: 'text-red-500' },
       [MemoryStatus.ARCHIVED]: { label: '归档', color: 'text-gray-500' },
       [MemoryStatus.PRUNED]: { label: '已剪枝', color: 'text-red-500' },
-      [MemoryStatus.MERGED]: { label: '已合并', color: 'text-blue-500' }
+      [MemoryStatus.MERGED]: { label: '已合并', color: 'text-blue-500' },
     };
     return info[status] || { label: status, color: 'text-gray-500' };
   };
@@ -232,10 +242,14 @@ const MemoryPanel: React.FC = () => {
         >
           <option value="all">所有类型</option>
           <option value={MemoryType.PREFERENCE}>⭐ 偏好</option>
+          <option value={MemoryType.PROJECT_FACT}>🏗️ 项目事实</option>
+          <option value={MemoryType.DECISION}>🎯 决策</option>
+          <option value={MemoryType.TASK_EPISODE}>📋 任务情景</option>
+          <option value={MemoryType.KNOWLEDGE}>💡 知识</option>
+          <option value={MemoryType.FEEDBACK}>🔄 反馈</option>
           <option value={MemoryType.FACT}>📚 事实</option>
           <option value={MemoryType.SKILL}>🛠️ 技能</option>
           <option value={MemoryType.CONVERSATION}>💬 对话</option>
-          <option value={MemoryType.INSIGHT}>💡 洞察</option>
         </select>
 
         {/* 状态筛选 */}

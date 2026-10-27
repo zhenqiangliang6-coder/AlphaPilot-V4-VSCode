@@ -17,6 +17,9 @@ export interface Message {
   // ⭐ 新增：流式通道内容分离
   reasoningContent?: string;  // channel = reasoning (思考过程)
   contentChannel?: string;    // channel = content (最终产出)
+  
+  // P1：结构化产物列表
+  artifacts?: Artifact[];
 }
 
 export interface Step {
@@ -32,12 +35,25 @@ export interface Step {
   phase?: 'analyze' | 'plan' | 'write' | 'refine' | 'test';
 }
 
+// P1：结构化产物
+export interface Artifact {
+  artifact_id: string;
+  artifact_type: string;
+  format: string;
+  content: string;
+  label?: string;
+  sequence: number;
+  created_at: number;
+}
+
 export interface ChatState {
   messages: Message[];
   currentTaskId: string | null;
   isStreaming: boolean;
   selectedModel: string;
   currentPhase: string | null;  // ⭐ 新增：当前阶段
+  pendingImages: { id: string; name: string; base64: string }[];  // 待关联图片预览
+  visionLimits: Record<string, { maxImages: number; maxResolution?: number; supportedFormats: string[]; maxWidth?: number; maxHeight?: number }>;  // 视觉模型限制
   
   // Actions
   addMessage: (message: Message) => void;
@@ -49,6 +65,8 @@ export interface ChatState {
   addStep: (taskId: string, step: Step) => void;
   updateStep: (taskId: string, stepId: string, updates: Partial<Step>) => void;
   setCurrentPhase: (phase: string | null) => void;  // ⭐ 新增
+  addArtifact: (taskId: string, artifact: Artifact) => void;  // P1
+  setPendingImages: (images: { id: string; name: string; base64: string }[]) => void;
 }
 
 export const useChatStore = create<ChatState>()(
@@ -63,6 +81,12 @@ export const useChatStore = create<ChatState>()(
       // "task_queue"，而没有任何 worker 监听该队列，任务会永久卡在 pending。
       selectedModel: 'qwen_generate',
       currentPhase: null,  // ⭐ 初始化
+      pendingImages: [],
+      visionLimits: {
+        default: { maxImages: 3, supportedFormats: ['png', 'jpeg', 'jpg', 'webp'], maxWidth: 2048, maxHeight: 2048 },
+        doubao_generate: { maxImages: 5, supportedFormats: ['png', 'jpeg', 'jpg', 'webp'], maxWidth: 4096, maxHeight: 4096 },
+        gemini_generate: { maxImages: 5, supportedFormats: ['png', 'jpeg', 'jpg', 'webp'], maxWidth: 2048, maxHeight: 2048 },
+      },
       
       addMessage: (message) => 
         set((state) => ({ 
@@ -126,19 +150,37 @@ export const useChatStore = create<ChatState>()(
       
       // ⭐ 新增：设置当前阶段
       setCurrentPhase: (phase) =>
-        set({ currentPhase: phase })
+        set({ currentPhase: phase }),
+
+      // P1：添加产物（幂等：同 (task_id, artifact_id) 只保留首次）
+      addArtifact: (taskId, artifact) =>
+        set((state) => ({
+          messages: state.messages.map(msg => {
+            if (msg.taskId !== taskId) return msg;
+            const existing = msg.artifacts || [];
+            const exists = existing.some(a => a.artifact_id === artifact.artifact_id);
+            if (exists) return msg;
+            return {
+              ...msg,
+              artifacts: [...existing, artifact].sort((a, b) => a.sequence - b.sequence)
+            };
+          })
+        })),
+
+      setPendingImages: (images) =>
+        set({ pendingImages: images }),
     }),
     {
       name: 'alphapilot-chat-storage',
-      version: 3,
+      version: 4,
       partialize: (state) => ({ 
         selectedModel: state.selectedModel,
       }),
       migrate: (persisted: unknown, version: number) => {
         const state = (persisted || {}) as { selectedModel?: string; collaborationMode?: string };
 
-        // 只修正已知的非法值；用户主动选择的其他值一律保留
-        if (version < 1 && (state.selectedModel === 'qwen-turbo' || !state.selectedModel)) {
+        // version < 4：修正 qwen-turbo 等非法值
+        if (version < 4 && (state.selectedModel === 'qwen-turbo' || !state.selectedModel)) {
           state.selectedModel = 'qwen_generate';
         }
         delete state.collaborationMode;

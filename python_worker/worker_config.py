@@ -459,6 +459,43 @@ def stream_chunk(task_id: str, content: str, phase: str = None, channel: str = N
         print(f"⚠️ stream_chunk 失败：{e}")
 
 
+def step_started(task_id: str, step_id: str, step_type: str, phase: str = None):
+    """通知前端步骤已开始（复用 stream_chunk 路由 + message_type 信封，符合宪法信条 4）"""
+    try:
+        payload = {
+            "task_id": task_id,
+            "message_type": "step_started",
+            "step_id": step_id,
+            "step_type": step_type,
+            "phase": phase or step_type,
+        }
+        requests.post(
+            f"{NODE_API_URL}/task/stream_chunk/{task_id}",
+            json=payload,
+            timeout=5,
+        )
+    except Exception as e:
+        print(f"⚠️ step_started 失败：{e}")
+
+
+def step_finished(task_id: str, step_id: str, step_type: str):
+    """通知前端步骤已完成（复用 stream_chunk 路由 + message_type 信封，符合宪法信条 4）"""
+    try:
+        payload = {
+            "task_id": task_id,
+            "message_type": "step_finished",
+            "step_id": step_id,
+            "step_type": step_type,
+        }
+        requests.post(
+            f"{NODE_API_URL}/task/stream_chunk/{task_id}",
+            json=payload,
+            timeout=5,
+        )
+    except Exception as e:
+        print(f"⚠️ step_finished 失败：{e}")
+
+
 def stream_error(task_id: str, message: str):
     try:
         requests.post(
@@ -479,6 +516,88 @@ def stream_end(task_id: str):
         )
     except Exception as e:
         print(f"⚠️ stream_end 失败：{e}")
+
+
+# =========================
+# P1：结构化产物发射（类型化信封，复用 stream_chunk 路由）
+# =========================
+
+def emit_artifact(
+    task_id: str,
+    artifact_id: str,
+    artifact_type: str,
+    format: str,
+    content: str,
+    label: str = None,
+    sequence: int = 1,
+):
+    """
+    发射展示产物事件。
+    复用 POST /task/stream_chunk/:task_id 路由，通过 message_type 字段区分。
+
+    约束：
+    - 同一 (task_id, artifact_id) 只应发送一次
+    - 必须在 task_completed 之前发射
+    - 调用方应 await 返回值确认发送成功
+    - 内容必须是完整产物（非增量）
+
+    返回 True 表示发射成功，False 表示失败。
+    """
+    payload = {
+        "task_id": task_id,
+        "message_type": "artifact_created",
+        "artifact_id": artifact_id,
+        "artifact_type": artifact_type,
+        "format": format,
+        "content": content,
+        "sequence": sequence,
+        "created_at": int(time.time() * 1000),
+    }
+    if label is not None:
+        payload["label"] = label
+    try:
+        resp = requests.post(
+            f"{NODE_API_URL}/task/stream_chunk/{task_id}",
+            json=payload,
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            return True
+        else:
+            print(f"[P1] emit_artifact 返回非 200: {resp.status_code}")
+            return False
+    except Exception as e:
+        print(f"[P1] emit_artifact 失败: {e}")
+        return False
+
+
+def extract_and_emit_artifacts(text: str, task_id: str) -> int:
+    """
+    从 LLM 输出文本中提取 Mermaid 代码块，发射产物事件。
+    返回成功发射的产物数量。
+    """
+    import re as _re
+    pattern = r'```mermaid\s*\n([\s\S]*?)```'
+    matches = list(_re.finditer(pattern, text))
+    count = 0
+    for i, m in enumerate(matches):
+        source = m.group(1).strip()
+        if not source:
+            continue
+        artifact_id = f"mermaid-{task_id}-{i + 1}"
+        label = f"架构图" if len(matches) == 1 else f"架构图 {i + 1}"
+        if emit_artifact(
+            task_id=task_id,
+            artifact_id=artifact_id,
+            artifact_type="mermaid_diagram",
+            format="mermaid",
+            content=source,
+            label=label,
+            sequence=i + 1,
+        ):
+            count += 1
+            print(f"[P1] 产物已发射: {artifact_id}")
+    return count
 
 
 # =========================

@@ -57,18 +57,34 @@ def run_write_step(step, context, events, task_id=None):
 
     user_request = meta.get("user_request", "")
 
+    _step_input_prompt = step.get("input", {}).get("prompt", "")
+    _has_vision_injection = "[图片分析结果]" in _step_input_prompt
+
     if not plan_outputs:
-        analyze_outputs = [
-            item.get("analysis", "") or item.get("text", "")
-            for item in context.get("intermediate_results", [])
-            if item.get("type") == "analyze"
-        ]
-        if analyze_outputs:
-            plan_text = f"# 任务分析\n{analyze_outputs[-1]}\n\n# 用户原始请求\n{user_request}"
-            print(f"[INFO] write_step 未找到 plan，回退使用 analyze 输出 + 用户请求")
+        # ⭐ v4.3: worker 预注入的视觉上下文优先级最高（高于 analyze 通用输出）
+        if _has_vision_injection:
+            plan_text = _step_input_prompt
+            print(f"[INFO] write_step 使用 worker 注入的视觉上下文 prompt")
         else:
-            plan_text = user_request or "请根据上下文生成内容"
-            print(f"[INFO] write_step 未找到 plan 和 analyze，回退使用用户请求")
+            analyze_outputs = [
+                item.get("analysis", "") or item.get("text", "")
+                for item in context.get("intermediate_results", [])
+                if item.get("type") == "analyze"
+            ]
+            vision_outputs = [
+                item.get("text", "")
+                for item in context.get("intermediate_results", [])
+                if item.get("type") == "vision_analysis"
+            ]
+            if vision_outputs:
+                plan_text = f"# 图片分析结果\n{vision_outputs[-1]}\n\n# 用户原始请求\n{user_request}"
+                print(f"[INFO] write_step 未找到 plan，回退使用 vision_analysis 输出 + 用户请求")
+            elif analyze_outputs:
+                plan_text = f"# 任务分析\n{analyze_outputs[-1]}\n\n# 用户原始请求\n{user_request}"
+                print(f"[INFO] write_step 未找到 plan/vision，回退使用 analyze 输出 + 用户请求")
+            else:
+                plan_text = user_request or "请根据上下文生成内容"
+                print(f"[INFO] write_step 未找到任何分析结果，回退使用用户请求")
     else:
         plan_text = plan_outputs[-1]
 
@@ -111,7 +127,7 @@ def run_write_step(step, context, events, task_id=None):
     code = extract_code(result, fallback_strategies=True)
 
     # ===== 5. 解析多文件协议（创意/对话类意图跳过 FileOps）=====
-    _creative_intents = {"creative_writing", "translate", "summarization", "chat", "mentor_explain"}
+    _creative_intents = {"creative_writing", "translate", "summarization", "chat", "mentor_explain", "vision_analysis"}
 
     if intent in _creative_intents:
         print(f"[INFO] 创意/对话类意图 ({intent})，跳过 FileOps 解析，直接输出文本")

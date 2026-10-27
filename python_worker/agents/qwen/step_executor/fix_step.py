@@ -147,7 +147,7 @@ def run_fix_step(
                 test_output=test_output,
                 project_dir=project_dir,
                 llm_call_fn=llm_call_fn,
-                max_rounds=5,
+                max_rounds=1,
             )
         except Exception as e:
             if task_id:

@@ -251,7 +251,7 @@ def run_write_step(step, context, events, task_id=None):
         result = ""
         llm_success = False
 
-        _creative_intents = {"creative_writing", "translate", "summarization", "chat", "mentor_explain"}
+        _creative_intents = {"creative_writing", "translate", "summarization", "chat", "mentor_explain", "vision_analysis"}
         intent = meta.get("intent", "write_code")
 
         try:
@@ -415,13 +415,20 @@ def run_write_step(step, context, events, task_id=None):
             user_query = context.get("user_query", "")
             
             if not user_query:
-                # 尝试从 intermediate_results 获取 analyze 的结果
+                # 尝试从 intermediate_results 获取结果，视觉分析优先
                 analyze_outputs = [
                     item["analysis"]
                     for item in context["intermediate_results"]
                     if item["type"] == "analyze"
                 ]
-                if analyze_outputs:
+                vision_outputs = [
+                    item.get("text", "") or item.get("analysis", "")
+                    for item in context.get("intermediate_results", [])
+                    if item.get("type") == "vision_analysis"
+                ]
+                if vision_outputs:
+                    user_query = f"# 图片分析结果\n{vision_outputs[-1]}"
+                elif analyze_outputs:
                     user_query = analyze_outputs[-1]
                 else:
                     user_query = "请帮我解答这个问题。"

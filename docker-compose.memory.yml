@@ -1,0 +1,64 @@
+# AlphaPilot 记忆中枢 - Docker PostgreSQL + pgvector
+# 架构：海马体-新皮层协作模式
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: alphapilot-memory-hub
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_USER: ${DB_USER:-alphapilot}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD 未设置，请在 .env.memory 中配置}
+      POSTGRES_DB: ${DB_NAME:-alphapilot_memory}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+      TZ: ${TZ:-Asia/Shanghai}
+
+    ports:
+      - "${DB_PORT:-5433}:5432"
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init_memory_schema.sql:/docker-entrypoint-initdb.d/01-init-memory-schema.sql:ro
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-alphapilot} -d ${DB_NAME:-alphapilot_memory}"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_buffers=256MB"
+      - "-c"
+      - "effective_cache_size=512MB"
+      - "-c"
+      - "maintenance_work_mem=128MB"
+      - "-c"
+      - "wal_buffers=8MB"
+      - "-c"
+      - "max_connections=100"
+      - "-c"
+      - "log_min_duration_statement=1000"
+
+    networks:
+      - alphapilot-network
+
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '1.0'
+          memory: 1G
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  alphapilot-network:
+    driver: bridge

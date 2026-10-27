@@ -46,6 +46,7 @@ export const MessageList: React.FC = () => {
           steps={message.steps}
           intent={message.intent}
           persona={message.persona}
+          artifacts={message.artifacts}
           isStreaming={!!(isStreaming && message.taskId)}
           currentPhase={currentPhase}
         />

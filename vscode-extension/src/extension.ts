@@ -10,6 +10,7 @@ import { websocketService } from './services/websocketService';
 import { streamingService } from './services/streamingService';
 import { diffService } from './services/diffService';
 import { applyWorkspaceDeleteOps } from './services/workspaceDelete';
+import { imageSanitizer } from './services/ImageSanitizer';
 import {
   buildSummaryHookPrompt,
   evaluateStopHook,
@@ -21,6 +22,7 @@ import {
 import { AlphaPilotCompletionProvider } from './providers/inlineCompletionProvider';
 import { dispatcher } from './core/dispatcher';
 import { eventBus, EventType } from './core/eventBus';
+import { resolveTaskStatus } from './taskModel';
 
 const NODE_API_BASE_URL = 'http://localhost:3000';
 const WS_URL = 'ws://localhost:3000';
@@ -138,6 +140,9 @@ export function activate(context: vscode.ExtensionContext) {
   // ============================================================
   dispatcher.initialize();
   console.log('✅ Core Layer 已初始化 (Protocol + Dispatcher + EventBus)');
+
+  // ⭐ v4.3: 预热 ImageSanitizer Worker Thread (延迟 2s，避免卡 IDE 启动)
+  imageSanitizer.warmup();
 
   // 初始化服务
   taskService.initialize(context);
@@ -361,22 +366,34 @@ function setupEventSubscriptions(context: vscode.ExtensionContext): void {
 /**
  * 设置工作区路径（关键：让 Node API 知道文件应该写到哪里）
  */
-async function setupWorkspace(context: vscode.ExtensionContext): Promise<void> {
+async function setupWorkspace(context?: vscode.ExtensionContext): Promise<void> {
   try {
     const workspaceFolders = vscode.workspace.workspaceFolders;
     
-    if (workspaceFolders && workspaceFolders.length > 0) {
-      const workspacePath = workspaceFolders[0].uri.fsPath;
-      
-      // 调用 Node API 设置工作区路径
-      const axios = require('axios');
-      await axios.post(`${NODE_API_BASE_URL}/workspace/set`, {
-        path: workspacePath
-      });
-      
-      console.log(`[AlphaPilot] ✅ Workspace 已设置为: ${workspacePath}`);
-    } else {
+    if (!workspaceFolders || workspaceFolders.length === 0) {
       console.warn('[AlphaPilot] ⚠️ 未检测到工作区，FileOps 将写入临时目录');
+      return;
+    }
+
+    const workspacePath = workspaceFolders[0].uri.fsPath;
+    const axios = require('axios');
+    const maxRetries = 15;
+    const retryDelayMs = 2000;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        await axios.post(`${NODE_API_BASE_URL}/workspace/set`, { path: workspacePath }, { timeout: 3000 });
+        console.log(`[AlphaPilot] ✅ Workspace 已设置为: ${workspacePath} (尝试 ${attempt}/${maxRetries})`);
+        return;
+      } catch (err: any) {
+        const isConnectionError = err.code === 'ECONNREFUSED' || err.code === 'ECONNRESET' || err.code === 'ETIMEDOUT';
+        if (!isConnectionError || attempt === maxRetries) {
+          console.error(`[AlphaPilot] ❌ 设置工作区失败 (尝试 ${attempt}/${maxRetries}):`, err.message);
+          if (attempt === maxRetries) return;
+        }
+        console.log(`[AlphaPilot] ⏳ Node API 未就绪，${retryDelayMs / 1000}s 后重试 (${attempt}/${maxRetries})...`);
+        await new Promise(resolve => setTimeout(resolve, retryDelayMs));
+      }
     }
   } catch (error: any) {
     console.error('[AlphaPilot] ❌ 设置工作区失败:', error.message);
@@ -387,9 +404,17 @@ async function setupWorkspace(context: vscode.ExtensionContext): Promise<void> {
  * 连接 WebSocket 并监听事件
  */
 async function connectWebSocket() {
+  websocketService.on('connected', async () => {
+    await setupWorkspace();
+    console.log('[AlphaPilot] 📁 (重连) 已同步工作区路径到 Node API');
+  });
+
   try {
     await websocketService.connect(WS_URL);
     console.log('✅ WebSocket 已连接');
+
+    await setupWorkspace();
+    console.log('[AlphaPilot] 📁 已同步工作区路径到 Node API');
 
     // ⭐ 监听 task_result 事件，自动执行 FileOps
     websocketService.on('task_result', async (result: any) => {
@@ -407,12 +432,18 @@ async function connectWebSocket() {
       const authorizationRequests = result.context?.meta?.authorization_requests || [];
       const testAuthorizationPending = authorizationRequests.some((request: any) => request.type === 'test');
       const deletionAuthorizationPending = authorizationRequests.some((request: any) => request.type === 'delete');
+      const resolved = resolveTaskStatus(result);
+      if (!resolved.valid) {
+        console.warn(`[AlphaPilot] 任务结果契约无效 (task_state=${result.task_state}, status=${result.status})，拒绝应用 FileOps`);
+        return;
+      }
+      const resolvedStatus = resolved.status;
       if (
-        result.status !== 'done'
-        && result.status !== 'completed'
-        && !(result.status === 'awaiting_authorization' && (testAuthorizationPending || deletionAuthorizationPending))
+        resolvedStatus !== 'done'
+        && resolvedStatus !== 'completed'
+        && !(resolvedStatus === 'awaiting_authorization' && (testAuthorizationPending || deletionAuthorizationPending))
       ) {
-        console.warn(`[AlphaPilot] 任务状态为 ${result.status}，不应用部分 FileOps`);
+        console.warn(`[AlphaPilot] 任务状态为 ${resolvedStatus} (task_state=${result.task_state})，不应用部分 FileOps`);
         return;
       }
       const appliedFiles: string[] = [];
@@ -711,6 +742,7 @@ export function deactivate() {
   console.log('🛑 AlphaPilot 扩展已停用');
   
   // 清理资源
+  imageSanitizer.dispose();
   dispatcher.dispose();
   eventBus.dispose();
   websocketService.disconnect();

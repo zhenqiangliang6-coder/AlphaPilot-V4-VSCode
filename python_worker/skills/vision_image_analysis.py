@@ -30,11 +30,13 @@ def register(registry):
                 "output.text",
             ),
             output_profile={
-                "output_mode": "mixed",
-                "workspace_dependency": "none",
-                "target_format": "plain_text",
-                "requires_fileops": False,
-                "requires_workspace_scan": False,
+                "output_mode": "code",
+                "workspace_dependency": "read_write",
+                "target_format": "py",
+                "requires_fileops": True,
+                "requires_workspace_scan": True,
+                "requires_test": True,
+                "estimated_complexity": "moderate",
             },
             guidance=(
                 "接收用户上传的图片/截图，进行视觉内容识别和分析。"

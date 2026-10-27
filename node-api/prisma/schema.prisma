@@ -30,6 +30,7 @@ enum StepType {
   fix
   doc
   docstring
+  respond
 }
 
 enum FileOpType {

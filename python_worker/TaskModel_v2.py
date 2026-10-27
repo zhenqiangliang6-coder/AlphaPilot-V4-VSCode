@@ -15,7 +15,8 @@ TaskModel v2 - 智能体执行引擎版（Python）
 
 import json
 import time
-from typing import Dict, Any, Optional, Tuple, List
+from enum import Enum
+from typing import Dict, Any, Optional, Tuple, List, Set
 
 
 class TaskModel:
@@ -27,7 +28,7 @@ class TaskModel:
     # ⭐ 新增：支持的模型列表（可扩展）
     # ------------------------------------------------------------
     SUPPORTED_MODELS = {
-        "qwen": ["qwen-turbo", "qwen-plus", "qwen-max", "qwen2.5"],
+        "qwen": ["qwen3.8-max", "qwen3.7-max", "qwen-max", "qwen-plus", "qwen-turbo"],
         "deepseek": ["deepseek-chat", "deepseek-coder"],
         "doubao": ["doubao-pro", "doubao-lite"],
         "gpt": ["gpt-4", "gpt-4o", "gpt-5"],
@@ -121,7 +122,7 @@ class TaskModel:
                 "source": source,
                 
                 # ⭐ 新增：模型选择和流式控制
-                "model": model or "qwen-turbo",  # 默认模型
+                "model": model or "qwen-max",  # 默认模型（运行时由 probe 自动覆盖）
                 "stream": stream  # 是否启用流式
             }
         }
@@ -166,7 +167,7 @@ class TaskModel:
         }
         """
         meta = task.get("meta", {})
-        model = meta.get("model", "qwen-turbo")
+        model = meta.get("model", "qwen-max")
         stream = meta.get("stream", False)
         
         # 提取厂商前缀
@@ -358,22 +359,25 @@ class TaskModel:
         }
 
     # ------------------------------------------------------------
-    # ⭐ 新增：创建步骤开始事件
+    # ⭐ 新增：创建步骤事件
     # ------------------------------------------------------------
     @staticmethod
     def create_step_event(
         task_id: str,
         step_id: str,
         phase: str,
-        status: str = "started"
+        status: str = "started",
+        sequence: int = 0,
     ) -> Dict[str, Any]:
         """
         创建步骤事件
-        
+
         参数：
         - status: "started" | "completed" | "failed"
+        - sequence: 事件序号，用于契约校验（必填）
         """
         return {
+            "sequence": sequence,
             "event": f"step_{status}",
             "task_id": task_id,
             "step_id": step_id,
@@ -382,9 +386,72 @@ class TaskModel:
         }
 
     # ------------------------------------------------------------
-    # JSON 美化打印
+    # JSON 美化打印（安全版——序列化失败不抛异常）
     # ------------------------------------------------------------
     @staticmethod
     def pretty_print(obj: Dict[str, Any]) -> str:
-        """结构化打印 JSON"""
-        return json.dumps(obj, indent=2, ensure_ascii=False)
+        try:
+            normalized = TaskModel.normalize_for_serialization(obj)
+            return json.dumps(normalized, indent=2, ensure_ascii=False)
+        except Exception:
+            safe = {k: TaskModel._safe_repr(v) for k, v in obj.items()}
+            return json.dumps(safe, indent=2, ensure_ascii=False)
+
+    # ------------------------------------------------------------
+    # 统一结果规范化器——将所有能力返回值转换为 JSON 原生类型
+    # ------------------------------------------------------------
+    @staticmethod
+    def normalize_for_serialization(obj: Any, _depth: int = 0) -> Any:
+        _max_depth = 50
+        if _depth > _max_depth:
+            return "<max recursion depth>"
+
+        if obj is None or isinstance(obj, (bool, int, float, str)):
+            return obj
+
+        if isinstance(obj, dict):
+            return {
+                k: TaskModel.normalize_for_serialization(v, _depth + 1)
+                for k, v in obj.items()
+            }
+
+        if isinstance(obj, (list, tuple, set)):
+            return [
+                TaskModel.normalize_for_serialization(item, _depth + 1)
+                for item in obj
+            ]
+
+        if isinstance(obj, Enum):
+            return obj.value
+
+        if hasattr(obj, "as_dict") and callable(obj.as_dict):
+            return obj.as_dict()
+
+        if hasattr(obj, "to_dict") and callable(obj.to_dict):
+            return obj.to_dict()
+
+        try:
+            from dataclasses import asdict, is_dataclass
+            if is_dataclass(obj) and not isinstance(obj, type):
+                return asdict(obj)
+        except Exception:
+            pass
+
+        if hasattr(obj, "__dict__"):
+            try:
+                return {
+                    k: TaskModel.normalize_for_serialization(v, _depth + 1)
+                    for k, v in obj.__dict__.items()
+                    if not k.startswith("_")
+                }
+            except Exception:
+                pass
+
+        return str(obj)
+
+    @staticmethod
+    def _safe_repr(obj: Any) -> str:
+        try:
+            return repr(obj)
+        except Exception:
+            return "<unserializable>"

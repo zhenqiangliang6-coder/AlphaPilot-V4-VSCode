@@ -21,11 +21,17 @@ from .docstring_step import run_docstring_step   # ⭐ v3.0 docstring 步骤（�
 from ....worker_respond_step import run_respond_step
 from ...qwen.step_executor.workspace_step import run_workspace_step
 
+# ⭐ v4.3 vision_analysis — 一等公民视觉分析步骤
+from ...vision_step import run_vision_step
+
 
 # ---------------------------------------------------------
 # 步骤类型 → 执行函数 的映射表（v3.0 全量）
 # ---------------------------------------------------------
 STEP_DISPATCHER = {
+    # ⭐ v4.3 vision 一等公民步骤
+    "vision_analysis": run_vision_step,
+
     "analyze": run_analyze_step,
     "plan": run_plan_step,
     "write": run_write_step,

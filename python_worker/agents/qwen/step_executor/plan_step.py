@@ -153,12 +153,29 @@ def run_plan_step(step, context, events, task_id=None):
     }:
         context.setdefault("meta", {})["proposed_test_command"] = command_match.group(1).strip().strip("`")
 
+    # ===== 第3.5层：⭐ Planning Contract v1.0 — 提取结构化产物 =====
+    extracted_files = []
+    extracted_commands = []
+    for match in re.finditer(r"(?im)^\s*(?:EXPECTED_FILE|FILE):\s*(.+?)\s*$", result or ""):
+        extracted_files.append(match.group(1).strip().strip("`"))
+    for match in re.finditer(r"(?im)^\s*(?:EXPECTED_TEST|TEST):\s*(.+?)\s*$", result or ""):
+        extracted_commands.append(match.group(1).strip().strip("`"))
+
+    context.setdefault("meta", {})["plan_artifacts"] = {
+        "expected_files": extracted_files,
+        "expected_test_commands": extracted_commands,
+    }
+
     # ===== 第4层防御：写入上下文 =====
     try:
         context["intermediate_results"].append({
             "type": "plan",
             "plan": result or "",
-            "llm_success": llm_success
+            "llm_success": llm_success,
+            "artifacts": {
+                "expected_files": extracted_files,
+                "expected_test_commands": extracted_commands,
+            }
         })
     except Exception as e:
         print(f"[ERROR] Failed to update context: {e}")

@@ -205,19 +205,32 @@ async function createTask(taskId, userId, projectId, prompt, model, source = 're
 }
 
 /**
+ * Worker 契约状态 → Prisma TaskStatus 映射
+ * Worker 使用 'error' 表示失败，Prisma 枚举值为 'failed'
+ */
+const WORKER_STATUS_TO_PRISMA = {
+  'done': 'done',
+  'error': 'failed',
+  'pending': 'pending',
+  'running': 'running',
+  'awaiting_authorization': 'pending',
+};
+
+/**
  * 更新任务状态
  * @param {string} taskId - 任务ID
- * @param {string} status - 任务状态 (pending/running/done/failed)
+ * @param {string} status - 任务状态（Worker 契约状态）
  * @param {string} resultSummary - 任务结果摘要
  */
 async function updateTaskStatus(taskId, status, resultSummary = null) {
   try {
+    const prismaStatus = WORKER_STATUS_TO_PRISMA[status] || status;
     const task = await prisma.task.update({
       where: { id: taskId },
       data: {
-        status: status,
+        status: prismaStatus,
         result_summary: resultSummary,
-        finished_at: status === 'done' || status === 'failed' ? new Date() : null
+        finished_at: prismaStatus === 'done' || prismaStatus === 'failed' ? new Date() : null
       }
     });
     console.log(`[Memory] 更新任务状态: ${taskId} -> ${status}`);
@@ -285,7 +298,7 @@ async function getUserTasks(userId, limit = 50) {
 /**
  * 创建任务步骤
  * @param {string} taskId - 任务ID
- * @param {string} stepType - 步骤类型 (analyze/plan/write/refine/test/fix/doc/docstring)
+ * @param {string} stepType - 步骤类型 (analyze/plan/write/refine/test/fix/doc/docstring/respond)
  * @param {object} input - 步骤输入
  */
 async function createTaskStep(taskId, stepType, input = {}) {
@@ -307,19 +320,43 @@ async function createTaskStep(taskId, stepType, input = {}) {
 }
 
 /**
+ * Worker 步骤状态 → Prisma TaskStatus 映射
+ * Python Worker 使用 'completed'，Prisma 枚举定义为 'done'
+ */
+const STEP_STATUS_TO_PRISMA = {
+  'completed': 'done',
+  'failed':    'failed',
+  'pending':   'pending',
+  'running':   'running',
+  'done':      'done',
+};
+
+function _normalizeStepStatus(workerStatus) {
+  const mapped = STEP_STATUS_TO_PRISMA[workerStatus];
+  if (!mapped) {
+    throw new Error(
+      `Unknown step status "${workerStatus}"; ` +
+      `valid values: ${Object.keys(STEP_STATUS_TO_PRISMA).join(', ')}`
+    );
+  }
+  return mapped;
+}
+
+/**
  * 更新步骤状态和输出
  * @param {number} stepId - 步骤ID
- * @param {string} status - 步骤状态
+ * @param {string} status - 步骤状态（Worker 侧格式，内部映射到 Prisma 枚举）
  * @param {object} output - 步骤输出（结构化 JSON）
  */
 async function updateTaskStep(stepId, status, output = {}) {
   try {
+    const prismaStatus = _normalizeStepStatus(status);
     const step = await prisma.taskStep.update({
       where: { id: stepId },
       data: {
-        status: status,
+        status: prismaStatus,
         output: output,
-        finished_at: status === 'done' || status === 'failed' ? new Date() : null
+        finished_at: prismaStatus === 'done' || prismaStatus === 'failed' ? new Date() : null
       }
     });
     console.log(`[Memory] 更新步骤状态: stepId=${stepId} -> ${status}`);

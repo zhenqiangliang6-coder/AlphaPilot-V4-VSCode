@@ -31,7 +31,7 @@ RELATIVE_SOURCE_PATH_PATTERN = re.compile(
     r"(?<![\w./\\-])(?:[\w.-]+[\\/])+[\w.-]+\.py",
     re.IGNORECASE,
 )
-SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", "dist", "build"}
+SKIP_DIRS = {".git", ".venv", ".venv_worker", "venv", "node_modules", "__pycache__", "dist", "build", ".pytest_cache", ".mypy_cache", "site-packages"}
 _INSPECT_EXTENSIONS = {
     ".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
     ".java", ".kt", ".kts",
@@ -423,6 +423,147 @@ def read_requested_python_files(workspace_path, prompt):
             break
 
     return source_files
+
+
+def search_project_files(
+    workspace_path: str,
+    keywords: list,
+    *,
+    max_files: int = 10,
+    max_chars: int = 30_000,
+    max_content_hits: int = 50,
+    source_extensions: tuple = (".py", ".js", ".ts", ".jsx", ".tsx", ".json", ".yaml", ".yml", ".toml"),
+):
+    """
+    Phase C: 按关键词只读搜索项目文件。
+
+    搜索策略：
+      1. 文件名关键词匹配（快速筛出相关文件）
+      2. 文件内容关键词匹配（grep）
+      3. 返回命中文件的路径、行号、匹配片段和完整内容
+
+    返回:
+      {
+        "files": {relative_path: full_content},
+        "hits": [{"path": str, "line": int, "match": str}],
+        "total_scanned": int,
+        "errors": [str],
+      }
+    """
+    if not isinstance(workspace_path, str) or not workspace_path.strip():
+        return {"files": {}, "hits": [], "total_scanned": 0, "errors": ["workspace_path 为空"]}
+
+    if not keywords:
+        return {"files": {}, "hits": [], "total_scanned": 0, "errors": ["keywords 为空"]}
+
+    root = Path(workspace_path).resolve()
+    if not root.is_dir():
+        return {"files": {}, "hits": [], "total_scanned": 0, "errors": [f"路径不存在: {workspace_path}"]}
+
+    errors = []
+    hits = []
+    scanned = 0
+    files = {}
+    total_chars = 0
+
+    keyword_lower = [kw.lower() for kw in keywords]
+
+    # 第一遍：文件名匹配
+    matched_paths = set()
+    for ext in source_extensions:
+        try:
+            for path in root.rglob(f"*{ext}"):
+                if any(skip in path.parts for skip in SKIP_DIRS):
+                    continue
+                if any(kw in path.name.lower() for kw in keyword_lower):
+                    matched_paths.add(path)
+        except (OSError, PermissionError, RuntimeError) as e:
+            errors.append(f"遍历 {ext} 时出错: {e}")
+
+    # 第二遍：内容匹配（仅在非 JSON/YAML/TOML 等数据文件中做）
+    grep_extensions = (".py", ".js", ".ts", ".jsx", ".tsx")
+    content_matched = set()
+    for ext in grep_extensions:
+        try:
+            for path in root.rglob(f"*{ext}"):
+                if any(skip in path.parts for skip in SKIP_DIRS):
+                    continue
+                if path in matched_paths:
+                    continue
+                scanned += 1
+                if scanned > 500:
+                    break
+                try:
+                    content = path.read_text(encoding="utf-8", errors="replace")
+                except (OSError, PermissionError, RuntimeError):
+                    continue
+                content_lower = content.lower()
+                for kw in keyword_lower:
+                    if kw in content_lower:
+                        content_matched.add(path)
+                        for i, line in enumerate(content.splitlines(), 1):
+                            if kw in line.lower() and len(hits) < max_content_hits:
+                                hits.append({
+                                    "path": str(path.relative_to(root).as_posix()),
+                                    "line": i,
+                                    "match": line.strip()[:200],
+                                })
+                        break
+            if scanned > 500:
+                break
+        except (OSError, PermissionError, RuntimeError) as e:
+            errors.append(f"搜索 {ext} 内容时出错: {e}")
+
+    # 合并文件名匹配和内容匹配
+    # 文件名匹配优先（更相关），其次按文件大小限制（小文件优先，避免单个大文件占满配额）
+    all_matched = list(matched_paths - content_matched) + list(content_matched - matched_paths) + list(matched_paths & content_matched)
+    seen = set()
+    deduped = []
+    for p in all_matched:
+        if p not in seen:
+            seen.add(p)
+            deduped.append(p)
+    all_matched = deduped
+
+    max_file_bytes = max_chars // max(max_files, 1)
+
+    for path in all_matched:
+        if len(files) >= max_files:
+            break
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+        except (OSError, PermissionError, RuntimeError):
+            continue
+
+        if len(content) > max_file_bytes:
+            content = content[:max_file_bytes]
+
+        if total_chars + len(content) > max_chars:
+            if not files:
+                files[path.relative_to(root).as_posix()] = content
+            break
+
+        rel = path.relative_to(root).as_posix()
+        files[rel] = content
+        total_chars += len(content)
+
+    # 文件名匹配也记录 hists（仅在没有内容匹配时作为补充）
+    if not hits and matched_paths:
+        for p in matched_paths:
+            if len(hits) >= max_content_hits:
+                break
+            hits.append({
+                "path": str(p.relative_to(root).as_posix()),
+                "line": 0,
+                "match": f"[文件名匹配] {p.name}",
+            })
+
+    return {
+        "files": files,
+        "hits": hits,
+        "total_scanned": scanned,
+        "errors": errors,
+    }
 
 
 def _matching_files(directory, patterns):

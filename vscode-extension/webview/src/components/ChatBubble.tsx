@@ -1,11 +1,12 @@
 // src/components/ChatBubble.tsx
-import React from 'react';
+import React, { useMemo } from 'react';
 import { PersonaIcon } from './PersonaIcon';
 import { IntentBadge } from './IntentBadge';
 import { StepTree } from './StepTree';
 import { EnhancedStreamingOutput } from './EnhancedStreamingOutput';
 import { MarkdownRenderer } from './MarkdownRenderer';
-import { Step } from '../store/chatStore';
+import { MermaidBlock } from './MermaidBlock';
+import { Step, Artifact } from '../store/chatStore';
 
 interface ChatBubbleProps {
   role: 'user' | 'assistant';
@@ -17,6 +18,7 @@ interface ChatBubbleProps {
   steps?: Step[];
   intent?: string;
   persona?: string;
+  artifacts?: Artifact[];
   isStreaming?: boolean;
   currentPhase?: string | null;
 }
@@ -40,11 +42,25 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({
   steps,
   intent,
   persona,
+  artifacts,
   isStreaming = false,
   currentPhase
 }) => {
   const isUser = role === 'user';
   const personaInfo = persona ? personaConfig[persona] : null;
+
+  // P1：去重 — 从 MarkdownRenderer 的输入中剥离 mermaid_diagram 产物已覆盖的代码块
+  const strippedContent = useMemo(() => {
+    if (!artifacts || artifacts.length === 0 || isStreaming) {
+      return contentChannel || content;
+    }
+    const hasMermaidArtifact = artifacts.some(a => a.artifact_type === 'mermaid_diagram');
+    if (!hasMermaidArtifact) {
+      return contentChannel || content;
+    }
+    // 剥离 ```mermaid...``` 代码块，避免与 artifact 卡片双重渲染
+    return (contentChannel || content).replace(/```mermaid\s*\n[\s\S]*?```/g, '');
+  }, [contentChannel, content, artifacts, isStreaming]);
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'} animate-fade-in gap-3`}>
@@ -115,7 +131,37 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({
                   channel="content"
                 />
               ) : (
-                <MarkdownRenderer content={contentChannel || content} />
+                <div>
+                  {/* P1：artifact 卡片（mermaid_diagram 用 MermaidBlock 渲染） */}
+                  {artifacts && artifacts.length > 0 && !isStreaming && (
+                    <div className="space-y-3 mb-4">
+                      {artifacts.map((artifact) => {
+                        if (artifact.artifact_type === 'mermaid_diagram') {
+                          return (
+                            <MermaidBlock
+                              key={artifact.artifact_id}
+                              code={artifact.content}
+                              label={artifact.label}
+                            />
+                          );
+                        }
+                        // 其他 artifact 类型 P2 实现，当前降级为折叠源码
+                        return (
+                          <details key={artifact.artifact_id} className="my-2 bg-vscode-bg/50 rounded-lg p-3 border border-gray-500/20">
+                            <summary className="text-xs text-gray-400 cursor-pointer hover:text-gray-300">
+                              📦 {artifact.label || artifact.artifact_id} ({artifact.artifact_type})
+                            </summary>
+                            <pre className="mt-2 text-xs text-gray-400 overflow-x-auto max-h-32">
+                              {artifact.content}
+                            </pre>
+                          </details>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {/* MarkdownRenderer：使用剥离 mermaid 块后的内容 */}
+                  <MarkdownRenderer content={strippedContent} />
+                </div>
               )}
             </div>
           )}

@@ -1,0 +1,263 @@
+[
+  {
+    "case_id": "E3-A",
+    "prompt": "分析当前项目的整体架构",
+    "workspace_path": "D:\\Copilot_Alphapilot\\Copilot_Alphapilot\\python_worker",
+    "timestamp": "2026-10-22T22:50:31.135737",
+    "intent": "architecture",
+    "capability_engine": {
+      "available": true,
+      "keys": [
+        "structure.tree",
+        "structure.mermaid",
+        "workspace.scan",
+        "arch.analyze"
+      ],
+      "arch_analyze_module_count": 200,
+      "error": null
+    },
+    "execution_chain": {
+      "raw": [
+        "analyze",
+        "workspace",
+        "plan",
+        "write",
+        "refine",
+        "doc"
+      ],
+      "after_g4_2": [
+        "analyze",
+        "workspace",
+        "plan",
+        "write"
+      ],
+      "workspace_in_chain": true
+    },
+    "evidence_collection": {
+      "strategy": "fallback_keyword_search",
+      "project_context_files_count": 0,
+      "source_files_count": 0,
+      "search_keywords": [
+        "architecture",
+        "project"
+      ],
+      "matched_files_count": 10,
+      "matched_files": [
+        "test_local_worker_architecture.py",
+        "capabilities/analyze_architecture.py",
+        "skills/architecture_analyzer.py",
+        "skills/workspace_project_structure.py",
+        "tests/test_workspace_tools.py",
+        "skills/dependency_manager.py",
+        "tests/test_g13_e2e_pipeline.py",
+        "skills/creative_document_proposal.py",
+        "agents/maas/step_executor/refine_step.py",
+        "dependency_merger.py"
+      ],
+      "search_hits_count": 50,
+      "search_errors": []
+    },
+    "evidence_gate": {
+      "result": "passed",
+      "status": "acquired",
+      "failure_reason": "",
+      "acquired_items": 10,
+      "required": true
+    },
+    "final_task_status": "would_pass"
+  },
+  {
+    "case_id": "E3-B",
+    "prompt": "分析 qwen_worker_v2.py 的架构职责",
+    "workspace_path": "D:\\Copilot_Alphapilot\\Copilot_Alphapilot\\python_worker",
+    "timestamp": "2026-10-22T22:50:31.590987",
+    "intent": "architecture",
+    "capability_engine": {
+      "available": true,
+      "keys": [
+        "structure.tree",
+        "structure.mermaid",
+        "workspace.scan",
+        "arch.analyze"
+      ],
+      "arch_analyze_module_count": 200,
+      "error": null
+    },
+    "execution_chain": {
+      "raw": [
+        "analyze",
+        "workspace",
+        "plan",
+        "write",
+        "refine",
+        "doc"
+      ],
+      "after_g4_2": [
+        "analyze",
+        "workspace",
+        "plan",
+        "write"
+      ],
+      "workspace_in_chain": true
+    },
+    "evidence_collection": {
+      "strategy": "fallback_keyword_search",
+      "project_context_files_count": 0,
+      "source_files_count": 0,
+      "search_keywords": [
+        "architecture"
+      ],
+      "matched_files_count": 10,
+      "matched_files": [
+        "test_local_worker_architecture.py",
+        "skills/architecture_analyzer.py",
+        "capabilities/analyze_architecture.py",
+        "intent_router/_data.py",
+        "capabilities/__init__.py",
+        "file_ops.py",
+        "agents/Volcengine/step_executor/refine_step.py",
+        "capability_registry.py",
+        "agents/qwen/step_executor/plan_step.py",
+        "code_executor.py"
+      ],
+      "search_hits_count": 50,
+      "search_errors": []
+    },
+    "evidence_gate": {
+      "result": "passed",
+      "status": "acquired",
+      "failure_reason": "",
+      "acquired_items": 10,
+      "required": true
+    },
+    "final_task_status": "would_pass"
+  },
+  {
+    "case_id": "E3-C",
+    "prompt": "分析模块依赖、调用关系和分层结构",
+    "workspace_path": "D:\\Copilot_Alphapilot\\Copilot_Alphapilot\\python_worker",
+    "timestamp": "2026-10-22T22:50:32.367018",
+    "intent": "architecture",
+    "capability_engine": {
+      "available": true,
+      "keys": [
+        "structure.tree",
+        "structure.mermaid",
+        "workspace.scan",
+        "arch.analyze"
+      ],
+      "arch_analyze_module_count": 200,
+      "error": null
+    },
+    "execution_chain": {
+      "raw": [
+        "analyze",
+        "workspace",
+        "plan",
+        "write",
+        "refine",
+        "doc"
+      ],
+      "after_g4_2": [
+        "analyze",
+        "workspace",
+        "plan",
+        "write"
+      ],
+      "workspace_in_chain": true
+    },
+    "evidence_collection": {
+      "strategy": "fallback_keyword_search",
+      "project_context_files_count": 0,
+      "source_files_count": 0,
+      "search_keywords": [
+        "module"
+      ],
+      "matched_files_count": 10,
+      "matched_files": [
+        "test_multi_model_workers.py",
+        "test_step_executor_agents.py",
+        "agents/maas/step_executor/prompts.py",
+        "capabilities/scan_workspace.py",
+        "tests/test_g13_e2e_pipeline.py",
+        "intent_router/_data.py",
+        "capabilities/__init__.py",
+        "dependency_merger.py",
+        "agents/modelscope/step_executor/prompts.py",
+        "tests/test_memory_persistence.py"
+      ],
+      "search_hits_count": 50,
+      "search_errors": []
+    },
+    "evidence_gate": {
+      "result": "passed",
+      "status": "acquired",
+      "failure_reason": "",
+      "acquired_items": 10,
+      "required": true
+    },
+    "final_task_status": "would_pass"
+  },
+  {
+    "case_id": "E3-D",
+    "prompt": "分析当前项目的整体架构",
+    "workspace_path": "D:\\Copilot_Alphapilot\\Copilot_Alphapilot\\python_worker",
+    "timestamp": "2026-10-22T22:50:32.903728",
+    "intent": "architecture",
+    "capability_engine": {
+      "available": false,
+      "keys": [],
+      "arch_analyze_module_count": 0,
+      "error": null
+    },
+    "execution_chain": {
+      "raw": [
+        "analyze",
+        "workspace",
+        "plan",
+        "write",
+        "refine",
+        "doc"
+      ],
+      "after_g4_2": [
+        "analyze",
+        "workspace",
+        "plan",
+        "write"
+      ],
+      "workspace_in_chain": true
+    },
+    "evidence_collection": {
+      "strategy": "fallback_keyword_search",
+      "project_context_files_count": 0,
+      "source_files_count": 0,
+      "search_keywords": [
+        "architecture",
+        "project"
+      ],
+      "matched_files_count": 10,
+      "matched_files": [
+        "test_local_worker_architecture.py",
+        "capabilities/analyze_architecture.py",
+        "skills/architecture_analyzer.py",
+        "skills/workspace_project_structure.py",
+        "tests/test_workspace_tools.py",
+        "skills/dependency_manager.py",
+        "tests/test_g13_e2e_pipeline.py",
+        "skills/creative_document_proposal.py",
+        "agents/maas/step_executor/refine_step.py",
+        "dependency_merger.py"
+      ],
+      "search_hits_count": 50,
+      "search_errors": []
+    },
+    "evidence_gate": {
+      "result": "passed",
+      "status": "acquired",
+      "failure_reason": "",
+      "acquired_items": 10,
+      "required": true
+    },
+    "final_task_status": "would_pass"
+  }
+]

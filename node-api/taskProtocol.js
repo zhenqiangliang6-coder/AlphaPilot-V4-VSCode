@@ -25,8 +25,9 @@ function normalizeTaskSubmission(body, createId) {
     throw new TaskProtocolError('Task payload must be an object');
   }
   const requiresPrompt = type === 'task.generate' || type.endsWith('_generate');
-  if (requiresPrompt && (typeof payload.prompt !== 'string' || !payload.prompt.trim())) {
-    throw new TaskProtocolError('Task payload must include a non-empty prompt');
+  const hasImages = payload.images && Array.isArray(payload.images) && payload.images.length > 0;
+  if (requiresPrompt && !hasImages && (typeof payload.prompt !== 'string' || !payload.prompt.trim())) {
+    throw new TaskProtocolError('Task payload must include a non-empty prompt or images');
   }
   if (payload.prompt !== undefined && typeof payload.prompt !== 'string') {
     throw new TaskProtocolError('Task prompt must be a string when provided');

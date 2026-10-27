@@ -125,6 +125,10 @@ def prepare_collaboration_mode(mode, prompt, default_chain, preserve_chain=False
 
     if not automatic and not preserve_chain and mode in MODE_EXECUTION_CHAINS:
         chain = list(MODE_EXECUTION_CHAINS[mode])
+        # ⭐ G4.2: 原始链要求工作区证据时不得被模式覆盖移除
+        if "workspace" in default_chain and "workspace" not in chain:
+            _pos = chain.index("analyze") + 1 if "analyze" in chain else 0
+            chain.insert(_pos, "workspace")
 
     mode_prompt = f"[协作模式：{policy['label']}。以下模式规则优先于通用执行步骤。]\n{policy['instruction']}\n\n用户请求：\n{prompt}"
     return mode, mode_prompt, chain

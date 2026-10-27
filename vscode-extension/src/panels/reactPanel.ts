@@ -2,16 +2,17 @@
 // React Webview 面板 - 使用 Vite + React 构建的现代化 UI
 
 import * as vscode from 'vscode';
+import * as path from 'path';
+import * as crypto from 'crypto';
 import { getNonce } from '../utils/getNonce';
 import { websocketService } from '../services/websocketService';
-import { taskProtocolAdapter } from '../services/taskProtocolAdapter';
-import { applyWorkspaceDeleteOps } from '../services/workspaceDelete';
 
 export class ReactPanel {
   private static currentPanel: ReactPanel | undefined;
   private readonly panel: vscode.WebviewPanel;
   private disposables: vscode.Disposable[] = [];
   private currentTaskId: string | null = null;
+  private imageSessions: Map<string, string> = new Map();
 
   public static show(extensionUri: vscode.Uri): ReactPanel {
     if (ReactPanel.currentPanel) {
@@ -89,34 +90,32 @@ export class ReactPanel {
       });
     });
 
-    // Worker progress chunks are nested by the Node API; normalize once for the webview.
-    const forwardStreamChunk = (data: any) => {
-      const chunkData =
-        data?.chunk && typeof data.chunk === 'object' ? data.chunk : data;
-      const chunk =
-        typeof chunkData?.content === 'string'
-          ? chunkData.content
-          : typeof chunkData?.chunk === 'string'
-            ? chunkData.chunk
-            : '';
-      const taskId = data?.task_id || chunkData?.task_id;
-      if (!taskId || !chunk) {
-        console.warn('⚠️ 忽略格式无效的 stream_chunk:', data);
+    // 流式数据块
+    websocketService.on('stream_chunk', (data) => {
+      console.log('📥 WebSocket: stream_chunk 收到数据:', JSON.stringify(data, null, 2));
+      
+      // 检查数据格式
+      if (!data || !data.task_id) {
+        console.error(' stream_chunk 数据格式错误:', data);
         return;
       }
-
+      
+      console.log('📤 转发到 Webview - task_id:', data.task_id, 'chunk:', data.chunk?.substring(0, 50));
+      
       this.panel.webview.postMessage({
         type: 'stream_chunk',
-        payload: {
-          task_id: taskId,
-          chunk,
-          phase: chunkData.phase,
-          channel: chunkData.channel
-        }
+        payload: data
       });
-    };
-    websocketService.on('task_stream_chunk', forwardStreamChunk);
-    websocketService.on('stream_chunk', forwardStreamChunk);
+    });
+
+    // P1：监听产物事件
+    websocketService.on('artifact_created', (data) => {
+      console.log('[P1] Extension 收到 artifact_created:', data.artifact_id);
+      this.panel.webview.postMessage({
+        type: 'artifact_created',
+        payload: data
+      });
+    });
 
     // ⭐ v2.7 新增：监听 file_ops 事件并转发给 Webview
     websocketService.on('file_ops', (data) => {
@@ -157,6 +156,31 @@ export class ReactPanel {
       }
       
       this.currentTaskId = null;
+      this.cleanupTempImages(data.task_id);
+    });
+
+    // 兼容新版本的 task_result_v3
+    websocketService.on('task_result_v3', (data) => {
+      console.log('📥 WebSocket: task_result_v3 (compat)', data);
+      if (data.status === 'error') {
+        this.panel.webview.postMessage({
+          type: 'task_failed',
+          payload: {
+            task_id: data.task_id,
+            error: data.error || { message: 'Unknown error' }
+          }
+        });
+      } else {
+        this.panel.webview.postMessage({
+          type: 'task_completed',
+          payload: {
+            task_id: data.task_id,
+            result: data.result || data
+          }
+        });
+      }
+      this.currentTaskId = null;
+      this.cleanupTempImages(data.task_id);
     });
 
     // 兼容旧版本的 task_completed 事件
@@ -167,6 +191,7 @@ export class ReactPanel {
         payload: data
       });
       this.currentTaskId = null;
+      this.cleanupTempImages(data.task_id);
     });
 
     // 兼容旧版本的 task_failed 事件
@@ -177,6 +202,7 @@ export class ReactPanel {
         payload: data
       });
       this.currentTaskId = null;
+      this.cleanupTempImages(data.task_id);
     });
   }
 
@@ -204,33 +230,55 @@ export class ReactPanel {
   }
 
   private async handleSubmitTask(payload: any): Promise<void> {
+    let imageSessionId: string | null = null;
     try {
-      const { prompt, model } = payload;
+      const { prompt, model, images: webviewImages } = payload;
+
+      let imageRefs: { path: string; name: string }[] = [];
+
+      if (webviewImages && webviewImages.length > 0) {
+        imageSessionId = crypto.randomUUID();
+        const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri;
+        if (wsRoot) {
+          const sessionDir = vscode.Uri.joinPath(wsRoot, '.alphapilot', 'temp', imageSessionId);
+          await vscode.workspace.fs.createDirectory(sessionDir);
+
+          for (const img of webviewImages) {
+            const base64Data = (img.base64 as string).replace(/^data:image\/\w+;base64,/, '');
+            const buf = Buffer.from(base64Data, 'base64');
+            const imgPath = `.alphapilot/temp/${imageSessionId}/${img.id}.jpg`;
+            const imgUri = vscode.Uri.joinPath(wsRoot, imgPath);
+            await vscode.workspace.fs.writeFile(imgUri, buf);
+            imageRefs.push({ path: imgPath, name: img.name });
+          }
+        }
+      }
+
       const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-      
-      // 调用 Node API 提交任务
-      const submission = taskProtocolAdapter.createSubmission(model, prompt, {
-        workspace_path: workspacePath,
-        source: 'react-webview'
-      });
+
       const response = await fetch('http://localhost:3000/task/submit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(submission)
+        body: JSON.stringify({
+          type: model,
+          payload: {
+            prompt,
+            images: imageRefs.length > 0 ? imageRefs : undefined,
+            ...(workspacePath ? { workspace_path: workspacePath } : {}),
+          },
+          source: 'react-webview'
+        })
       });
 
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${await response.text()}`);
-      }
-      const data = taskProtocolAdapter.adaptSubmissionResponse(
-        await response.json(),
-        submission.trace_id
-      );
+      const data = await response.json();
       const taskId = data.task_id;
 
-      console.log('✅ 任务提交成功:', taskId);
+      console.log('✅ 任务提交成功:', taskId, imageRefs.length ? `(含 ${imageRefs.length} 张图片)` : '');
 
-      //  关键修复：立即向 Webview 发送 task_started 消息
+      if (imageSessionId) {
+        this.imageSessions.set(taskId, imageSessionId);
+      }
+
       this.panel.webview.postMessage({
         type: 'task_started',
         payload: {
@@ -240,18 +288,34 @@ export class ReactPanel {
         }
       });
 
-      // 订阅任务更新
       websocketService.subscribeTask(taskId);
       this.currentTaskId = taskId;
-      
+
     } catch (error: any) {
       console.error('❌ 提交任务失败:', error);
+      if (imageSessionId) {
+        await this.cleanupTempImages(imageSessionId);
+      }
       this.panel.webview.postMessage({
         type: 'task_failed',
         payload: {
           error: { message: error.message }
         }
       });
+    }
+  }
+
+  private async cleanupTempImages(sessionIdOrTaskId: string): Promise<void> {
+    try {
+      const sessionId = this.imageSessions.get(sessionIdOrTaskId) || sessionIdOrTaskId;
+      const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri;
+      if (!wsRoot) { return; }
+      const sessionDir = vscode.Uri.joinPath(wsRoot, '.alphapilot', 'temp', sessionId);
+      await vscode.workspace.fs.delete(sessionDir, { recursive: true, useTrash: false });
+      this.imageSessions.delete(sessionIdOrTaskId);
+      console.log('🧹 Temp images cleaned:', sessionId);
+    } catch {
+      // Directory may not exist — safe to ignore
     }
   }
 
@@ -278,25 +342,6 @@ export class ReactPanel {
         vscode.window.showErrorMessage('❌ 未打开工作区文件夹');
         return;
       }
-
-      const deletionOps = fileOps
-        .filter((op: any) => op.action === 'delete' && typeof op.path === 'string')
-        .map((op: any) => ({ op: 'delete' as const, path: op.path }));
-      if (deletionOps.length > 0) {
-        const deletion = await applyWorkspaceDeleteOps(deletionOps, workspaceRoot);
-        if (deletion.rejected.length > 0) {
-          throw new Error(deletion.rejected.join('\n'));
-        }
-        if (deletion.cancelled) {
-          this.panel.webview.postMessage({
-            type: 'file_ops_applied',
-            success: false,
-            error: '删除操作已取消',
-            taskId,
-          });
-          return;
-        }
-      }
       
       let successCount = 0;
       let errorCount = 0;
@@ -304,7 +349,6 @@ export class ReactPanel {
       // 遍历所有文件操作
       for (const op of fileOps) {
         try {
-          if (op.action === 'delete') continue;
           const uri = vscode.Uri.joinPath(workspaceRoot, op.path);
           
           if (op.action === 'create' && op.type === 'file') {
@@ -331,6 +375,13 @@ export class ReactPanel {
             // 创建目录
             await vscode.workspace.fs.createDirectory(uri);
             console.log(`✅ Created directory: ${op.path}`);
+            successCount++;
+          }
+          
+          if (op.action === 'delete') {
+            // 删除文件/目录
+            await vscode.workspace.fs.delete(uri, { recursive: true });
+            console.log(`✅ Deleted: ${op.path}`);
             successCount++;
           }
           
@@ -403,7 +454,7 @@ export class ReactPanel {
     img-src vscode-resource: https: data:; 
     connect-src http://localhost:3000 ws://localhost:3000 ${this.panel.webview.cspSource}; 
     style-src ${this.panel.webview.cspSource} 'unsafe-inline'; 
-    script-src 'nonce-${nonce}';">
+    script-src 'nonce-${nonce}' ${this.panel.webview.cspSource};">
   <title>AlphaPilot Chat</title>
   <link href="${styleUri}" rel="stylesheet">
 </head>
@@ -421,6 +472,11 @@ export class ReactPanel {
     // 取消 WebSocket 订阅
     if (this.currentTaskId) {
       websocketService.unsubscribeTask(this.currentTaskId);
+    }
+    
+    // 清理所有图片临时目录
+    for (const sessionId of this.imageSessions.values()) {
+      this.cleanupTempImages(sessionId);
     }
     
     while (this.disposables.length) {

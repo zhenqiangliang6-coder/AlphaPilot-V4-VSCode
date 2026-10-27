@@ -1,4 +1,4 @@
-// node-api/index.js
+﻿// node-api/index.js
 // ---------------------------------------------------------
 // AlphaPilot OS v3.0 Node API Server
 // 整合了 HTTP 服务、WebSocket 通信以及 FileOps Handler
@@ -133,17 +133,27 @@ const redis = redisUpstash;
 // =========================
 // 4. 初始化 FileOps Handler
 // =========================
-const workspaceRoot = process.env.WORKSPACE_ROOT;  // ⭐ 不再 fallback 到 os.tmpdir()
-const fileOpsHandler = new FileOpsHandler(workspaceRoot || null);  // ⭐ 允许初始为 null
+let workspaceRoot = process.env.WORKSPACE_ROOT || null;  // ⭐ 允许初始为 null
+const fileOpsHandler = new FileOpsHandler(workspaceRoot);  // ⭐ 允许初始为 null
 
 if (!workspaceRoot) {
     console.log('   ⚠️  WORKSPACE_ROOT 未配置，等待 VSCode 扩展设置工作区...');
+}
+
+// ⭐ 智能工作区检测：若仍为空，尝试从任务中自动学习
+function autoSetWorkspaceIfNeeded(workspacePath) {
+    if (!workspaceRoot && workspacePath) {
+        workspaceRoot = workspacePath;
+        fileOpsHandler.setWorkspace(workspacePath);
+        console.log(`   🔍 自动检测工作区: ${workspacePath}`);
+    }
 }
 
 // =========================
 // 5. WebSocket 连接管理
 // =========================
 const taskSubscriptions = new Map(); // { task_id => Set<socket_id> }
+const completedTasks = new Set();    // P1：已终态的任务 ID，用于拒绝迟到的产物事件
 const io = new Server(server, { cors: { origin: "*", methods: ["GET", "POST"] } });
 
 io.on('connection', (socket) => {
@@ -226,22 +236,35 @@ app.post('/task/submit', async (req, res) => {
         // ⭐ 统一处理所有生成类任务
         if (type === "task.generate" || type.endsWith("_generate")) {
             const { prompt } = payload;
-            if (!prompt || typeof prompt !== "string") {
-                return res.status(400).json({ error: "生成任务需要 prompt 字符串" });
+            const hasImages = payload.images && Array.isArray(payload.images) && payload.images.length > 0;
+            if ((!prompt || typeof prompt !== "string") && !hasImages) {
+                return res.status(400).json({ error: "生成任务需要 prompt 字符串或图片" });
             }
             finalPayload = {
                 prompt,
                 collaboration_mode: collaborationMode,
+                ...(payload.images && Array.isArray(payload.images)
+                    ? { images: payload.images }
+                    : {}),
                 ...(payload.context && typeof payload.context === 'object'
                     ? { context: payload.context }
                     : {}),
                 ...(typeof payload.workspace_path === 'string'
                     ? { workspace_path: payload.workspace_path }
-                    : {})
+                    : {}),
+                model: model
             };
         } else {
             finalPayload = payload;
         }
+
+        // ⭐ v3.x: Webview 未传 workspace_path 时，注入 Node 已绑定的工作区根目录
+        if (!finalPayload.workspace_path && workspaceRoot) {
+            finalPayload.workspace_path = workspaceRoot;
+        }
+
+        // ⭐ 智能工作区检测：首次任务自动学习工作区路径
+        autoSetWorkspaceIfNeeded(finalPayload.workspace_path || payload.workspace_path);
 
         // ⭐ v3.1 新增：记录任务到 Memory Service
         let userId = meta.user_id || 'default-user';
@@ -361,12 +384,22 @@ app.post('/task/notify/:task_id', async (req, res) => {
 
         // ⭐ v3.1 新增：更新任务状态到 Memory Service
         try {
-            const status = result.status || 'done';
-            const summary = result.summary || result.result_summary || '';
-            
-            await memoryService.updateTaskStatus(task_id, status, summary);
-            
-            console.log(`   🧠 [Memory] 任务状态已更新: ${status}`);
+            const { resolveStatus } = require('./taskStateContract');
+            const resolved = resolveStatus(result);
+
+            if (!resolved.valid) {
+                console.error(`   ⛔ [Contract] 任务 ${task_id} 结果契约无效`);
+                resolved.violations.forEach(v => console.error(`      - ${v.field}: ${v.message}`));
+            } else {
+                if (resolved.warnings.length > 0) {
+                    console.warn(`   ⚠️ [Contract WARNING] 任务 ${task_id}:`);
+                    resolved.warnings.forEach(w => console.warn(`      - ${w.field}: ${w.message}`));
+                }
+                const status = resolved.status;
+                const summary = result.summary || result.result_summary || '';
+                await memoryService.updateTaskStatus(task_id, status, summary);
+                console.log(`   🧠 [Memory] 任务状态已更新: ${status}`);
+            }
             
             // ⭐ 记录步骤执行结果（如果有）
             if (result.steps && Array.isArray(result.steps)) {
@@ -385,7 +418,7 @@ app.post('/task/notify/:task_id', async (req, res) => {
                             if (lastStep) {
                                 await memoryService.updateTaskStep(
                                     lastStep.id,
-                                    step.status || 'done',
+                                    step.status || 'unknown',
                                     step.output
                                 );
                             }
@@ -445,31 +478,8 @@ app.post('/task/notify/:task_id', async (req, res) => {
 });
 
 // =========================
-// 7.5. 路由：Worker 流式输出（步骤中间内容）⭐ v3.2 新增
+// 7.5. [REMOVED] Duplicate stream_chunk handler merged into section 8
 // =========================
-app.post('/task/stream_chunk/:task_id', (req, res) => {
-    try {
-        const { task_id } = req.params;
-        const chunk = req.body && typeof req.body === "object" ? req.body : {};
-
-        // ⭐ 推送给订阅者（实时步骤输出）
-        if (taskSubscriptions.has(task_id)) {
-            const subscribers = taskSubscriptions.get(task_id);
-            subscribers.forEach((socketId) => {
-                const socket = io.sockets.sockets.get(socketId);
-                if (socket) {
-                    socket.emit("task_stream_chunk", { ...chunk, task_id });
-                }
-            });
-        }
-
-        // ⭐ 必须立即结束响应，否则 Worker 会卡住并重试
-        res.json({ status: "ok" });
-    } catch (err) {
-        console.error("❌ stream_chunk 处理失败:", err);
-        res.status(500).json({ error: "Internal Server Error" });
-    }
-});
 
 // =========================
 // 7.6. 路由：Worker 流式错误输出 ⭐ v3.2 新增
@@ -523,14 +533,60 @@ app.post('/task/stream_start/:task_id', (req, res) => {
 
 app.post('/task/stream_chunk/:task_id', (req, res) => {
     const { task_id } = req.params;
-    const { content, phase, channel } = req.body;
+    const { content, phase, channel, message_type } = req.body;
     
-    // 通过 WebSocket 广播给所有订阅者
+    // P0：step_started 信封 — 步骤开始事件
+    if (message_type === 'step_started') {
+        const { step_id, step_type, phase } = req.body;
+        io.emit('step_started', { task_id, step_id, step_type, phase });
+        return res.json({ status: 'ok' });
+    }
+
+    // P0：step_finished 信封 — 步骤完成事件
+    if (message_type === 'step_finished') {
+        const { step_id, step_type } = req.body;
+        io.emit('step_finished', { task_id, step_id, step_type });
+        return res.json({ status: 'ok' });
+    }
+
+    // P1：类型化信封分支 — 产物事件走独立 WS 通道
+    if (message_type === 'artifact_created') {
+        const { artifact_id, artifact_type, format, sequence, created_at, label } = req.body;
+        
+        // 最小校验
+        if (!artifact_id || !artifact_type || !format || content === undefined) {
+            console.warn(`[P1] artifact_created 缺少必需字段: ${JSON.stringify(req.body)}`);
+            return res.status(400).json({ error: 'artifact_created 缺少必需字段' });
+        }
+        
+        // 终态检查：stream_end 已触发过的任务不再接受产物
+        if (completedTasks.has(task_id)) {
+            console.warn(`[P1] artifact_created 被拒绝: 任务 ${task_id} 已终态`);
+            return res.status(409).json({ error: '任务已终态，拒绝产物事件' });
+        }
+        
+        console.log(`[P1] artifact_created: ${artifact_id} (${artifact_type}/${format}) for task ${task_id}`);
+        
+        io.emit('artifact_created', {
+            task_id,
+            artifact_id,
+            artifact_type,
+            format,
+            content,
+            label: label || null,
+            sequence: sequence || 0,
+            created_at: created_at || Date.now(),
+        });
+        
+        return res.json({ status: "ok" });
+    }
+    
+    // 常规文本增量（现有行为不变）
     io.emit('stream_chunk', {
         task_id,
         chunk: content || '',
         phase: phase || null,
-        channel: channel || 'content',  // reasoning / content
+        channel: channel || 'content',
         timestamp: Date.now()
     });
     
@@ -557,6 +613,9 @@ app.post('/task/stream_end/:task_id', (req, res) => {
     const { task_id } = req.params;
     
     console.log(`\n✅ [Stream] stream_end: ${task_id}`);
+    
+    // P1：标记任务终态，防止迟到的产物事件
+    completedTasks.add(task_id);
     
     // 通过 WebSocket 广播给所有订阅者
     io.emit('stream_end', {
@@ -707,6 +766,7 @@ app.post('/workspace/set', (req, res) => {
         return res.status(400).json({ error: "path 不能为空" });
     }
 
+    workspaceRoot = path;
     fileOpsHandler.setWorkspace(path);
     console.log(`📁 工作区已更新为: ${path}`);
 

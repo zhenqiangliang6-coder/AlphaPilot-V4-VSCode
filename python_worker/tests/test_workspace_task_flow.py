@@ -105,7 +105,8 @@ def test_automatic_routes_control_context_write_scope_and_authorized_steps(tmp_p
     assert usage_context["meta"]["collaboration_mode"] == "teacher"
     assert "README.md" in usage_context["meta"]["project_context_files"]
     assert usage_context["final_file_ops"] == []
-    assert usage_steps == ["analyze", "plan", "respond"]
+    # Phase B fix: mentor_explain 含“项目”触发 workspace_dependency="read_only"，链含 workspace
+    assert usage_steps == ["analyze", "workspace", "plan", "respond"]
 
     _, repair_context, repair_steps = execute(
         "你帮我看看 src/app.py 这个错误是什么，并帮我解决"

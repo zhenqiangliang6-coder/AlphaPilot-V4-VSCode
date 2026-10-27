@@ -5,21 +5,31 @@
  */
 
 // ============================================================
-// 记忆类型枚举
+// 记忆类型枚举（v2.0：六大记忆分类体系）
 // ============================================================
 export enum MemoryType {
-  PREFERENCE = 'preference',      // 用户偏好
-  FACT = 'fact',                  // 事实知识
+  PREFERENCE = 'preference',      // 用户偏好：语言、风格、工作习惯
+  PROJECT_FACT = 'project_fact',  // 项目事实：技术栈、架构约束、路径约定
+  DECISION = 'decision',          // 决策：已采纳/待确认的技术决策
+  TASK_EPISODE = 'task_episode',  // 任务情景：文件修改、中断点、下一步
+  KNOWLEDGE = 'knowledge',        // 知识经验：验证过的修复方法、已知陷阱
+  FEEDBACK = 'feedback',          // 反馈纠错：用户否决、测试推翻的结论
+  CONVERSATION = 'conversation',  // 对话记忆（低价值，默认不持久化）
   SKILL = 'skill',                // 技能经验
-  CONVERSATION = 'conversation',  // 对话记忆
-  INSIGHT = 'insight'             // 洞察领悟
+  FACT = 'fact',                  // 事实知识（向后兼容）
 }
 
 export enum MemoryStatus {
-  ACTIVE = 'active',              // 活跃
-  ARCHIVED = 'archived',          // 归档
+  ACTIVE = 'active',              // 当前有效
+  PROPOSED = 'proposed',          // 模型候选，未确认
+  CONFIRMED = 'confirmed',        // 用户/流程确认
+  VERIFIED = 'verified',          // 工具/测试验证通过
+  SUPERSEDED = 'superseded',      // 已被新版本替代
+  EXPIRED = 'expired',            // 已过期不再适用
+  REJECTED = 'rejected',          // 已被明确拒绝
+  ARCHIVED = 'archived',          // 归档保留
   PRUNED = 'pruned',              // 已剪枝
-  MERGED = 'merged'               // 已合并
+  MERGED = 'merged',              // 已合并
 }
 
 // ============================================================
