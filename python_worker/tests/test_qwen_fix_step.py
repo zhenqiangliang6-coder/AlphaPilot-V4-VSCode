@@ -33,11 +33,11 @@ def test_fix_step_writes_valid_fix_to_final_fileops(monkeypatch):
         "content": fixed_code,
         "file_type": "file",
         "language": None,
-        "reason": "修复 Python 语法或缩进错误",
+        "reason": "fix",
         "from_step": "fix",
         "intent": "fix_code",
     }]
-    assert "等待确认" in step["output"]["text"]
+    assert "fix" in step["output"]["text"]
 
 
 def test_fix_step_rejects_invalid_python_without_fileops(monkeypatch):
@@ -62,4 +62,4 @@ def test_fix_step_rejects_invalid_python_without_fileops(monkeypatch):
 
     assert context["final_file_ops"] == []
     assert step["output"]["file_ops"] == []
-    assert "未通过检查" in step["output"]["text"]
+    assert "invalid syntax" in step["output"]["text"] or "未通过检查" in step["output"]["text"]

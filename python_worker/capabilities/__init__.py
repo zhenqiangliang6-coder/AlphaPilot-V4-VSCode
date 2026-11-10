@@ -17,6 +17,18 @@ from .analyze_architecture import (
     ModuleInfo,
     analyze_workspace_architecture,
 )
+from .code_analyzer import (
+    CodeStats,
+    count_lines,
+)
+from .git_upload import (
+    GitUploadResult,
+    upload_to_github,
+)
+from .shell_executor import (
+    ShellResult,
+    run_command,
+)
 
 __all__ = [
     "TreeNode",
@@ -28,4 +40,10 @@ __all__ = [
     "ArchitectureReport",
     "ModuleInfo",
     "analyze_workspace_architecture",
+    "CodeStats",
+    "count_lines",
+    "GitUploadResult",
+    "upload_to_github",
+    "ShellResult",
+    "run_command",
 ]

@@ -236,6 +236,10 @@ async function updateTaskStatus(taskId, status, resultSummary = null) {
     console.log(`[Memory] 更新任务状态: ${taskId} -> ${status}`);
     return task;
   } catch (error) {
+    if (error.code === 'P2025') {
+      console.warn(`[Memory] 任务 ${taskId} 在 PG 中不存在，跳过状态更新`);
+      return null;
+    }
     console.error('[Memory] 更新任务状态失败:', error);
     throw error;
   }

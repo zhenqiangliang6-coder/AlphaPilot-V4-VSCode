@@ -1,7 +1,20 @@
-"""Run explicitly requested Python checks and project-environment operations."""
+"""Run project-environment operations (Python venv only for Python-targeted projects)."""
 
 from ....worker_config import create_event, stream_chunk, stream_end, stream_start
 from ....workspace_tools import detect_environment_requests, setup_python_environment
+
+
+def _is_python_project(meta: dict) -> bool:
+    target_lang = (meta.get("target_language") or "python").lower()
+    if target_lang in ("python",):
+        return True
+    if target_lang in ("javascript", "typescript", "nodejs", "java", "go", "rust"):
+        return False
+    workspace_scan = meta.get("workspace_scan") or {}
+    py_count = workspace_scan.get("python_file_count", -1)
+    if py_count > 0:
+        return True
+    return target_lang == "python"
 
 
 def run_workspace_step(step, context, events, task_id=None):
@@ -15,8 +28,18 @@ def run_workspace_step(step, context, events, task_id=None):
     scan = scan or {}
     workspace_root = scan.get("root") or meta.get("workspace_path")
     if workspace_root and not _os.path.isdir(_os.path.join(workspace_root, ".venv")):
-        environment_request["create_venv"] = True
-        environment_request["install_dependencies"] = True
+        if _is_python_project(meta):
+            environment_request["create_venv"] = True
+            environment_request["install_dependencies"] = True
+        else:
+            target_lang = meta.get("target_language", "")
+            if task_id:
+                stream_chunk(
+                    task_id,
+                    f"ℹ️ 跳过 Python 虚拟环境创建（目标语言: {target_lang or '非 Python'}）",
+                    phase="workspace",
+                    channel="tool",
+                )
 
     def report(message):
         if "扫描完成" in message:

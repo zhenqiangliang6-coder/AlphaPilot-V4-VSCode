@@ -1,0 +1,267 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://alphapilot.dev/contracts/task-orchestration-v1.schema.json",
+  "title": "AlphaPilot Task Orchestration Protocol v1",
+  "description": "多 Worker 编排协议。定义多语言/多项目复合请求的分解、分发、并行执行和结果聚合格式。Worker=真相 | Extension=映射 | Webview=投影 | 协议=宪法。",
+
+  "oneOf": [
+    { "$ref": "#/$defs/orchestrationPlan" },
+    { "$ref": "#/$defs/orchestrationSubtask" },
+    { "$ref": "#/$defs/orchestrationResult" }
+  ],
+
+  "$defs": {
+    "orchestrationPlan": {
+      "type": "object",
+      "description": "编排计划：智能体分析用户输入后生成的多 Worker 执行计划。由 python_worker Orchestrator 生成，不经过 Extension/Webview。",
+      "required": [
+        "protocol_version", "orchestration_id", "trace_id",
+        "strategy", "subtasks", "created_at"
+      ],
+      "properties": {
+        "protocol_version": { "const": "1.0" },
+        "parent_task_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "父任务 ID。子任务通过 parent_task_id 关联回编排任务。与 task-protocol-v1 中的预留字段一致。"
+        },
+        "trace_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "全链路追踪 ID，贯穿 orchestrator → 所有子 Worker。"
+        },
+        "orchestration_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "编排实例唯一 ID，用于 Redis key 和结果聚合。"
+        },
+        "strategy": {
+          "type": "string",
+          "enum": ["parallel", "sequential", "dag"],
+          "description": "执行策略。parallel: 无依赖子任务并行执行。sequential: 按顺序执行。dag: 有向无环图依赖执行。"
+        },
+        "subtasks": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/orchestrationSubtask" },
+          "description": "分解后的子任务列表。每个子任务由独立的语言 Worker 执行。"
+        },
+        "original_prompt": {
+          "type": "string",
+          "minLength": 1,
+          "description": "用户原始输入，用于审计和回放。"
+        },
+        "llm_analysis": {
+          "type": "object",
+          "properties": {
+            "reasoning": { "type": "string" },
+            "languages_detected": {
+              "type": "array",
+              "items": { "type": "string", "enum": ["python", "java", "javascript", "typescript"] }
+            }
+          },
+          "description": "LLM 分类引擎的分析结果（来自 intent_router._decompose）。"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 10000,
+          "default": 600000,
+          "description": "整体编排超时时间（毫秒）。默认 10 分钟。"
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "orchestrationSubtask": {
+      "type": "object",
+      "description": "单个子任务定义。由 Orchestrator 分发到对应 Worker 的 Redis 队列。",
+      "required": [
+        "subtask_id", "worker_queue", "task_type", "payload", "depends_on"
+      ],
+      "properties": {
+        "subtask_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "子任务唯一 ID。格式: {orchestration_id}-{N}"
+        },
+        "worker_queue": {
+          "type": "string",
+          "enum": ["qwen_worker", "node_worker", "ts_worker", "java_worker"],
+          "description": "目标 Worker 的 Redis 队列名。由 Orchestrator 根据 target_language 映射: python→qwen_worker, javascript→node_worker, typescript→ts_worker, java→java_worker"
+        },
+        "task_type": {
+          "type": "string",
+          "enum": ["qwen_generate", "node_generate", "ts_generate", "java_generate"],
+          "description": "task-protocol-v1 的 type 字段。与 LANGUAGE_TO_TASK_TYPE 一致。"
+        },
+        "target_language": {
+          "type": "string",
+          "enum": ["python", "java", "javascript", "typescript"],
+          "description": "子任务的目标语言，由 LLM classify 阶段检测。"
+        },
+        "payload": {
+          "type": "object",
+          "required": ["prompt", "workspace_path"],
+          "properties": {
+            "prompt": {
+              "type": "string",
+              "minLength": 1,
+              "description": "该子任务的独立提示词（已被 Orchestrator 从原始输入拆解）。"
+            },
+            "workspace_path": {
+              "type": "string",
+              "minLength": 1,
+              "description": "子任务的独立工作区路径。格式: {root_workspace}/{subtask_id}/"
+            },
+            "task_context": {
+              "type": "object",
+              "properties": {
+                "language": {
+                  "type": "string",
+                  "enum": ["python", "java", "javascript", "typescript"]
+                }
+              }
+            }
+          }
+        },
+        "depends_on": {
+          "type": "array",
+          "items": { "type": "string", "maxLength": 128 },
+          "description": "该子任务依赖的其他 subtask_id 列表。空数组表示无依赖，可立即并行执行。"
+        },
+        "index": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "子任务在分解列表中的序号（0-based），用于结果排序。"
+        },
+        "priority": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100,
+          "default": 50,
+          "description": "子任务优先级。数值越大越优先。"
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "orchestrationResult": {
+      "type": "object",
+      "description": "编排执行结果：聚合所有子 Worker 的输出。",
+      "required": [
+        "protocol_version", "orchestration_id", "trace_id",
+        "status", "subtasks_results", "aggregated_at"
+      ],
+      "properties": {
+        "protocol_version": { "const": "1.0" },
+        "orchestration_id": { "type": "string" },
+        "trace_id": { "type": "string" },
+        "status": {
+          "type": "string",
+          "enum": ["all_success", "partial_success", "all_failed", "timeout", "cancelled"],
+          "description": "聚合状态。all_success: 全部成功。partial_success: 部分成功。all_failed: 全部失败。"
+        },
+        "subtasks_results": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["subtask_id", "status", "worker_queue"],
+            "properties": {
+              "subtask_id": { "type": "string" },
+              "status": { "type": "string", "enum": ["done", "failed", "timeout", "cancelled"] },
+              "worker_queue": { "type": "string" },
+              "target_language": { "type": "string" },
+              "result": { "type": "object", "description": "Worker 返回的 taskResult" },
+              "duration_ms": { "type": "integer" },
+              "workspace_path": { "type": "string" },
+              "generated_files": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Worker 生成的文件路径列表"
+              },
+              "error": {
+                "type": "object",
+                "properties": {
+                  "message": { "type": "string" },
+                  "step": { "type": "string" },
+                  "detail": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "aggregated_output": {
+          "type": "object",
+          "description": "聚合后的最终输出。包含所有语言项目的合并视图。",
+          "properties": {
+            "summary": { "type": "string", "description": "人类可读的执行摘要" },
+            "files_by_language": {
+              "type": "object",
+              "description": "按语言分组的生成文件映射",
+              "additionalProperties": {
+                "type": "array",
+                "items": { "type": "string" }
+              }
+            },
+            "total_files": { "type": "integer" },
+            "total_duration_ms": { "type": "integer" },
+            "warnings": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          }
+        },
+        "aggregated_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "结果聚合时间"
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "workerQueueMapping": {
+      "type": "object",
+      "description": "语言到 Worker 队列的映射表（从 _data.py LANGUAGE_TO_TASK_TYPE 派生）。此为文档性定义，运行时由 Orchestrator 内置。",
+      "properties": {
+        "python": { "const": "qwen_worker", "description": "Python 代码生成 → Qwen Worker" },
+        "javascript": { "const": "node_worker", "description": "JavaScript 代码生成 → Node.js Worker" },
+        "typescript": { "const": "ts_worker", "description": "TypeScript 代码生成 → TS Worker" },
+        "java": { "const": "java_worker", "description": "Java 代码生成 → Java Worker" }
+      }
+    },
+
+    "orchestrationFeatureToggle": {
+      "type": "object",
+      "description": "编排功能开关。用于渐进式启用多 Worker 编排而不影响现有单 Worker 路径。",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "是否启用多 Worker 编排。false 时所有请求走单 Worker 路径（向后兼容）。"
+        },
+        "max_parallel_subtasks": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "default": 4,
+          "description": "最大并行子任务数。防止资源过载。"
+        },
+        "multi_language_threshold": {
+          "type": "integer",
+          "minimum": 2,
+          "default": 2,
+          "description": "触发多 Worker 编排的最少语言数。≥此值时启用编排。"
+        }
+      }
+    }
+  }
+}

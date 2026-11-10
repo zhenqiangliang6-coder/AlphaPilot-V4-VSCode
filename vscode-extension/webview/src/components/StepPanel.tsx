@@ -8,7 +8,7 @@ interface StepPanelProps {
   isStreaming?: boolean;
 }
 
-// 步骤配置
+// 步骤配置 — 拟人化、美观的步骤名称
 const stepConfig: Record<string, {
   icon: string;
   label: string;
@@ -17,60 +17,95 @@ const stepConfig: Record<string, {
   bgColor: string;
 }> = {
   analyze: {
-    icon: '',
-    label: '分析需求',
-    description: '理解任务需求和上下文',
+    icon: '🔍',
+    label: '理解需求',
+    description: '正在分析你的任务需求…',
     color: 'blue',
     bgColor: 'bg-blue-500'
   },
   plan: {
     icon: '📋',
-    label: '制定计划',
-    description: '设计实现方案和步骤',
+    label: '规划方案',
+    description: '设计最优的实现路线图',
     color: 'yellow',
     bgColor: 'bg-yellow-500'
   },
   write: {
     icon: '✍️',
     label: '编写代码',
-    description: '生成具体代码实现',
+    description: '将想法转化为优雅的代码',
     color: 'green',
     bgColor: 'bg-green-500'
   },
   refine: {
-    icon: '⚡',
-    label: '优化改进',
-    description: '优化和改进代码质量',
+    icon: '✨',
+    label: '打磨优化',
+    description: '精雕细琢，让代码更出色',
     color: 'purple',
     bgColor: 'bg-purple-500'
   },
   test: {
-    icon: '✅',
-    label: '测试验证',
-    description: '验证功能正确性',
+    icon: '🧪',
+    label: '运行测试',
+    description: '验证每个功能都完美运行',
     color: 'cyan',
     bgColor: 'bg-cyan-500'
   },
   fix: {
     icon: '🔧',
     label: '修复问题',
-    description: '修复发现的错误',
+    description: '快速定位并修复发现的问题',
     color: 'orange',
     bgColor: 'bg-orange-500'
   },
   doc: {
     icon: '📄',
-    label: '生成文档',
-    description: '生成项目文档',
+    label: '编写文档',
+    description: '为项目生成清晰的使用文档',
     color: 'pink',
     bgColor: 'bg-pink-500'
   },
   docstring: {
     icon: '📝',
-    label: '生成注释',
-    description: '为代码添加文档字符串',
+    label: '补充注释',
+    description: '为代码添加详细的文档字符串',
     color: 'indigo',
     bgColor: 'bg-indigo-500'
+  },
+  respond: {
+    icon: '💬',
+    label: '整理回复',
+    description: '组织语言，给你最清晰的回答',
+    color: 'teal',
+    bgColor: 'bg-teal-500'
+  },
+  profile: {
+    icon: '📊',
+    label: '性能分析',
+    description: '检测瓶颈，让代码跑得更快',
+    color: 'rose',
+    bgColor: 'bg-rose-500'
+  },
+  operate: {
+    icon: '🛠️',
+    label: '执行操作',
+    description: '处理系统级任务和配置',
+    color: 'slate',
+    bgColor: 'bg-slate-500'
+  },
+  changelog: {
+    icon: '📋',
+    label: '生成日志',
+    description: '记录本次更新的所有变更',
+    color: 'amber',
+    bgColor: 'bg-amber-500'
+  },
+  deploy: {
+    icon: '🚀',
+    label: '部署项目',
+    description: '将项目推送到目标环境',
+    color: 'emerald',
+    bgColor: 'bg-emerald-500'
   }
 };
 

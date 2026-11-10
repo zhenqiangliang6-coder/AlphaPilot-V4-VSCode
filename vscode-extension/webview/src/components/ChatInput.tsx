@@ -5,10 +5,14 @@ import { submitTask, ImageAttachment, BROWSER_SAFETY_MAX_RAW_BYTES } from '../ut
 
 const DEFAULT_MAX_IMAGES = 3;
 
-export const ChatInput: React.FC = () => {
+interface ChatInputProps {
+  conversationId?: string;
+}
+
+export const ChatInput: React.FC<ChatInputProps> = ({ conversationId }) => {
   const [input, setInput] = useState('');
   const [images, setImages] = useState<ImageAttachment[]>([]);
-  const { selectedModel, isStreaming, setPendingImages, visionLimits } = useChatStore();
+  const { selectedModel, isStreaming, setPendingImages, visionLimits, addMessage } = useChatStore();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -33,8 +37,14 @@ export const ChatInput: React.FC = () => {
     );
     setPendingImages(previewImages);
 
-    // Transferable Objects — 零拷贝传输 ArrayBuffer
-    await submitTask(input.trim(), selectedModel, images.length > 0 ? images : undefined);
+    const trimmedInput = input.trim();
+    addMessage({
+      id: `user-${Date.now()}`,
+      role: 'user',
+      content: trimmedInput,
+      timestamp: Date.now(),
+    });
+    await submitTask(trimmedInput, selectedModel, images.length > 0 ? images : undefined, conversationId);
 
     setInput('');
     setImages([]);

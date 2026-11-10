@@ -6,6 +6,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 // =========================
 // 1. Validator (验证层)
@@ -105,8 +106,9 @@ class FileOpsValidator {
 // 2. Executor (执行层)
 // =========================
 class FileOpsExecutor {
-    constructor(workspaceRoot) {
+    constructor(workspaceRoot, pathGuard = null) {
         this.workspaceRoot = workspaceRoot;
+        this.pathGuard = pathGuard;
     }
 
     /**
@@ -127,31 +129,68 @@ class FileOpsExecutor {
 
         switch (op.op) {
             case 'create':
+            case 'modify':
             case 'test':
             case 'doc':
-                this.ensureDirectoryExists(op.path);
-                fs.writeFileSync(fullPath, op.content || '', 'utf-8');
-                return { status: 'success', action: 'write', path: op.path };
+                if (this.pathGuard) {
+                    try {
+                        const targetPath = op.op === 'create' || op.op === 'test' || op.op === 'doc'
+                            ? this._validateWritePath(op.path, fullPath)
+                            : this._validateModifyPath(op.path, fullPath);
+                        this.ensureDirectoryExists(op.path);
+                        fs.writeFileSync(targetPath, op.content || '', 'utf-8');
+                        return { status: 'success', action: 'write', path: op.path };
+                    } catch (e) {
+                        if (e.name === 'PathGuardAuthorizationDenied') {
+                            return { status: 'error', path: op.path, error: `PathGuard 拒绝写入: ${e.message}` };
+                        }
+                        throw e;
+                    }
+                }
 
-            case 'modify':
-                if (!fs.existsSync(fullPath)) {
-                    // 如果文件不存在，则视为 create
+                if (op.op === 'modify') {
+                    if (!fs.existsSync(fullPath)) {
+                        this.ensureDirectoryExists(op.path);
+                    }
+                } else {
                     this.ensureDirectoryExists(op.path);
                 }
                 fs.writeFileSync(fullPath, op.content || '', 'utf-8');
-                return { status: 'success', action: 'modify', path: op.path };
+                return { status: 'success', action: op.op === 'modify' ? 'modify' : 'write', path: op.path };
 
             case 'delete':
                 throw new Error('删除操作必须通过 VS Code 工作区删除工具，以确保回收站与用户确认策略生效');
 
             case 'meta':
             case 'depends':
-                // 仅存储元数据，不写文件
                 return { status: 'success', action: 'store_meta', data: op.data };
 
             default:
                 throw new Error(`未知的操作: ${op.op}`);
         }
+    }
+
+    _validateWritePath(relativePath, fullPath) {
+        try {
+            return this.pathGuard.validateWrite(fullPath);
+        } catch (e) {
+            if (e.name === 'PathGuardAuthorizationDenied') {
+                throw e;
+            }
+            try {
+                this.pathGuard.validateWrite(fullPath);
+            } catch (inner) {
+                throw inner;
+            }
+            throw e;
+        }
+    }
+
+    _validateModifyPath(relativePath, fullPath) {
+        if (fs.existsSync(fullPath)) {
+            return this.pathGuard.validateWrite(fullPath);
+        }
+        return this.pathGuard.validateWrite(fullPath);
     }
 
     /**
@@ -175,10 +214,10 @@ class FileOpsExecutor {
 // 3. Dispatcher (分发层)
 // =========================
 class FileOpsHandler {
-    constructor(workspaceRoot) {
-        this.workspaceRoot = workspaceRoot;  // ⭐ 可能为 null，等待 /workspace/set 设置
+    constructor(workspaceRoot, pathGuard = null) {
+        this.workspaceRoot = workspaceRoot;
         this.validator = new FileOpsValidator(workspaceRoot || '');
-        this.executor = new FileOpsExecutor(workspaceRoot || '');
+        this.executor = new FileOpsExecutor(workspaceRoot || '', pathGuard);
     }
 
     /**
@@ -196,6 +235,14 @@ class FileOpsHandler {
     }
 
     /**
+     * 设置 PathGuard（Phase 2.3+）
+     */
+    setPathGuard(pathGuard) {
+        this.executor.pathGuard = pathGuard;
+        console.log(`[FileOpsHandler] ✅ PathGuard 已绑定: ${pathGuard.contextHash?.slice(0, 12) || 'unknown'}`);
+    }
+
+    /**
      * 检查是否已配置工作区
      */
     isWorkspaceConfigured() {
@@ -204,8 +251,11 @@ class FileOpsHandler {
 
     /**
      * 处理来自 Worker 的 file_ops 请求
+     *
+     * @param {Array} fileOps 待执行的 FileOps
+     * @param {string} [taskId] 任务 ID，用于审计快照；未提供时自动生成
      */
-    async handleRequest(fileOps) {
+    async handleRequest(fileOps, taskId) {
         // ⭐ 检查工作区是否已配置
         if (!this.isWorkspaceConfigured()) {
             console.error('[FileOpsHandler] ❌ 错误: 工作区未配置，请先调用 /workspace/set');
@@ -231,6 +281,10 @@ class FileOpsHandler {
             return { success: false, errors };
         }
 
+        // ⭐ G1/G2 治理：写盘前自动快照（含 SHA256），保证失败可回滚、基线不污染
+        const governanceTaskId = taskId || `t_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+        const snapshot = this._snapshotBeforeWrite(fileOps, governanceTaskId);
+
         // 2. 执行阶段
         try {
             const results = await this.executor.executeBatch(fileOps);
@@ -249,10 +303,125 @@ class FileOpsHandler {
                     path: result.path,
                     error: result.error,
                 })),
+                governance: {
+                    task_id: governanceTaskId,
+                    snapshot_path: snapshot.snapshot_path,
+                    files_snapshotted: snapshot.files_snapshotted,
+                    files_created: snapshot.files_created,
+                },
             };
         } catch (error) {
             return { success: false, error: error.message };
         }
+    }
+
+    /**
+     * G1：写盘前自动快照。
+     * 对每个将要被 create/modify/test/doc 操作触达的文件，记录其原始内容、SHA256、
+     * 大小与修改时间，写入工作区内 .alphapilot/governance/<taskId>/snapshot.json。
+     * 已存在文件记录原始基线；不存在文件标记为"新增"，供回滚时删除。
+     */
+    _snapshotBeforeWrite(fileOps, taskId) {
+        const snapshotDir = this._governanceDir(taskId);
+        const snapshotPath = path.join(snapshotDir, 'snapshot.json');
+        const files = {};
+        const filesCreated = [];
+
+        for (const op of fileOps) {
+            if (!op || !op.path) continue;
+            if (!['create', 'modify', 'test', 'doc'].includes(op.op)) continue;
+
+            const fullPath = path.join(this.workspaceRoot, op.path);
+            if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
+                const content = fs.readFileSync(fullPath, 'utf-8');
+                const stat = fs.statSync(fullPath);
+                files[op.path] = {
+                    existed: true,
+                    content,
+                    sha256: crypto.createHash('sha256').update(content, 'utf-8').digest('hex'),
+                    size: stat.size,
+                    mtime_ms: stat.mtimeMs,
+                };
+            } else {
+                files[op.path] = { existed: false };
+                filesCreated.push(op.path);
+            }
+        }
+
+        const snapshot = {
+            task_id: taskId,
+            created_at: new Date().toISOString(),
+            workspace_root: this.workspaceRoot,
+            files,
+        };
+
+        try {
+            fs.mkdirSync(snapshotDir, { recursive: true });
+            fs.writeFileSync(snapshotPath, JSON.stringify(snapshot, null, 2), 'utf-8');
+            console.log(`[FileOpsHandler] 📸 快照已生成: ${snapshotPath} (${Object.keys(files).length} 个文件)`);
+        } catch (e) {
+            console.error(`[FileOpsHandler] ⚠️ 快照生成失败（不影响写盘，但失去回滚能力）: ${e.message}`);
+        }
+
+        return {
+            snapshot_path: snapshotPath,
+            files_snapshotted: Object.keys(files).length,
+            files_created: filesCreated,
+        };
+    }
+
+    /**
+     * 治理快照目录：<workspaceRoot>/.alphapilot/governance/<taskId>
+     */
+    _governanceDir(taskId) {
+        return path.join(this.workspaceRoot, '.alphapilot', 'governance', taskId);
+    }
+
+    /**
+     * G4：回滚到指定任务的写盘前基线。
+     * 恢复快照中 existed=true 的文件，删除快照中 existed=false 但当前存在的新增文件。
+     * 返回恢复/删除的文件列表，以及错误（如有）。
+     */
+    rollback(taskId) {
+        const snapshotPath = path.join(this._governanceDir(taskId), 'snapshot.json');
+        if (!fs.existsSync(snapshotPath)) {
+            return { success: false, error: `快照不存在: ${snapshotPath}` };
+        }
+
+        const snapshot = JSON.parse(fs.readFileSync(snapshotPath, 'utf-8'));
+        const restored = [];
+        const deleted = [];
+        const errors = [];
+
+        for (const [relPath, meta] of Object.entries(snapshot.files || {})) {
+            const fullPath = path.join(this.workspaceRoot, relPath);
+            try {
+                if (meta.existed) {
+                    fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+                    fs.writeFileSync(fullPath, meta.content, 'utf-8');
+                    restored.push(relPath);
+                } else if (fs.existsSync(fullPath)) {
+                    fs.unlinkSync(fullPath);
+                    deleted.push(relPath);
+                }
+            } catch (e) {
+                errors.push({ path: relPath, error: e.message });
+            }
+        }
+
+        console.log(`[FileOpsHandler] ♻️ 回滚完成: 恢复 ${restored.length} 个文件, 删除 ${deleted.length} 个文件${errors.length ? `, ${errors.length} 个错误` : ''}`);
+        return { success: errors.length === 0, restored, deleted, errors };
+    }
+
+    /**
+     * 读取指定任务的快照（用于审计）
+     */
+    getSnapshot(taskId) {
+        const snapshotPath = path.join(this._governanceDir(taskId), 'snapshot.json');
+        if (!fs.existsSync(snapshotPath)) {
+            return null;
+        }
+        return JSON.parse(fs.readFileSync(snapshotPath, 'utf-8'));
     }
 }
 

@@ -9,8 +9,29 @@ from .context_builder import (
     search_project_files,
 )
 from .intent_router import IntentRouter
+from .conversation_context import (
+    ConversationTurn,
+    build_conversation_context,
+    get_conversation_store,
+    inject_conversation_context,
+    save_conversation_turn,
+)
 from .memory_integration import project_memory_user_id
 from .skills import route_skill
+
+try:
+    from .task_context_contract import (
+        build_or_extract_task_context,
+        CompatibilityPolicy,
+        TaskContextValidationError,
+    )
+    _TASK_CONTEXT_AVAILABLE = True
+except ImportError:
+    print("[WARN] task_context_contract 不可用，将使用兼容模式")
+    _TASK_CONTEXT_AVAILABLE = False
+    build_or_extract_task_context = None
+    CompatibilityPolicy = None
+    TaskContextValidationError = None
 
 try:
     from .memory_integration import (
@@ -93,6 +114,29 @@ def _extract_keywords(prompt: str) -> list:
     return keywords
 
 
+def _extract_conversation_id(payload: dict) -> str | None:
+    """从 payload 多位置安全提取 conversation_id（兼容 Node.js / task_context 双路径）。"""
+    if not isinstance(payload, dict):
+        return None
+    # 路径 A：payload 顶层 conversation_id（Node.js 透传路径）
+    cid = payload.get("conversation_id")
+    if cid and isinstance(cid, str):
+        return cid
+    # 路径 B：payload.task_context.conversation_id（Worker 内建路径）
+    task_ctx = payload.get("task_context")
+    if isinstance(task_ctx, dict):
+        cid = task_ctx.get("conversation_id")
+        if cid and isinstance(cid, str):
+            return cid
+    # 路径 C：payload.context.conversation_id（兼容旧协议字段）
+    plain_ctx = payload.get("context")
+    if isinstance(plain_ctx, dict):
+        cid = plain_ctx.get("conversation_id")
+        if cid and isinstance(cid, str):
+            return cid
+    return None
+
+
 def prepare_worker_request(payload, task_id, task_type, model_name, protocol_metadata=None):
     """Build Qwen-parity routing, context, memory, skill, and task metadata."""
     original_prompt = payload.get("prompt", "")
@@ -100,6 +144,24 @@ def prepare_worker_request(payload, task_id, task_type, model_name, protocol_met
         raise ValueError("prompt 不能为空")
 
     workspace_path = payload.get("workspace_path")
+
+    task_context = None
+    compat_warning = False
+    if _TASK_CONTEXT_AVAILABLE and build_or_extract_task_context is not None:
+        try:
+            task_context = build_or_extract_task_context(payload)
+            if task_context.compatibility_policy == CompatibilityPolicy.COMPAT_READONLY:
+                compat_warning = True
+            workspace_path = task_context.target_project_path or workspace_path
+            print(f"[WorkerRuntime] task_context loaded: mode={task_context.project_mode} "
+                  f"compat={task_context.compatibility_policy} "
+                  f"hash={task_context.context_hash[:12]}... "
+                  f"read={len(task_context.allowed_paths.read)} "
+                  f"write={len(task_context.allowed_paths.write)} "
+                  f"execute={len(task_context.allowed_paths.execute)}")
+        except TaskContextValidationError as e:
+            print(f"[WorkerRuntime] task_context validation failed: {e.reason_code} - {e}")
+            task_context = None
     user_id = project_memory_user_id(
         payload.get("project_path") or workspace_path
     )
@@ -112,6 +174,14 @@ def prepare_worker_request(payload, task_id, task_type, model_name, protocol_met
                 prompt = enhance_prompt_with_memory(original_prompt, memory_context)
         except Exception as error:
             print(f"[WARN] [{model_name}] 记忆检索失败，继续处理原始请求: {error}")
+
+    # ── P3 短期记忆注入：读回上一轮历史，叠加到本轮 Prompt ──
+    conversation_id = _extract_conversation_id(payload)
+    if conversation_id:
+        try:
+            prompt = inject_conversation_memory(prompt, conversation_id)
+        except Exception as cv_err:
+            print(f"[WARN] [Conversation] 短期记忆注入降级: {cv_err}")
 
     detected_intent, detected_persona, detected_chain = IntentRouter.detect_intent(original_prompt, model_name=model_name)
     project_context = ""
@@ -228,6 +298,8 @@ def prepare_worker_request(payload, task_id, task_type, model_name, protocol_met
         "source_files": source_files,
         "has_memory": memory_context.has_memory if memory_context else False,
         "memory_user_id": user_id,
+        # P3 短期记忆闭环：conversation_id 保留进 meta，供 save_worker_memory 写回
+        "conversation_id": conversation_id,
         "skill": skill.as_dict() if skill else None,
         "task_goal": task_context.get("task_goal", original_prompt),
         "repair_rounds": int(task_context.get("repair_rounds", 0) or 0),
@@ -269,7 +341,17 @@ def save_worker_memory(user_id, task_id, task_type, intent, result, steps, conte
             user_id=user_id,
             task_id=task_id,
             result={
-                "status": "success",
+                "status": (
+                    "failed"
+                    if any(
+                        isinstance(s, dict) and (
+                            s.get("type") == "error"
+                            or s.get("error") not in (None, "", False)
+                        )
+                        for s in steps or ()
+                    )
+                    else "success"
+                ),
                 "content": result[:500] if result else "",
                 "steps": steps,
             },
@@ -282,3 +364,88 @@ def save_worker_memory(user_id, task_id, task_type, intent, result, steps, conte
         )
     except Exception as error:
         print(f"[WARN] [{task_type}] 记忆保存失败: {error}")
+
+    # ── P3 短期记忆闭环：conversation_id 存在时自动写回 ConversationStore ──
+    conv_id = meta.get("conversation_id")
+    if conv_id:
+        try:
+            save_conversation_memory(
+                conv_id,
+                intent=intent,
+                prompt=meta.get("user_request", ""),
+                outcome=(
+                    "failed"
+                    if any(
+                        isinstance(s, dict) and (
+                            s.get("type") == "error"
+                            or s.get("error") not in (None, "", False)
+                        )
+                        for s in steps or ()
+                    )
+                    else "success"
+                ),
+                conclusion=(result[:300] if isinstance(result, str) else str(result)[:300]),
+                workspace_path=workspace_path,
+            )
+        except Exception as cv_err:
+            print(f"[WARN] [Conversation] 短期记忆写入失败: {cv_err}")
+
+
+def save_conversation_memory(
+    conversation_id: str,
+    *,
+    intent: str = "",
+    prompt: str = "",
+    outcome: str = "success",
+    conclusion: str = "",
+    ts: int = 0,
+    workspace_path: str | None = None,
+) -> ConversationTurn:
+    """写入单轮短期会话记忆到全局 ConversationStore。
+
+    P3 写端接口：从执行结果组装 ConversationTurn 并持久化。自动维护 turn 序号，
+    原子递增，同 conversation_id 下不重复。
+
+    返回组装并已持久化的 ConversationTurn 实例。
+    """
+    import time
+    store = get_conversation_store()
+    existing_turns = store.get_turns(conversation_id)
+    next_turn_number = max((t.turn for t in existing_turns), default=0) + 1
+
+    if ts <= 0:
+        ts = int(time.time() * 1000)
+
+    turn = ConversationTurn(
+        turn=next_turn_number,
+        prompt=prompt,
+        intent=intent,
+        changed_files=[],
+        failure="",
+        next_plan="",
+        outcome=outcome,
+        ts=ts,
+        file_mtimes={},
+        conclusion=conclusion,
+    )
+    save_conversation_turn(store, conversation_id, turn)
+    return turn
+
+
+def inject_conversation_memory(prompt: str, conversation_id: str, *, max_turns: int = 5) -> str:
+    """读回短期会话历史，安全注入到本轮 Prompt。
+
+    P3 读端接口：
+      - 无 conversation_id 或无有效历史 → 零注入，原样返回 prompt
+      - 自动排除 outcome ∈ {failed, abandoned} 的轮次
+      - 自动追加反注入声明，防御历史指令劫持
+    """
+    if not conversation_id or not isinstance(conversation_id, str):
+        return prompt
+    try:
+        store = get_conversation_store()
+        ctx = build_conversation_context(store, conversation_id, prompt, max_turns=max_turns)
+        return inject_conversation_context(prompt, ctx)
+    except Exception as cv_err:
+        print(f"[WARN] [Conversation] 短期记忆注入降级：{cv_err}")
+        return prompt

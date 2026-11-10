@@ -64,6 +64,11 @@ if not _has_proxy:
     elif not os.environ.get("HF_ENDPOINT"):
         os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
+_persistent_cache = os.path.join(os.path.expanduser("~"), ".cache", "fastembed_cache")
+os.makedirs(_persistent_cache, exist_ok=True)
+if not os.environ.get("FASTEMBED_CACHE_PATH"):
+    os.environ["FASTEMBED_CACHE_PATH"] = _persistent_cache
+
 # ============================================================
 # 模型注册表
 # ============================================================
@@ -138,7 +143,7 @@ class LocalEmbeddingProvider:
         safe_name = model_name.replace("/", "--")
 
         # 尝试 1: ModelScope
-        modelscope_dir = os.path.join(tempfile.gettempdir(), "fastembed_cache", "modelscope", safe_name)
+        modelscope_dir = os.path.join(_persistent_cache, "modelscope", safe_name)
         if os.path.isdir(modelscope_dir) and os.listdir(modelscope_dir):
             print(f"[embed] 已有 ModelScope 缓存: {modelscope_dir}", flush=True)
             return modelscope_dir

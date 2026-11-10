@@ -228,14 +228,18 @@ ERROR_PATTERNS = [
     (r"NameError:\s*name '([^']+)' is not defined", 'name_error'),
     (r"fixture '([^']+)' not found", 'fixture_not_found'),
     (r"AssertionError", 'assertion_error'),
+    (r"AttributeError:\s*'([^']+)' object has no attribute '([^']+)'", 'attribute_error'),
     (r"AttributeError:\s*'([^']+)' object has no attribute", 'attribute_error'),
     (r"FileNotFoundError:.*'([^']+)'", 'file_not_found'),
     (r"TypeError:\s*([^\n]+)", 'type_error'),
+    (r"OperationalError.*?no such table", 'missing_table'),
+    (r"sqlite3\.OperationalError", 'missing_table'),
 ]
 
 PRIORITY = {
     'module_not_found': 10,
     'no_tests': 9,
+    'missing_table': 9,
     'syntax': 8,
     'import_error': 7,
     'fixture_not_found': 6,
@@ -257,6 +261,8 @@ def classify_top_error(test_output):
         if m:
             name = m.group(1) if m.lastindex and m.lastindex >= 1 else ''
             info = {'name': name, 'raw': m.group(0)}
+            if m.lastindex and m.lastindex >= 2:
+                info['missing_attr'] = m.group(2)
             prio = PRIORITY.get(etype, 0)
             if prio > best_prio:
                 best = (etype, info)
@@ -413,7 +419,21 @@ def _route_fix(error_type, error_info, source_files, test_output,
         return _fix_import_enhanced(error_info, source_files, test_output,
                                     project_dir, llm_call_fn, symbol_index)
 
-    elif error_type in ('assertion_error', 'attribute_error', 'type_error'):
+    elif error_type == 'missing_table':
+        return _fix_missing_table(source_files, project_dir)
+
+    elif error_type == 'attribute_error':
+        attr_name = error_info.get('missing_attr', '')
+        obj_type = error_info.get('name', '')
+        if obj_type in ('APIRouter', 'Router') and attr_name == 'router':
+            return _fix_router_attribute(source_files)
+        contracts_text = _format_contracts_for_prompt(
+            _build_contract_stubs(source_files)
+        )
+        return _fix_logic_enhanced(error_info, source_files, test_output,
+                                   llm_call_fn, contracts_text)
+
+    elif error_type in ('assertion_error', 'type_error'):
         contracts_text = _format_contracts_for_prompt(
             _build_contract_stubs(source_files)
         )
@@ -591,6 +611,146 @@ def _fix_logic_enhanced(error_info, source_files, test_output, llm_call_fn, cont
         pass
 
     return {'status': 'failed', 'reason': 'logic fix failed'}
+
+
+# ================================================================
+#  缺表修复 — 添加 Base.metadata.create_all(bind=engine)
+# ================================================================
+
+def _fix_missing_table(source_files, project_dir):
+    table_keywords = ['no such table', 'OperationalError']
+    fixed_files = {}
+
+    for fp, code in source_files.items():
+        if 'database.py' not in fp and 'conftest.py' not in fp and 'main.py' not in fp:
+            continue
+        if 'Base.metadata.create_all' in code:
+            continue
+        if 'SessionLocal' not in code and 'engine' not in code and 'app = FastAPI' not in code:
+            continue
+
+        if 'Base = declarative_base()' in code:
+            code = code.replace(
+                'Base = declarative_base()',
+                'Base = declarative_base()\n\nBase.metadata.create_all(bind=engine)'
+            )
+        elif 'engine = create_engine' in code:
+            lines = code.split('\n')
+            new_lines = []
+            base_found = False
+            for line in lines:
+                new_lines.append(line)
+                if 'Base = declarative_base()' in line and not base_found:
+                    new_lines.append('Base.metadata.create_all(bind=engine)')
+                    base_found = True
+            code = '\n'.join(new_lines)
+
+        try:
+            compile(code, fp, 'exec')
+            if fp in source_files and code != source_files[fp]:
+                fixed_files[fp] = code
+        except SyntaxError:
+            pass
+
+    if fixed_files:
+        return {
+            'status': 'fixed',
+            'action': f'missing_table_fix:{",".join(fixed_files.keys())}',
+            'updated_files': fixed_files,
+        }
+
+    for fp, code in source_files.items():
+        if 'Base = declarative_base()' not in code:
+            continue
+        fixed = code.replace(
+            'Base = declarative_base()',
+            'Base = declarative_base()\n\nBase.metadata.create_all(bind=engine)'
+        )
+        try:
+            compile(fixed, fp, 'exec')
+            if fp in source_files and fixed != source_files[fp]:
+                fixed_files[fp] = fixed
+        except SyntaxError:
+            pass
+
+    if fixed_files:
+        return {
+            'status': 'fixed',
+            'action': f'missing_table_fix:{",".join(fixed_files.keys())}',
+            'updated_files': fixed_files,
+        }
+
+    return {'status': 'failed', 'reason': 'missing_table fix failed'}
+
+
+# ================================================================
+#  APIRouter 实例属性误用修复 — 确定性规则引擎
+#  Pattern: main.py 中 __init__.py 已导出实例但仍用 .router 访问
+# ================================================================
+
+def _fix_router_attribute(source_files):
+    """修复 APIRouter 实例被当作模块访问 .router 属性的问题。
+
+    场景: backend/routers/__init__.py 已通过
+      from .orders import router as orders_router
+    导出实例, 但 main.py 中写了 orders_router.router。
+    """
+    fixed_files = {}
+    router_names = _discover_exported_routers(source_files)
+
+    for fp, code in source_files.items():
+        if not _is_main_or_launcher(fp):
+            continue
+        modified = code
+        for rname, is_instance in router_names.items():
+            if not is_instance:
+                continue
+            pattern = rf'{re.escape(rname)}\.router\b'
+            if re.search(pattern, modified):
+                modified = re.sub(pattern, rname, modified)
+        if modified != code:
+            try:
+                compile(modified, fp, 'exec')
+                fixed_files[fp] = modified
+            except SyntaxError:
+                pass
+
+    if fixed_files:
+        return {
+            'status': 'fixed',
+            'action': f'router_attr_fix:{",".join(fixed_files.keys())}',
+            'updated_files': fixed_files,
+        }
+    return {'status': 'failed', 'reason': 'router attribute fix failed'}
+
+
+def _discover_exported_routers(source_files):
+    """扫描 __init__.py 查找已作为实例导出的 router 别名。
+
+    返回: {name: is_instance}，如 {"orders_router": True}
+    """
+    routers = {}
+    for fp, code in source_files.items():
+        if '__init__.py' not in fp:
+            continue
+        for m in re.finditer(
+            r'from\s+\S+\s+import\s+(\w+)\s+as\s+(\w+)',
+            code,
+        ):
+            source_name = m.group(1)
+            alias = m.group(2)
+            if 'router' in source_name.lower() or 'router' in alias.lower():
+                routers[alias] = True
+    return routers
+
+
+def _is_main_or_launcher(fp):
+    """判断文件是否为主入口/启动文件。"""
+    fp_lower = fp.lower()
+    return any(
+        name in fp_lower
+        for name in ('main.py', 'app.py', 'launch.py', 'run.py', 'server.py')
+    )
 
 
 # ================================================================

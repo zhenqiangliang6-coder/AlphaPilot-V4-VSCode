@@ -599,8 +599,22 @@ def validate_architecture_evidence(meta: Dict[str, Any]) -> EvidenceGate:
 
     # R1: 存在性
     if not arch_evidence or not isinstance(arch_evidence, dict):
+        # G8.10-R3: 空工作区/未扫描 = 架构设计任务，三层回退
+        # 1) _capability_results.workspace.scan（步骤执行时写入）
+        # 2) meta.workspace_scan（任务完成后回写，可能为 null）
+        # 3) 直接查 meta 顶层字段
+        _ws = meta.get("workspace_scan")
+        _is_empty = _ws is None or (isinstance(_ws, dict) and _ws.get("python_file_count", -1) == 0)
+        if _is_empty:
+            return EvidenceGate(required=False)
+
         cap_results = meta.get("_capability_results", {})
         if isinstance(cap_results, dict) and "workspace.scan" in cap_results:
+            _scan = cap_results["workspace.scan"]
+            if isinstance(_scan, dict):
+                _py_count = _scan.get("python_file_count", -1)
+                if _py_count == 0:
+                    return EvidenceGate(required=False)
             gate.mark_failed(
                 "架构分析执行失败：arch.analyze 执行异常，未产出有效输出"
             )

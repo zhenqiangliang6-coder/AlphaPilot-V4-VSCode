@@ -434,7 +434,7 @@ def run_write_step(step, context, events, task_id=None):
                     user_query = "请帮我解答这个问题。"
 
             # 调用 LLM
-            base_prompt = f"你是一个专业的编程助手。请回答以下问题：\n\n{user_query}"
+            base_prompt = f"你是一个专业的编程专家。请回答以下问题：\n\n{user_query}"
 
         # ⭐ 注入 persona system_prompt
         persona_config = meta.get("persona_config", {})

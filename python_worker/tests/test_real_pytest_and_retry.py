@@ -9,13 +9,10 @@
 #   4. 失败路径：持续失败→3次上限→退出
 # ================================================================
 
-import os
 import sys
 import tempfile
-import json
-import uuid
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 
@@ -26,7 +23,14 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]  # Copilot_Alphapilot/
 sys.path.insert(0, str(_PROJECT_ROOT))
 
 from python_worker.agents.qwen.step_executor.test_step import _run_pytest
-from python_worker.agents.qwen import qwen_worker_v2
+from python_worker.agents.qwen import step_runner
+from python_worker.task_state_contract import (
+    STEP_STATE_AWAITING_AUTHORIZATION,
+    STEP_STATE_COMPLETED,
+    STEP_STATE_FAILED,
+    STEP_STATE_SKIPPED,
+    STEP_STATE_PENDING,
+)
 
 
 class TestRunPytest:
@@ -91,145 +95,128 @@ class TestRunPytest:
 
 
 class TestWorkerRetryLoop:
-    """L3: 验证 Worker test→fix→retest 闭环。"""
+    """L3: 验证步骤执行器中的测试授权和 test→fix→retest 状态机。"""
 
-    @pytest.fixture
-    def sandbox_ws(self):
-        d = tempfile.mkdtemp(prefix="ap_retry_test_")
-        yield d
-        import shutil
-        shutil.rmtree(d, ignore_errors=True)
+    @staticmethod
+    def _step(step_type):
+        return {"type": step_type, "status": STEP_STATE_PENDING, "output": {}}
 
-    # --------------------------------------------------------
-    #  成功路径：test 失败 → fix → retest 通过 → skip chain fix
-    # --------------------------------------------------------
-    def test_retry_success_path(self, sandbox_ws):
-        call_seq = []
+    @staticmethod
+    def _run(steps, fake_exec, *, requires_authorization=False, context=None):
+        context = context or {"meta": {}}
+        with (
+            patch.object(step_runner, "check_stop_flag", return_value=False),
+            patch.object(step_runner, "stream_chunk"),
+            patch.object(
+                step_runner,
+                "requires_authorization_before_step",
+                return_value=requires_authorization,
+            ),
+            patch.object(step_runner, "execute_step", side_effect=fake_exec),
+        ):
+            step_runner.run_execution_loop(
+                steps, {}, "", [], context, "write_code", "engineer"
+            )
+        return context
+
+    def test_retry_success_path(self):
+        calls = []
 
         def fake_exec(task_id, step, events, context):
-            st = step["type"]
-            seq = len(call_seq) + 1
-            call_seq.append((st, seq))
-
-            # 前两次 test 调用失败，之后通过
-            test_calls_so_far = sum(1 for s, _ in call_seq if s == "test")
-            if st == "test":
-                if test_calls_so_far <= 2:
-                    step["output"] = {"text": "FAIL", "exec_success": False}
+            calls.append(step["type"])
+            if step["type"] == "test":
+                test_calls = calls.count("test")
+                if test_calls == 1:
+                    step["output"] = {
+                        "text": "FAIL",
+                        "exec_success": False,
+                        "test_result": {"exit_code": 1, "timed_out": False},
+                    }
                 else:
                     step["output"] = {"text": "PASS", "exec_success": True}
             else:
-                step["output"] = {"text": f"ok:{st}"}
+                step["output"] = {"text": "fixed", "file_ops": [{"path": "src/a.py"}]}
 
-        with (
-            patch.object(qwen_worker_v2, "MEMORY_ENABLED", False),
-            patch.object(qwen_worker_v2, "check_stop_flag", return_value=False),
-            patch.object(qwen_worker_v2, "stream_start"),
-            patch.object(qwen_worker_v2, "stream_chunk"),
-            patch.object(qwen_worker_v2, "execute_step", side_effect=fake_exec),
-            patch.object(qwen_worker_v2, "requires_authorization_before_step", return_value=False),
-        ):
-            qwen_worker_v2.execute_task(
-                "qwen_generate",
-                {"prompt": "write a test success path", "workspace_path": sandbox_ws},
-                f"test-{uuid.uuid4().hex[:6]}",
-                [],
-                [],
-                {
-                    "meta": {"workspace_path": sandbox_ws},
-                    "final_file_ops": [],
-                    "intermediate_results": [],
-                    "tool_outputs": [],
-                },
-            )
+        steps = [self._step("test"), self._step("fix")]
+        self._run(steps, fake_exec)
 
-        test_indices = [i for i, (s, _) in enumerate(call_seq) if s == "test"]
-        fix_indices = [i for i, (s, _) in enumerate(call_seq) if s == "fix"]
+        assert calls == ["test", "fix", "test"]
+        assert steps[0]["status"] == STEP_STATE_COMPLETED
+        assert steps[1]["status"] == STEP_STATE_SKIPPED
 
-        assert len(test_indices) >= 2, f"Expected >=2 test calls, got {call_seq}"
-        assert len(fix_indices) >= 1, f"Expected >=1 fix calls, got {call_seq}"
-        assert len(fix_indices) <= 2, f"Too many fix calls: {call_seq}"
+    def test_retry_failure_path_stops_after_three_retries(self):
+        calls = []
 
-    # --------------------------------------------------------
-    #  失败路径：持续失败 → 3 次上限 → 退出不假报
-    # --------------------------------------------------------
-    def test_retry_failure_path_3_max(self, sandbox_ws):
-        call_seq = []
-
-        def always_fail_test(task_id, step, events, context):
-            st = step["type"]
-            call_seq.append(st)
-            if st == "test":
-                step["output"] = {"text": "ALWAYS FAIL", "exec_success": False}
+        def fake_exec(task_id, step, events, context):
+            calls.append(step["type"])
+            if step["type"] == "test":
+                step["output"] = {
+                    "text": "ALWAYS FAIL",
+                    "exec_success": False,
+                    "test_result": {"exit_code": 1, "timed_out": False},
+                }
             else:
-                step["output"] = {"text": f"ok:{st}"}
+                step["output"] = {"text": "attempted fix"}
 
-        with (
-            patch.object(qwen_worker_v2, "MEMORY_ENABLED", False),
-            patch.object(qwen_worker_v2, "check_stop_flag", return_value=False),
-            patch.object(qwen_worker_v2, "stream_start"),
-            patch.object(qwen_worker_v2, "stream_chunk"),
-            patch.object(qwen_worker_v2, "execute_step", side_effect=always_fail_test),
-            patch.object(qwen_worker_v2, "requires_authorization_before_step", return_value=False),
-        ):
-            try:
-                qwen_worker_v2.execute_task(
-                    "qwen_generate",
-                    {"prompt": "write a test failure path", "workspace_path": sandbox_ws},
-                    f"test-{uuid.uuid4().hex[:6]}",
-                    [],
-                    [],
-                    {
-                        "meta": {"workspace_path": sandbox_ws},
-                        "final_file_ops": [],
-                        "intermediate_results": [],
-                        "tool_outputs": [],
-                    },
-                )
-            except Exception:
-                pass
+        steps = [self._step("test"), self._step("fix"), self._step("doc")]
+        context = self._run(steps, fake_exec)
 
-        test_calls = call_seq.count("test")
-        fix_calls = call_seq.count("fix")
-        assert test_calls == 4, f"Expected 4 test calls (1 initial + 3 retries), got seq: {call_seq}"
-        assert fix_calls == 4, f"Expected 4 fix calls (3 retries + 1 chain), got seq: {call_seq}"
+        assert calls.count("test") == 4
+        assert calls.count("fix") == 3
+        assert steps[0]["status"] == STEP_STATE_FAILED
+        assert steps[1]["status"] == STEP_STATE_SKIPPED
+        assert steps[2]["status"] == STEP_STATE_SKIPPED
+        assert context["meta"]["execution_state"] == "validation_failed"
 
-    # --------------------------------------------------------
-    #  正常路径：test 一开始就通过
-    # --------------------------------------------------------
-    def test_no_retry_when_pass(self, sandbox_ws):
-        call_seq = []
+    def test_test_without_execution_evidence_is_not_reported_as_passed_or_repaired(self):
+        calls = []
 
-        def all_pass(task_id, step, events, context):
-            st = step["type"]
-            call_seq.append(st)
-            if st == "test":
-                step["output"] = {"text": "ok", "exec_success": True}
-            else:
-                step["output"] = {"text": f"ok:{st}"}
+        def fake_exec(task_id, step, events, context):
+            calls.append(step["type"])
+            step["output"] = {"text": "runner did not return a result"}
 
-        with (
-            patch.object(qwen_worker_v2, "MEMORY_ENABLED", False),
-            patch.object(qwen_worker_v2, "check_stop_flag", return_value=False),
-            patch.object(qwen_worker_v2, "stream_start"),
-            patch.object(qwen_worker_v2, "stream_chunk"),
-            patch.object(qwen_worker_v2, "execute_step", side_effect=all_pass),
-            patch.object(qwen_worker_v2, "requires_authorization_before_step", return_value=False),
-        ):
-            qwen_worker_v2.execute_task(
-                "qwen_generate",
-                {"prompt": "write a all pass path", "workspace_path": sandbox_ws},
-                f"test-{uuid.uuid4().hex[:6]}",
-                [],
-                [],
-                {
-                    "meta": {"workspace_path": sandbox_ws},
-                    "final_file_ops": [],
-                    "intermediate_results": [],
-                    "tool_outputs": [],
-                },
-            )
+        steps = [self._step("test"), self._step("fix")]
+        context = self._run(steps, fake_exec)
 
-        # 每个步骤只执行一次
-        assert call_seq.count("test") == 1, f"Expected 1 test call, got {call_seq}"
-        assert call_seq.count("fix") == 1, f"Expected 1 fix call, got {call_seq}"
+        assert calls == ["test"]
+        assert steps[0]["status"] == STEP_STATE_FAILED
+        assert steps[1]["status"] == STEP_STATE_SKIPPED
+        assert context["meta"]["execution_state"] == "validation_failed"
+
+    def test_test_waiting_for_authorization_stops_following_steps(self):
+        calls = []
+
+        def fake_exec(task_id, step, events, context):
+            calls.append(step["type"])
+
+        steps = [self._step("test"), self._step("fix")]
+        context = self._run(
+            steps,
+            fake_exec,
+            requires_authorization=True,
+            context={"meta": {"proposed_test_command": "pytest"}},
+        )
+
+        assert calls == []
+        assert steps[0]["status"] == STEP_STATE_AWAITING_AUTHORIZATION
+        assert steps[1]["status"] == STEP_STATE_SKIPPED
+        assert context["meta"]["execution_state"] == "awaiting_authorization"
+        assert context["meta"]["authorization_requests"] == [{
+            "type": "test",
+            "command": "pytest",
+            "status": "awaiting_host_policy",
+        }]
+
+    def test_no_retry_when_test_passes(self):
+        calls = []
+
+        def fake_exec(task_id, step, events, context):
+            calls.append(step["type"])
+            if step["type"] == "test":
+                step["output"] = {"text": "PASS", "exec_success": True}
+
+        steps = [self._step("test")]
+        self._run(steps, fake_exec)
+
+        assert calls == ["test"]
+        assert steps[0]["status"] == STEP_STATE_COMPLETED

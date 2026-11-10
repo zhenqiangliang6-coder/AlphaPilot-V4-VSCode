@@ -1,0 +1,43 @@
+{
+  "generatedAt": "2026-11-02T10:30:00Z",
+  "generatedOnPlatform": "win32",
+  "projectType": "plugin",
+  "setup": [],
+  "assertions": [
+    {
+      "name": "tests-pass",
+      "kind": "process",
+      "command": "npm",
+      "args": ["test"],
+      "verificationMethod": "test-results",
+      "expected": "0",
+      "timeoutSeconds": 300
+    },
+    {
+      "name": "webview-build",
+      "kind": "process",
+      "command": "npm",
+      "args": ["--prefix", "webview", "run", "build"],
+      "verificationMethod": "exit-code",
+      "expected": "0",
+      "timeoutSeconds": 300
+    },
+    {
+      "name": "extension-package",
+      "kind": "process",
+      "command": "npm",
+      "args": [
+        "exec",
+        "--",
+        "vsce",
+        "package",
+        "--no-dependencies",
+        "--out",
+        ".tsupgrader/runtime-validation/alphapilot-validation.vsix"
+      ],
+      "verificationMethod": "exit-code",
+      "expected": "0",
+      "timeoutSeconds": 300
+    }
+  ]
+}

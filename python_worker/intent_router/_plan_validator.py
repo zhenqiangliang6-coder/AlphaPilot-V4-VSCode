@@ -25,6 +25,10 @@ VALID_STEP_TYPES: Set[str] = {
     "docstring",
     "respond",
     "workspace",
+    "operate",
+    "changelog",
+    "compile",
+    "setup",
 }
 
 # ============================================================

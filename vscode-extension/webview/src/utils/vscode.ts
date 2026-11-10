@@ -56,13 +56,19 @@ export interface WebviewMessage {
 /**
  * 便捷方法: 提交任务
  */
-export function submitTask(prompt: string, model: string, images?: ImageAttachment[]): void {
+export function submitTask(
+  prompt: string,
+  model: string,
+  images?: ImageAttachment[],
+  conversationId?: string,
+): void {
   vscodeAPI.postMessage({
     type: 'submit_task',
     payload: {
       prompt,
       model,
       images,
+      conversationId,
     }
   });
 }

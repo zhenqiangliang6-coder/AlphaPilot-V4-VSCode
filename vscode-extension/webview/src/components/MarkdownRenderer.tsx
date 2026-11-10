@@ -12,11 +12,23 @@ interface MarkdownRendererProps {
 function normalizeMarkdownTables(text: string): string {
   const lines = text.split('\n');
   const result: string[] = [];
+  let inCodeBlock = false;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
 
-    if (!line.includes('|---') || line.startsWith('```')) {
+    // P3: 追踪代码块边界，代码块内的内容原样保留
+    if (line.trimStart().startsWith('```')) {
+      if (!inCodeBlock) {
+        inCodeBlock = true;
+      } else {
+        inCodeBlock = false;
+      }
+      result.push(line);
+      continue;
+    }
+
+    if (inCodeBlock || !line.includes('|---')) {
       result.push(line);
       continue;
     }

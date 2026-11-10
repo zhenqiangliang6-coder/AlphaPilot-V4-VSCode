@@ -10,24 +10,57 @@ const stepIcons: Record<Step['type'], string> = {
   analyze: '🔍',
   plan: '📋',
   write: '✍️',
-  refine: '⚡',
-  test: '✅'
+  refine: '✨',
+  test: '🧪',
+  fix: '🔧',
+  doc: '📄',
+  docstring: '📝',
+  respond: '💬',
+  profile: '📊',
+  operate: '🛠️',
+  changelog: '📋',
+  deploy: '🚀',
+  workspace: '📂',
+  setup: '📦',
+  vision_analysis: '👁️'
 };
 
 const stepNames: Record<Step['type'], string> = {
-  analyze: '分析需求',
-  plan: '制定计划',
+  analyze: '理解需求',
+  plan: '规划方案',
   write: '编写代码',
-  refine: '优化改进',
-  test: '测试验证'
+  refine: '打磨优化',
+  test: '运行测试',
+  fix: '修复问题',
+  doc: '编写文档',
+  docstring: '补充注释',
+  respond: '整理回复',
+  profile: '性能分析',
+  operate: '执行操作',
+  changelog: '生成日志',
+  deploy: '部署项目',
+  workspace: '扫描项目',
+  setup: '依赖处理',
+  vision_analysis: '图像分析'
 };
 
 const stepDescriptions: Record<Step['type'], string> = {
-  analyze: '理解任务需求和上下文',
-  plan: '设计实现方案和步骤',
-  write: '生成具体代码实现',
-  refine: '优化和改进代码质量 (v3.0)',
-  test: '验证功能正确性'
+  analyze: '正在分析你的任务需求…',
+  plan: '设计最优的实现路线图',
+  write: '将想法转化为优雅的代码',
+  refine: '精雕细琢，让代码更出色',
+  test: '验证每个功能都完美运行',
+  fix: '快速定位并修复发现的问题',
+  doc: '为项目生成清晰的使用文档',
+  docstring: '为代码添加详细的文档字符串',
+  respond: '组织语言，给你最清晰的回答',
+  profile: '检测瓶颈，让代码跑得更快',
+  operate: '处理系统级任务和配置',
+  changelog: '记录本次更新的所有变更',
+  deploy: '将项目推送到目标环境',
+  workspace: '扫描项目结构，检查依赖和环境',
+  setup: '处理 DEPENDS 声明，补齐缺失文件',
+  vision_analysis: '正在分析图像内容…'
 };
 
 export const StepTree: React.FC<StepTreeProps> = ({ steps }) => {

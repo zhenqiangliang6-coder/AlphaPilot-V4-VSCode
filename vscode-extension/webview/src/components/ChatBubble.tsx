@@ -188,14 +188,29 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({
                   currentPhase === 'write' ? 'bg-green-500/20 text-green-400' :
                   currentPhase === 'refine' ? 'bg-purple-500/20 text-purple-400' :
                   currentPhase === 'test' ? 'bg-cyan-500/20 text-cyan-400' :
+                  currentPhase === 'fix' ? 'bg-orange-500/20 text-orange-400' :
+                  currentPhase === 'doc' ? 'bg-pink-500/20 text-pink-400' :
+                  currentPhase === 'docstring' ? 'bg-indigo-500/20 text-indigo-400' :
+                  currentPhase === 'respond' ? 'bg-teal-500/20 text-teal-400' :
+                  currentPhase === 'profile' ? 'bg-rose-500/20 text-rose-400' :
+                  currentPhase === 'operate' ? 'bg-slate-500/20 text-slate-400' :
+                  currentPhase === 'changelog' ? 'bg-amber-500/20 text-amber-400' :
+                  currentPhase === 'deploy' ? 'bg-emerald-500/20 text-emerald-400' :
                   'bg-gray-500/20 text-gray-400'
                 }`}>
-                  {currentPhase === 'analyze' && '🔍 '}
-                  {currentPhase === 'plan' && ' '}
-                  {currentPhase === 'write' && '✍️ '}
-                  {currentPhase === 'refine' && '⚡ '}
-                  {currentPhase === 'test' && '✅ '}
-                  {currentPhase}
+                  {currentPhase === 'analyze' && '🔍 分析需求'}
+                  {currentPhase === 'plan' && '📋 规划方案'}
+                  {currentPhase === 'write' && '✍️ 编写代码'}
+                  {currentPhase === 'refine' && '✨ 打磨优化'}
+                  {currentPhase === 'test' && '🧪 运行测试'}
+                  {currentPhase === 'fix' && '🔧 修复问题'}
+                  {currentPhase === 'doc' && '📄 编写文档'}
+                  {currentPhase === 'docstring' && '📝 补充注释'}
+                  {currentPhase === 'respond' && '💬 整理回复'}
+                  {currentPhase === 'profile' && '📊 性能分析'}
+                  {currentPhase === 'operate' && '🛠️ 执行操作'}
+                  {currentPhase === 'changelog' && '📋 生成日志'}
+                  {currentPhase === 'deploy' && '🚀 部署项目'}
                 </span>
               )}
             </div>

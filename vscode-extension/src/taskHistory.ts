@@ -13,7 +13,7 @@
 // - 注释不会影响运行，安全可改进可扩展
 //
 import * as vscode from 'vscode';
-import { TaskResult } from './taskModel';
+import { TaskResult, ProtocolTaskStatus } from './taskModel';
 
 export interface HistoryTask {
     taskId: string;
@@ -23,7 +23,7 @@ export interface HistoryTask {
     result?: TaskResult;
     timestamp: number;
     duration?: number;
-    status: 'pending' | 'done' | 'error';
+    status: ProtocolTaskStatus;
 }
 
 export class TaskHistoryManager {

@@ -131,6 +131,14 @@ class WebSocketService {
   }
 
   /**
+   * 本地触发事件（不走网络，直接通知所有本地 handler）
+   * 用于 extension.ts 将数据转发给 reactPanel/webview
+   */
+  triggerLocal(event: string, payload: any): void {
+    this.handleMessage({ [event]: payload });
+  }
+
+  /**
    * 取消订阅事件
    */
   off(event: string, handler: EventHandler) {

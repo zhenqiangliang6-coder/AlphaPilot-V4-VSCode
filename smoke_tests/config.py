@@ -13,6 +13,69 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 from python_worker.worker_config import DASHSCOPE_API_KEY  # noqa: E402
 
+# ═════════════════════════════════════════════════════════════════
+# Runtime discovery — portable runtime env support
+# ═════════════════════════════════════════════════════════════════
+_RUNTIME_ROOT = SCRIPT_DIR / "runtime"
+
+
+def find_runtime_jdk() -> str | None:
+    """Discover JDK from runtime/ dir, VS Code extensions, or JAVA_HOME."""
+    candidates = [
+        (_RUNTIME_ROOT / "java" / "jdk-17" / "bin" / "javac.exe"),
+        (_RUNTIME_ROOT / "java" / "jdk-17" / "bin" / "java.exe"),
+    ]
+    for p in candidates:
+        if p.is_file():
+            return str(p.parent.parent)
+
+    # VS Code Java extension bundled JDK
+    vscode_ext = Path.home() / ".vscode" / "extensions"
+    if vscode_ext.exists():
+        for java_ext in sorted(vscode_ext.glob("redhat.java-*"), reverse=True):
+            for jre_dir in sorted(java_ext.glob("jre/*"), reverse=True):
+                javac = jre_dir / "bin" / "javac.exe"
+                if javac.is_file():
+                    return str(jre_dir)
+
+    env_home = os.environ.get("JAVA_HOME", "")
+    if env_home and (Path(env_home) / "bin" / "java.exe").is_file():
+        return env_home
+    return None
+
+
+def find_runtime_maven() -> str | None:
+    candidates = [
+        (_RUNTIME_ROOT / "maven" / "apache-maven-3.9" / "bin" / "mvn.cmd"),
+    ]
+    for p in candidates:
+        if p.is_file():
+            return str(p.parent.parent)
+    env_home = os.environ.get("MAVEN_HOME", "") or os.environ.get("M2_HOME", "")
+    if env_home and (Path(env_home) / "bin" / "mvn.cmd").is_file():
+        return env_home
+    return None
+
+
+def is_java_runtime_ready() -> bool:
+    return find_runtime_jdk() is not None and find_runtime_maven() is not None
+
+
+def is_node_runtime_ready() -> bool:
+    import shutil
+    return shutil.which("node") is not None
+
+
+def runtime_report() -> dict[str, bool]:
+    return {
+        "python": True,
+        "nodejs": is_node_runtime_ready(),
+        "java": is_java_runtime_ready(),
+        "jdk": find_runtime_jdk() is not None,
+        "maven": find_runtime_maven() is not None,
+    }
+
+
 TEST_IMPORT_DIV = (
     "import sys\nfrom pathlib import Path\n"
     "sys.path.insert(0, str(Path(__file__).resolve().parent.parent))\n"

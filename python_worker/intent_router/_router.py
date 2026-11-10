@@ -26,13 +26,16 @@ import concurrent.futures
 from typing import Dict, Tuple, List, Optional
 
 from ._data import (
-    ALL_INTENTS, ALL_TARGET_TYPES, LITE_CLASSIFY_PROMPT,
+    ALL_INTENTS, ALL_TARGET_TYPES, ALL_TARGET_LANGUAGES,
+    LITE_CLASSIFY_PROMPT,
     FORCE_WRITE_CODE_PATTERNS, PROJECT_IMPLEMENTATION_PATTERNS,
-    READ_ONLY_DESIGN_PATTERNS, INTENT_PATTERNS, INTENT_TO_PERSONA,
-    ExecutionProfile, _INTENT_DEFAULT_PROFILE, _TEST_EXECUTION_PATTERNS,
+    FORCE_EXECUTE_OPERATION_PATTERNS, READ_ONLY_DESIGN_PATTERNS,
+    _INTENT_DEFAULT_PROFILE, INTENT_TO_PERSONA, INTENT_PATTERNS,
+    ExecutionProfile, _TEST_EXECUTION_PATTERNS,
 )
 from ._classification import llm_classify, get_provider_config, call_provider_for_classify
 from ._planning_contract import get_impl_plan_requirement, validate_replan, needs_reauthorization
+from ._chains import get_language_format, apply_language_modifiers
 
 # ⭐ v4.0: Skill 集成 — 技能系统参与执行决策
 try:
@@ -61,6 +64,7 @@ class IntentRouter:
     LITE_CLASSIFY_PROMPT = LITE_CLASSIFY_PROMPT
     FORCE_WRITE_CODE_PATTERNS = FORCE_WRITE_CODE_PATTERNS
     PROJECT_IMPLEMENTATION_PATTERNS = PROJECT_IMPLEMENTATION_PATTERNS
+    FORCE_EXECUTE_OPERATION_PATTERNS = FORCE_EXECUTE_OPERATION_PATTERNS
     READ_ONLY_DESIGN_PATTERNS = READ_ONLY_DESIGN_PATTERNS
     INTENT_PATTERNS = INTENT_PATTERNS
     INTENT_TO_PERSONA = INTENT_TO_PERSONA
@@ -72,9 +76,14 @@ class IntentRouter:
     # 分类方法 — 委托给 _classification 模块
     # =========================================================
 
+    # ⭐ G8.0: 存储最近一次 LLM 分类原始结果，供 detect_intent_multi 读取 compound 信息
+    _last_classify_result: Optional[Dict] = None
+
     @classmethod
     def _llm_classify(cls, prompt: str, model_name: str = "qwen") -> Dict:
-        return llm_classify(prompt, model_name)
+        result = llm_classify(prompt, model_name)
+        cls._last_classify_result = result
+        return result
 
     @classmethod
     def _get_provider_config(cls, model_name: str) -> Dict:
@@ -89,12 +98,24 @@ class IntentRouter:
     # =========================================================
 
     @classmethod
-    def resolve_execution_profile(cls, intent: str, prompt: str = "", matched_skill=None) -> "IntentRouter.ExecutionProfile":
+    def resolve_execution_profile(cls, intent: str, prompt: str = "", matched_skill=None, language: str = "python") -> "IntentRouter.ExecutionProfile":
         """
         ⭐ v4.0 核心：由 intent + skill + prompt 联合决策执行维度。
 
         优先级: Skill.output_profile > 意图默认 profile > 兜底 code 模式
+        ⭐ G8.2: language 参数 → target_format 按语言自动切换
         """
+        if intent == "run_tests":
+            return cls.ExecutionProfile(
+                output_mode="text",
+                workspace_dependency="read_only",
+                target_format="plain_text",
+                requires_fileops=False,
+                requires_workspace_scan=True,
+                requires_test=True,
+                estimated_complexity="simple",
+            )
+
         # 1) 尝试从 skill 获取 output_profile（最高优先级）
         if matched_skill is not None:
             try:
@@ -114,6 +135,11 @@ class IntentRouter:
 
         # 2) 意图默认 profile
         defaults = cls._INTENT_DEFAULT_PROFILE.get(intent, cls._INTENT_DEFAULT_PROFILE["chat"])
+
+        # ⭐ G8.2: target_format 按语言切换（代码类意图）
+        format_override = get_language_format(language)
+        if defaults.get("output_mode") == "code" and format_override != "plain_text":
+            defaults = {**defaults, "fmt": format_override}
 
         # 3) prompt 级微调 — 补充规则（不依赖 LLM，快速且可靠）
         ws_dep = defaults["ws_dep"]
@@ -145,14 +171,22 @@ class IntentRouter:
         intent: str,
         profile: "IntentRouter.ExecutionProfile" = None,
         worker: str = "qwen",
+        language: str = "python",
     ) -> List[str]:
         """
         ⭐ v4.0 核心：动态组装执行链，完全替代静态 INTENT_TO_CHAIN。
 
         当 profile 未传入时，自动从 intent + prompt 解析。
+
+        ⭐ G8.2: language 参数启用多语言横向扩展
+        - 编译型语言自动注入 compile 步骤
+        - target_format 按语言自动切换
         """
+        if intent == "run_tests":
+            return ["analyze", "plan", "test"]
+
         if profile is None:
-            profile = cls.resolve_execution_profile(intent)
+            profile = cls.resolve_execution_profile(intent, language=language)
 
         chain = ["analyze"]  # 所有任务都从 analyze 开始
 
@@ -163,6 +197,11 @@ class IntentRouter:
         # plan — 非纯 text 模式需要计划
         if profile.output_mode != "text":
             chain.append("plan")
+
+        # setup — P2: DEPENDS 块处理、缺失文件 stub、清单文件自动创建
+        # 仅在代码/文档模式（有文件生成）时运行
+        if profile.output_mode in ("code", "document"):
+            chain.append("setup")
 
         # write — 核心生成
         chain.append("write")
@@ -200,6 +239,9 @@ class IntentRouter:
             else:
                 chain = ["analyze", "plan", "respond"]
 
+        # ⭐ G8.2: 应用 per-language 步骤修饰器（编译型语言注入 compile 等）
+        chain = apply_language_modifiers(chain, language)
+
         # set_preference — 只需理解约定并写入
         if intent == "set_preference":
             chain = ["analyze", "plan", "write"]
@@ -209,6 +251,12 @@ class IntentRouter:
             chain = [s for s in chain if s not in ("write", "refine", "test", "fix", "doc")]
             if "plan" not in chain:
                 chain.insert(1, "plan")
+
+        # ⭐ G7.0 execute_operation — 执行系统操作：直接 operate → respond
+        #    operate 步骤内部已完整处理：检测操作类型 → 执行 → 格式化结果
+        #    不需要 analyze/workspace/plan 前置（那是代码生成链的步骤）
+        if intent == "execute_operation":
+            chain = ["operate", "respond"]
 
         # local worker 简化
         if worker == "local":
@@ -221,6 +269,43 @@ class IntentRouter:
         prompt_lower = prompt.lower().strip()
         for pattern in cls._TEST_EXECUTION_PATTERNS:
             if re.search(pattern, prompt_lower):
+                return True
+        return False
+
+    @classmethod
+    def _is_project_test_request(cls, prompt: str) -> bool:
+        if not cls._is_test_execution_request(prompt):
+            return False
+        explicit_change_patterns = (
+            r"(?:新增|添加|创建|编写|生成|实现|开发|搭建|修改|更新|add|create|write|implement|develop|edit|modify|update)"
+            r".{0,24}(?:功能|模块|组件|接口|业务|代码|文件|测试用例|test case|spec)",
+            r"(?:功能|模块|组件|接口|业务|代码|文件|测试用例|test case|spec)"
+            r".{0,24}(?:新增|添加|创建|编写|生成|实现|开发|搭建|修改|更新|add|create|write|implement|develop|edit|modify|update)",
+        )
+        return not any(
+            re.search(pattern, prompt, re.IGNORECASE)
+            for pattern in explicit_change_patterns
+        )
+
+    @classmethod
+    def requests_test_failure_repair(cls, prompt: str) -> bool:
+        if not cls._is_test_execution_request(prompt):
+            return False
+        return bool(re.search(
+            r"(?:失败|未通过|不通过|错误|问题|fail(?:ed|ure)?|error)"
+            r".{0,32}(?:修复|解决|优化|改进|fix|repair)|"
+            r"(?:修复|解决|优化|改进|fix|repair)"
+            r".{0,32}(?:失败|未通过|不通过|错误|问题|fail(?:ed|ure)?|error)",
+            prompt,
+            re.IGNORECASE | re.DOTALL,
+        ))
+
+    # ⭐ G7.0: 强制执行操作硬覆盖 — 防止 LLM 将 Git 上传/代码统计误判为 write_code
+    @classmethod
+    def _is_force_execute_operation(cls, prompt: str) -> bool:
+        prompt_lower = prompt.lower().strip()
+        for pattern in cls.FORCE_EXECUTE_OPERATION_PATTERNS:
+            if re.search(pattern, prompt_lower, re.IGNORECASE):
                 return True
         return False
 
@@ -296,14 +381,17 @@ class IntentRouter:
     # ⭐ v4.0: Skill 匹配缓存 — 避免 detect_intent 内多次调用 route_skill
     @classmethod
     def _resolve_chain(
-        cls, intent: str, prompt: str = "", worker: str = "qwen", matched_skill=None
+        cls, intent: str, prompt: str = "", worker: str = "qwen", matched_skill=None, language: str = "python"
     ) -> List[str]:
-        profile = cls.resolve_execution_profile(intent, prompt, matched_skill)
-        return cls.build_execution_chain(intent, profile, worker)
+        profile = cls.resolve_execution_profile(intent, prompt, matched_skill, language=language)
+        return cls.build_execution_chain(intent, profile, worker, language=language)
 
     @classmethod
-    def execution_chain_for(cls, intent: str, worker: str = "qwen", prompt: str = "") -> List[str]:
-        chain = cls._resolve_chain(intent, prompt=prompt, worker=worker)
+    def execution_chain_for(cls, intent: str, worker: str = "qwen", prompt: str = "", language: str = "python") -> List[str]:
+        if intent == "run_tests":
+            return ["analyze", "plan", "test"]
+
+        chain = cls._resolve_chain(intent, prompt=prompt, worker=worker, language=language)
 
         if worker == "local":
             chain = ["write"]
@@ -324,10 +412,23 @@ class IntentRouter:
             if re.search(r"(?:性能|profile|profiling|性能分析)", prompt_lower):
                 if "profile" not in chain:
                     chain.append("profile")
+            if re.search(r"(?:changelog|CHANGELOG|工作日志|更新日志|变更日志|注入.*更新时间)", prompt_lower):
+                if "changelog" not in chain:
+                    _insert_after_fix = len(chain)
+                    for _i, _step in enumerate(chain):
+                        if _step == "fix":
+                            _insert_after_fix = _i + 1
+                            break
+                    else:
+                        for _i, _step in enumerate(chain):
+                            if _step == "test":
+                                _insert_after_fix = _i + 1
+                                break
+                    chain.insert(_insert_after_fix, "changelog")
         return chain
 
     @classmethod
-    def detect_intent(cls, prompt: str, model_name: str = "qwen") -> Tuple[str, str, List[str]]:
+    def detect_intent(cls, prompt: str, model_name: str = "qwen", language: str = "python") -> Tuple[str, str, List[str]]:
         """
         智能增强版意图识别（符合架构信条）
         ---------------------------------------------------------
@@ -335,6 +436,8 @@ class IntentRouter:
             prompt: 用户输入文本
             model_name: Worker 类型 (qwen/gemini/modelscope/maas/local)
                        决定使用哪个 LLM 做语义分类；无对应 API Key 时自动降级 Regex
+            language: 目标编程语言 (python/java/nodejs/typescript/go/...)
+                     ⭐ G8.2: 按语言动态定制执行链
         Worker = 真相：
             - 所有意图判断必须在 Worker 内部执行
             - 每个 Worker 使用自己的 LLM 做语义分类
@@ -344,7 +447,7 @@ class IntentRouter:
 
         if not prompt or not prompt.strip():
             intent = "chat"
-            return intent, cls.INTENT_TO_PERSONA[intent], cls._resolve_chain(intent, prompt, worker=model_name)
+            return intent, cls.INTENT_TO_PERSONA[intent], cls._resolve_chain(intent, prompt, worker=model_name, language=language)
 
         # ============================================================
         # ⭐ v4.0: Skill 匹配（在意图检测之前，影响执行链决策）
@@ -358,6 +461,22 @@ class IntentRouter:
             except Exception:
                 pass
 
+        if cls._is_project_test_request(prompt.strip()):
+            intent = "run_tests"
+            persona = cls.INTENT_TO_PERSONA[intent]
+            chain = cls._resolve_chain(
+                intent,
+                prompt,
+                worker=model_name,
+                matched_skill=matched_skill,
+                language=language,
+            )
+            print("\n🧠 Intent Router（项目测试请求识别）:")
+            print(f"  意图: {intent}")
+            print(f"  人格: {persona}")
+            print(f"  执行链: {' → '.join(chain)}")
+            return intent, persona, chain
+
         # ============================================================
         # ⓪ LLM 语义路由（第一层）— LLM + Regex 联合路由
         # ============================================================
@@ -365,6 +484,9 @@ class IntentRouter:
         if llm_result and llm_result["confidence"] >= 0.75:
             intent = llm_result["intent"]
             target_type = llm_result["target_type"]
+            detected_language = llm_result.get("target_language", language)
+            if detected_language and detected_language in ALL_TARGET_LANGUAGES:
+                language = detected_language
             confidence = llm_result["confidence"]
             reasoning = llm_result["reasoning"]
 
@@ -373,8 +495,13 @@ class IntentRouter:
                 target_type = "test"
                 print(f"\n🔧 Intent Router 硬覆盖：测试执行请求不应归类为 workspace_maintenance → write_code")
 
+            if intent != "execute_operation" and cls._is_force_execute_operation(prompt):
+                intent = "execute_operation"
+                target_type = "infra"
+                print(f"\n🔧 Intent Router 硬覆盖：操作执行请求不应归类为 {llm_result['intent']} → execute_operation")
+
             persona = cls.INTENT_TO_PERSONA.get(intent, "engineer")
-            chain = cls._resolve_chain(intent, prompt, worker=model_name, matched_skill=matched_skill)
+            chain = cls._resolve_chain(intent, prompt, worker=model_name, matched_skill=matched_skill, language=language)
 
             print(f"\n🧠 Intent Router（{model_name.upper()} 语义路由 | confidence={confidence:.2f}）:")
             print(f"  意图: {intent} | 目标类型: {target_type}")
@@ -394,7 +521,7 @@ class IntentRouter:
             if re.search(pattern, prompt_lower):
                 intent = "workspace_maintenance"
                 persona = cls.INTENT_TO_PERSONA[intent]
-                chain = cls._resolve_chain(intent, prompt, worker=model_name, matched_skill=matched_skill)
+                chain = cls._resolve_chain(intent, prompt, worker=model_name, matched_skill=matched_skill, language=language)
                 print("\n🧠 Intent Router（工作区工具任务识别）:")
                 print(f"  意图: {intent}")
                 print(f"  人格: {persona}")
@@ -404,7 +531,7 @@ class IntentRouter:
         for intent in ("explain_and_fix", "code_review", "delete_files"):
             if any(re.search(pattern, prompt_lower) for pattern in cls.INTENT_PATTERNS[intent]):
                 persona = cls.INTENT_TO_PERSONA[intent]
-                chain = cls._resolve_chain(intent, prompt, worker=model_name, matched_skill=matched_skill)
+                chain = cls._resolve_chain(intent, prompt, worker=model_name, matched_skill=matched_skill, language=language)
                 print("\n🧠 Intent Router（复合任务识别）:")
                 print(f"  意图: {intent}")
                 print(f"  人格: {persona}")
@@ -429,7 +556,7 @@ class IntentRouter:
                 if re.search(pattern, prompt_stripped, re.IGNORECASE):
                     intent = "write_code"
                     persona = cls.INTENT_TO_PERSONA[intent]
-                    chain = cls._resolve_chain(intent, prompt, worker=model_name, matched_skill=matched_skill)
+                    chain = cls._resolve_chain(intent, prompt, worker=model_name, matched_skill=matched_skill, language=language)
 
                     print("\n🧠 Intent Router（强制工程任务识别）:")
                     print(f"  意图: {intent}")
@@ -444,7 +571,7 @@ class IntentRouter:
         ):
             intent = "write_code"
             persona = cls.INTENT_TO_PERSONA[intent]
-            chain = cls._resolve_chain(intent, prompt, worker=model_name, matched_skill=matched_skill)
+            chain = cls._resolve_chain(intent, prompt, worker=model_name, matched_skill=matched_skill, language=language)
 
             print("\n🧠 Intent Router（全栈项目交付识别）:")
             print(f"  意图: {intent}")
@@ -459,7 +586,7 @@ class IntentRouter:
         if cls._is_test_execution_request(prompt):
             intent = "write_code"
             persona = cls.INTENT_TO_PERSONA[intent]
-            chain = cls._resolve_chain(intent, prompt, worker=model_name, matched_skill=matched_skill)
+            chain = cls._resolve_chain(intent, prompt, worker=model_name, matched_skill=matched_skill, language=language)
             print("\n🧠 Intent Router（Regex 测试执行识别）:")
             print(f"  意图: {intent}")
             print(f"  人格: {persona}")
@@ -472,7 +599,7 @@ class IntentRouter:
             for pattern in patterns:
                 if re.search(pattern, prompt_lower):
                     persona = cls.INTENT_TO_PERSONA[intent]
-                    chain = cls._resolve_chain(intent, prompt, worker=model_name, matched_skill=matched_skill)
+                    chain = cls._resolve_chain(intent, prompt, worker=model_name, matched_skill=matched_skill, language=language)
 
                     print("\n🧠 Intent Router 识别结果:")
                     print(f"  意图: {intent}")
@@ -486,7 +613,60 @@ class IntentRouter:
         # =========================================================
         print("\n⚠️ Intent Router 未识别明确意图，使用安全的对话链路")
         intent = "chat"
-        return intent, cls.INTENT_TO_PERSONA[intent], cls._resolve_chain(intent, prompt, worker=model_name, matched_skill=matched_skill)
+        return intent, cls.INTENT_TO_PERSONA[intent], cls._resolve_chain(intent, prompt, worker=model_name, matched_skill=matched_skill, language=language)
+
+    @classmethod
+    def detect_intent_multi(cls, prompt: str, model_name: str = "qwen"):
+        """G8.0: 增强型意图识别 — 支持复合请求分解。
+
+        与 detect_intent 相同的输入，但返回 CompoundPlan 而非单阶段元组。
+        复合计划包含有序 Phase 列表，单阶段计划通过 fallback_* 字段表达。
+
+        内部复用 detect_intent 的完整逻辑（LLM + Regex 降级），
+        并读取 LLM 分类结果中的 is_compound / phases 字段。
+
+        降级策略：
+        - LLM 不可用 → Regex 降级（永远不返回复合）
+        - phases 格式无效 → 降级单阶段
+        - phases 不足 2 个 → 降级单阶段
+        """
+        from ._decompose import CompoundPlan
+
+        if cls._is_project_test_request(prompt):
+            intent, persona, chain = cls.detect_intent(prompt, model_name)
+            return CompoundPlan(
+                is_compound=False,
+                fallback_intent=intent,
+                fallback_persona=persona,
+                fallback_chain=chain,
+            )
+
+        intent, persona, chain = cls.detect_intent(prompt, model_name)
+        raw_result = cls._last_classify_result
+
+        if raw_result and raw_result.get("is_compound"):
+            raw_phases = raw_result.get("phases")
+            if isinstance(raw_phases, list) and len(raw_phases) >= 2:
+                try:
+                    from ._decompose import Phase
+                    phases = []
+                    for p in raw_phases:
+                        if isinstance(p, dict) and "type" in p and "prompt" in p:
+                            phases.append(Phase(type=p["type"].strip(), prompt=p["prompt"].strip()))
+                    if len(phases) >= 2:
+                        print(f"\n🔀 IntentRouter: {len(phases)} 阶段复合请求")
+                        for i, ph in enumerate(phases):
+                            print(f"   阶段 {i + 1}: [{ph.type}] {ph.prompt[:80]}")
+                        return CompoundPlan(is_compound=True, phases=phases)
+                except Exception as e:
+                    print(f"\n⚠️ IntentRouter: 复合分解异常 ({e})，降级单阶段")
+
+        return CompoundPlan(
+            is_compound=False,
+            fallback_intent=intent,
+            fallback_persona=persona,
+            fallback_chain=chain,
+        )
 
     @classmethod
     def plan_request(
@@ -499,12 +679,13 @@ class IntentRouter:
         detected_persona: str = None,
         detected_chain: list = None,
         matched_skill=None,
+        language: str = "python",
     ) -> Dict:
         if detected_intent and detected_persona and detected_chain is not None:
             intent, persona, chain = detected_intent, detected_persona, list(detected_chain)
         else:
             intent, persona, chain = cls.detect_intent(prompt, model_name=worker)
-        chain = cls._resolve_chain(intent, prompt, worker=worker, matched_skill=matched_skill)
+        chain = cls._resolve_chain(intent, prompt, worker=worker, matched_skill=matched_skill, language=language)
 
         if intent in {"mentor_explain", "explain_code", "chat"}:
             mode = "MENTOR_EXPLAIN"
@@ -564,6 +745,23 @@ class IntentRouter:
             recovery = ["Keep failed operations explicit and do not claim they completed"]
             if worker != "qwen":
                 recovery.append("This Worker does not provide the workspace maintenance tool; do not claim a scan or environment operation")
+        elif intent == "run_tests":
+            mode = "TEST_EXECUTION"
+            context_requirements = ["existing project test configuration", "workspace root"]
+            capabilities = [
+                {"id": "workspace.read", "available": workspace_available},
+                {"id": "project.test", "available": True, "execution": "host_authorized"},
+            ]
+            side_effects = ["run the existing project test command"]
+            approval = {"required": True, "before": ["project test command"]}
+            validation = [
+                "Only report a test result after the host returns an exit code and output",
+                "Do not generate test files or modify project files for a test-only request",
+            ]
+            recovery = [
+                "Stop when no safe project test command can be identified",
+                "If tests fail, use the captured failure output only when the user requested repair",
+            ]
         elif intent == "external_git":
             mode = "EXTERNAL_CAPABILITY"
             context_requirements = ["git status", "branch", "remote", ".gitignore"]

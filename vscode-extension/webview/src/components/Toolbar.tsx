@@ -12,6 +12,9 @@ interface ToolbarProps {
   setShowFileVersion: (show: boolean) => void;
   showProjectMemory: boolean;
   setShowProjectMemory: (show: boolean) => void;
+  showFileOpsPanel: boolean;
+  setShowFileOpsPanel: (show: boolean) => void;
+  pendingFileOpsCount: number;
 }
 
 export const Toolbar: React.FC<ToolbarProps> = ({ 
@@ -22,7 +25,10 @@ export const Toolbar: React.FC<ToolbarProps> = ({
   showFileVersion,
   setShowFileVersion,
   showProjectMemory,
-  setShowProjectMemory
+  setShowProjectMemory,
+  showFileOpsPanel,
+  setShowFileOpsPanel,
+  pendingFileOpsCount
 }) => {
   const { currentTaskId, isStreaming, messages } = useChatStore();
 
@@ -95,6 +101,25 @@ export const Toolbar: React.FC<ToolbarProps> = ({
           <span>🧠</span>
           <span>记忆</span>
         </button>
+
+        {/* ⭐ v3.5+ 新增：文件操作面板按钮（仅在有待应用文件时显示） */}
+        {pendingFileOpsCount > 0 && (
+          <button
+            onClick={() => setShowFileOpsPanel(!showFileOpsPanel)}
+            title={`查看待应用的 ${pendingFileOpsCount} 个文件操作`}
+            className={`px-3 py-1.5 text-xs rounded-lg transition-all flex items-center gap-2 relative ${
+              showFileOpsPanel 
+                ? 'bg-green-500/20 text-green-400 border border-green-500/50' 
+                : 'bg-green-500/10 text-green-400 border border-green-500/30 hover:bg-green-500/20 animate-pulse'
+            }`}
+          >
+            <span>📁</span>
+            <span>文件操作</span>
+            <span className="absolute -top-1 -right-1 w-5 h-5 bg-green-500 text-white rounded-full text-[10px] flex items-center justify-center font-bold shadow">
+              {pendingFileOpsCount}
+            </span>
+          </button>
+        )}
 
         {/* 清空对话 */}
         <button

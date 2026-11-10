@@ -1,0 +1,4 @@
+# Portable runtime environments — automatically installed by setup.ps1
+# These are large binaries (~200MB+ JDK, ~10MB Maven), DO NOT commit.
+java/
+maven/

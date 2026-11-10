@@ -20,6 +20,18 @@ const TASK_STATE_TO_STATUS = {
   [TASK_STATE_PENDING]: 'pending',
 };
 
+const ORCHESTRATOR_STATUS_MAP = {
+  'all_success': { task_state: TASK_STATE_COMPLETED, status: 'done' },
+  'all_failed':  { task_state: TASK_STATE_FAILED,    status: 'error' },
+  'partial_success': { task_state: TASK_STATE_COMPLETED, status: 'done' },
+  'partial_failed':  { task_state: TASK_STATE_FAILED,    status: 'error' },
+  'completed': { task_state: TASK_STATE_COMPLETED, status: 'done' },
+  'error':     { task_state: TASK_STATE_FAILED,    status: 'error' },
+  'done':      { task_state: TASK_STATE_COMPLETED, status: 'done' },
+  'pending':   { task_state: TASK_STATE_PENDING,   status: 'pending' },
+  'awaiting_authorization': { task_state: TASK_STATE_WAITING_AUTHORIZATION, status: 'awaiting_authorization' },
+};
+
 const TERMINAL_TASK_STATES = new Set([
   TASK_STATE_COMPLETED,
   TASK_STATE_FAILED,
@@ -53,6 +65,19 @@ function resolveStatus(result) {
       });
       return {
         status: rawStatus,
+        valid: true,
+        violations,
+        warnings,
+      };
+    }
+    const orchMapping = ORCHESTRATOR_STATUS_MAP[rawStatus];
+    if (orchMapping) {
+      warnings.push({
+        field: 'status',
+        message: `Orchestrator aggregate status '${rawStatus}' mapped to task_state=${orchMapping.task_state}`,
+      });
+      return {
+        status: orchMapping.status,
         valid: true,
         violations,
         warnings,

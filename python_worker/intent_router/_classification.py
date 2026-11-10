@@ -23,6 +23,21 @@ _CHAIN_CACHE_TS = 0
 _CHAIN_CACHE_TTL = 3600
 
 
+def _resolve_modelscope_classify_chain() -> List[str]:
+    """
+    Provider-aware: ModelScope 意图分类模型链。
+
+    ModelScope 不需要 DashScope 探测，使用固定的可用模型链。
+    该链与 modelscope_client.py 的降级链对齐。
+    """
+    env_model = os.environ.get("MODELSCOPE_CLASSIFY_MODEL", "").strip()
+    if env_model:
+        return [env_model]
+
+    chain = os.environ.get("MODELSCOPE_MODEL", "Qwen/Qwen3.8-Flash-Next").strip()
+    return [chain, "Qwen/Qwen3.8-27B"]
+
+
 def _resolve_qwen_classify_chain() -> List[str]:
     """从 Qwen 模型探测中动态获取可用的文本模型降级链。
 
@@ -41,6 +56,14 @@ def _resolve_qwen_classify_chain() -> List[str]:
     env_model = os.environ.get("INTENT_CLASSIFY_MODEL", "").strip()
     if env_model:
         return [env_model]
+
+    # ⭐ G10: Provider 感知 — LLM_PROVIDER=modelscope 时走 ModelScope 模型链，不探测 DashScope
+    provider = os.environ.get("LLM_PROVIDER", "").lower()
+    if provider == "modelscope":
+        chain = _resolve_modelscope_classify_chain()
+        _CHAIN_CACHE = chain
+        _CHAIN_CACHE_TS = time.time()
+        return chain
 
     now = time.time()
     if _CHAIN_CACHE is not None and (now - _CHAIN_CACHE_TS) < _CHAIN_CACHE_TTL:
@@ -82,9 +105,17 @@ def _resolve_qwen_classify_chain() -> List[str]:
 
 def llm_classify(prompt: str, model_name: str = "qwen") -> Dict:
     full_prompt = LITE_CLASSIFY_PROMPT + "\n用户：" + prompt
+    max_timeout = int(os.environ.get("LLM_CLASSIFY_TIMEOUT", "60"))
+
+    provider = os.environ.get("LLM_PROVIDER", "").lower()
+    actual_model_name = model_name
+    if model_name == "qwen" and provider == "modelscope":
+        actual_model_name = "modelscope"
 
     if model_name == "qwen":
         chain = _resolve_qwen_classify_chain()
+    elif actual_model_name == "modelscope":
+        chain = _resolve_modelscope_classify_chain()
     else:
         chain = [None]
 
@@ -92,7 +123,7 @@ def llm_classify(prompt: str, model_name: str = "qwen") -> Dict:
     for idx, model in enumerate(chain):
         try:
             result_text = call_provider_for_classify(
-                full_prompt, model_name, model_override=model, max_timeout=10
+                full_prompt, actual_model_name, model_override=model, max_timeout=max_timeout
             )
         except Exception as e:
             last_error = e
@@ -139,6 +170,8 @@ def llm_classify(prompt: str, model_name: str = "qwen") -> Dict:
             "target_type": target_type,
             "confidence": confidence,
             "reasoning": parsed.get("reasoning", ""),
+            "is_compound": parsed.get("is_compound", False),
+            "phases": parsed.get("phases", []) if isinstance(parsed.get("phases"), list) else [],
         }
 
     return None
@@ -205,7 +238,7 @@ def call_provider_for_classify(prompt: str, model_name: str, model_override: str
             body = {
                 "model": model,
                 "input": {"prompt": prompt},
-                "parameters": {"temperature": 0, "result_format": "message", "max_tokens": 120},
+                "parameters": {"temperature": 0, "result_format": "message", "max_tokens": 1024},
             }
             r = requests.post(url, headers=headers, json=body, timeout=max_timeout)
             r.raise_for_status()
@@ -240,6 +273,13 @@ def call_provider_for_classify(prompt: str, model_name: str, model_override: str
                 headers = {"Authorization": f"Bearer {auth_key}", "Content-Type": "application/json"}
             else:
                 headers = {"Content-Type": "application/json"}
+            prompt_len = len(prompt)
+            if prompt_len < 1000:
+                adaptive_tokens = 512
+            elif prompt_len < 3000:
+                adaptive_tokens = 1024
+            else:
+                adaptive_tokens = 2048
             body = {
                 "model": model,
                 "messages": [
@@ -247,10 +287,24 @@ def call_provider_for_classify(prompt: str, model_name: str, model_override: str
                     {"role": "user", "content": prompt},
                 ],
                 "temperature": 0,
-                "max_tokens": 120,
+                "max_tokens": adaptive_tokens,
+                "response_format": {"type": "json_object"},
             }
             r = requests.post(url, headers=headers, json=body, timeout=max_timeout)
-            r.raise_for_status()
+            if r.status_code == 400:
+                try:
+                    err_data = r.json()
+                    err_msg_lower = str(err_data).lower()
+                except Exception:
+                    err_msg_lower = r.text.lower()
+                if "response_format" in err_msg_lower or "json_object" in err_msg_lower:
+                    del body["response_format"]
+                    r = requests.post(url, headers=headers, json=body, timeout=max_timeout)
+                    r.raise_for_status()
+                else:
+                    r.raise_for_status()
+            else:
+                r.raise_for_status()
             data = r.json()
             choices = data.get("choices", [])
             if choices:

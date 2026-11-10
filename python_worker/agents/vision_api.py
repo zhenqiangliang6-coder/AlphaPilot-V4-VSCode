@@ -135,9 +135,25 @@ def _call_qwen_vision(prompt: str, images: List[dict]) -> str:
     return f"[Vision] 所有 Qwen 视觉模型均不可用 ({', '.join(vision_chain)}): {last_error}"
 
 
-def _call_doubao_vision(prompt: str, images: List[dict]) -> str:
-    from .Volcengine.doubao_api import _create_session_with_retry
+def _create_doubao_session():
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
+    session = requests.Session()
+    retry_strategy = Retry(
+        total=3,
+        backoff_factor=2,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["POST"]
+    )
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    session.trust_env = False
+    session.proxies = {'http': None, 'https': None}
+    return session
 
+
+def _call_doubao_vision(prompt: str, images: List[dict]) -> str:
     api_key = os.getenv("DOUBAO_API_KEY", "")
     if not api_key:
         return "[Vision] DOUBAO_API_KEY 未设置"
@@ -172,7 +188,7 @@ def _call_doubao_vision(prompt: str, images: List[dict]) -> str:
     }
 
     try:
-        session = _create_session_with_retry()
+        session = _create_doubao_session()
         r = session.post(url, headers=headers, json=body, timeout=300)
         r.raise_for_status()
         data = r.json()

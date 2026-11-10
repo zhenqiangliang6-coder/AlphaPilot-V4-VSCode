@@ -1,4 +1,6 @@
-export type TaskStatus = "pending" | "done" | "error";
+import { TaskStatus } from "./types/task";
+
+export type ProtocolTaskStatus = "pending" | "done" | "error" | "awaiting_authorization";
 
 export const TASK_STATE_COMPLETED = "COMPLETED";
 export const TASK_STATE_FAILED = "FAILED";
@@ -14,7 +16,7 @@ const TASK_STATE_VALUES = new Set<string>([
     TASK_STATE_WAITING_AUTHORIZATION,
 ]);
 
-const TASK_STATE_TO_STATUS: Record<string, string> = {
+const TASK_STATE_TO_STATUS: Record<string, ProtocolTaskStatus> = {
     [TASK_STATE_COMPLETED]: "done",
     [TASK_STATE_FAILED]: "error",
     [TASK_STATE_WAITING_AUTHORIZATION]: "awaiting_authorization",
@@ -23,7 +25,7 @@ const TASK_STATE_TO_STATUS: Record<string, string> = {
 };
 
 interface ResolvedStatus {
-    status: string | null;
+    status: ProtocolTaskStatus | null;
     valid: boolean;
 }
 
@@ -69,6 +71,20 @@ export function resolveTaskStatus(result: any): ResolvedStatus {
     }
 
     return { status: null, valid: false };
+}
+
+const PROTOCOL_TO_UI_STATUS: Record<ProtocolTaskStatus, TaskStatus> = {
+    pending: "pending",
+    done: "completed",
+    error: "failed",
+    awaiting_authorization: "awaiting_authorization",
+};
+
+export function toUiTaskStatus(status: ProtocolTaskStatus | null | undefined): TaskStatus {
+    if (!status) {
+        return "pending";
+    }
+    return PROTOCOL_TO_UI_STATUS[status];
 }
 
 export interface TaskResultSuccess {

@@ -24,7 +24,7 @@ export interface Message {
 
 export interface Step {
   id: string;
-  type: 'analyze' | 'plan' | 'write' | 'refine' | 'test';
+  type: 'analyze' | 'plan' | 'write' | 'refine' | 'test' | 'fix' | 'doc' | 'docstring' | 'respond' | 'profile' | 'operate' | 'changelog' | 'deploy' | 'workspace' | 'setup' | 'vision_analysis';
   status: 'pending' | 'running' | 'completed' | 'failed';
   output?: any;
   startedAt?: number;
@@ -32,7 +32,7 @@ export interface Step {
   duration?: number;  // ⭐ v3.0 新增：步骤执行耗时（毫秒）
   
   // ⭐ 新增：阶段信息
-  phase?: 'analyze' | 'plan' | 'write' | 'refine' | 'test';
+  phase?: 'analyze' | 'plan' | 'write' | 'refine' | 'test' | 'fix' | 'doc' | 'docstring' | 'respond' | 'profile' | 'operate' | 'changelog' | 'deploy' | 'workspace' | 'setup' | 'vision_analysis';
 }
 
 // P1：结构化产物
@@ -55,6 +55,18 @@ export interface ChatState {
   pendingImages: { id: string; name: string; base64: string }[];  // 待关联图片预览
   visionLimits: Record<string, { maxImages: number; maxResolution?: number; supportedFormats: string[]; maxWidth?: number; maxHeight?: number }>;  // 视觉模型限制
   
+  // Phase 2.4 P0-4: 确认卡片状态
+  pendingConfirmation: {
+    confirmation_id: string;
+    task_id: string;
+    target_path: string;
+    project_mode: string;
+    allowed_paths: { read: string[]; write: string[]; execute: string[] };
+    estimated_impact: string;
+    expires_at: string;
+    expires_in_seconds: number;
+  } | null;
+  
   // Actions
   addMessage: (message: Message) => void;
   updateMessage: (id: string, updates: Partial<Message> | ((prev: Message) => Message)) => void;
@@ -67,6 +79,8 @@ export interface ChatState {
   setCurrentPhase: (phase: string | null) => void;  // ⭐ 新增
   addArtifact: (taskId: string, artifact: Artifact) => void;  // P1
   setPendingImages: (images: { id: string; name: string; base64: string }[]) => void;
+  setPendingConfirmation: (data: ChatState['pendingConfirmation']) => void;  // P0-4
+  clearPendingConfirmation: () => void;  // P0-4
 }
 
 export const useChatStore = create<ChatState>()(
@@ -87,6 +101,7 @@ export const useChatStore = create<ChatState>()(
         doubao_generate: { maxImages: 5, supportedFormats: ['png', 'jpeg', 'jpg', 'webp'], maxWidth: 4096, maxHeight: 4096 },
         gemini_generate: { maxImages: 5, supportedFormats: ['png', 'jpeg', 'jpg', 'webp'], maxWidth: 2048, maxHeight: 2048 },
       },
+      pendingConfirmation: null,
       
       addMessage: (message) => 
         set((state) => ({ 
@@ -169,6 +184,13 @@ export const useChatStore = create<ChatState>()(
 
       setPendingImages: (images) =>
         set({ pendingImages: images }),
+
+      // Phase 2.4 P0-4: 确认卡片
+      setPendingConfirmation: (data) =>
+        set({ pendingConfirmation: data }),
+
+      clearPendingConfirmation: () =>
+        set({ pendingConfirmation: null }),
     }),
     {
       name: 'alphapilot-chat-storage',

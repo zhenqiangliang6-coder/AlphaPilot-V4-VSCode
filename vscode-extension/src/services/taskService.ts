@@ -123,6 +123,7 @@ export class FileOpsService {
 // 如果需要在 extension.ts 中初始化并共享，建议在 extension.ts 中创建实例并传递
 
 import { Task, TaskStatus } from '../types/task';
+import { resolveTaskStatus, toUiTaskStatus } from '../taskModel';
 import { taskProtocolAdapter } from './taskProtocolAdapter';
 import type { TaskSubmissionOptions } from './taskProtocolAdapter';
 
@@ -316,7 +317,7 @@ class TaskService {
     const task = this.tasks.get(taskId);
     if (task) {
       task.result = result;
-      task.status = 'completed';
+      task.status = toUiTaskStatus(resolveTaskStatus(result).status);
       task.completedAt = Date.now();
       task.updatedAt = Date.now();
       this.saveTasksToStorage();

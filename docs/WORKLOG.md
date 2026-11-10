@@ -1197,3 +1197,133 @@ word-break: break-word;
 - 编译通过（`tsc && vite build`，48.77s，退出码 0）
 - TypeScript 诊断零错误
 - Python 模拟验证：8 条压缩表格全部正确还原，行列对齐无误
+
+---
+
+## 2026-11-05 🛡️ Step 1: Verification Governor（智能验证治理）— Shadow Mode 完成
+
+> **"第一版完全确定性，Scope 与 Risk 独立维度，Shadow Mode 只观察不干预，等 R7 真实链路验证后再进入 Step 2。"**
+
+### 背景：为什么需要 Verification Governor？
+
+Round 5-10 的执行链中，每次 `test` 步骤运行后如果失败，AlphaPilot 会启动 fix→retest 闭环。但当前系统缺少一个关键环节：**在 test 运行前，分析文件变更的影响范围**。没有这个分析，系统的 fix 策略是盲目的。
+
+Verification Governor 的目标是：
+1. **Impact Analyzer**（Step 1）：分析文件变更 → 输出 Impact Profile
+2. **Static Check**（Step 2，未来）：编译检查 + 类型检查
+3. **Verification Selector**（Step 3，未来）：基于 Impact Profile 选择验证策略
+
+### 设计原则
+
+| 原则 | 说明 |
+|------|------|
+| **零 LLM** | 第一版纯确定性规则，不调用任何大模型 |
+| **Scope ⟂ Risk** | 影响范围（cosmetic/module/multi_module/wide）与风险等级（low/medium/high）独立判定 |
+| **基于真实 diff** | 不只根据文件路径判断，必须结合 old_content/new_content diff 和 AST 符号对比 |
+| **Shadow Mode** | 新治理链仅观察记录到 `context.meta.verification_governance`，不改变现有执行行为 |
+| **Governance 在变更后** | 必须在真实 `final_file_ops` 写入后分析，refine/fix 后重新计算 |
+| **不拥有独立状态机** | 遵循现有 G10.2 状态契约，不引入新状态 |
+
+### 核心实现
+
+**新建**：[`verification_governor.py`](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/python_worker/agents/qwen/step_executor/verification_governor.py)
+
+```python
+class VerificationGovernor:
+    def __init__(self, context):
+        ...
+    
+    def analyze_impact(self) -> dict:
+        """收集 file_ops → 分类文件类型 → diff 信号分析 → AST 符号对比
+           → Blast Radius 估算 → 风险计算 → Impact Profile
+           写入 context.meta["verification_governance"] 审计记录
+        """
+```
+
+**核心函数**：
+
+| 函数 | 作用 |
+|------|------|
+| `_collect_file_changes()` | 从 `final_file_ops` 收集变更，优先磁盘读取，回退到 file_op 携带的 old_content |
+| `_classify_file_types()` | 分类为 code/test/config/doc/schema，识别路由装饰器、测试文件 |
+| `_analyze_diff_signals()` | 基于 unified diff 检测：新增/删除/修改行数、docstring-only、函数签名变更、import 变更 |
+| `_detect_changed_symbols()` | AST 解析 old/new 代码，剥离 docstring 后对比函数/类/装饰器名称 |
+| `_estimate_blast_radius()` | 扫描目标模块的 import 关系，估算受影响文件数 |
+| `_calculate_risk()` | 综合信号计算 risk_level：schema 变更强制 high、API route 变更/多文件 import 变更提级 |
+| `_build_impact_profile()` | 输出结构化 `{scope, risk_level, changed_files, signals, blast_radius, confidence}` |
+
+**Scope 判定规则**：
+
+| 信号 | Scope |
+|------|-------|
+| 仅 .md / docstring-only / 仅注释变更 | `cosmetic` |
+| 仅单个 .py 内部逻辑变更，无 API 变更 | `module` |
+| 同一模块多文件或跨模块 import 链变更 | `multi_module` |
+| 核心路由 + 依赖模块 + Schema 联动变更 | `wide` |
+
+**Risk Level 判定规则**：
+
+| 信号 | Risk |
+|------|------|
+| 仅 .md / 注释 / docstring | `low` |
+| 普通 .py 内部逻辑，无公共接口变更 | `medium` |
+| Schema 文件变更、API route 装饰器变更、多文件公共函数签名变更 | `high` |
+
+### Shadow Mode 嵌入
+
+**修改**：[`step_runner.py`](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/python_worker/agents/qwen/step_runner.py#L98-L116)
+
+在 `execute_step("test")` 调用前注入：
+
+```python
+if step.get("type") == "test":
+    try:
+        from .step_executor.verification_governor import VerificationGovernor
+        _vg = VerificationGovernor(context)
+        context["meta"]["verification_governance"] = _vg.analyze_impact()
+    except Exception as _vg_err:
+        context["meta"]["verification_governance"] = {
+            "mode": "shadow",
+            "error": str(_vg_err),
+            "analysis_failed": True,
+        }
+```
+
+- 完全 try-except 包裹，任何异常不阻断主执行链
+- 结果写入 `context.meta.verification_governance` 审计字段
+- `analysis_failed=True` 降级标记
+
+### 模块注册
+
+- [x] `step_executor/__init__.py` 导出 `VerificationGovernor`
+- [x] `python_worker/__init__.py` + `agents/__init__.py` + `agents/qwen/__init__.py` 补全
+- [x] `CHANGELOG.md` G10.6 能力注册完成
+
+### 测试验证
+
+| 测试文件 | 范围 | 结果 |
+|----------|------|------|
+| `test_verification_governor.py` | 单元测试：R7-A~R7-E 五类场景 | 33/33 ✅ |
+| `test_round7_shadow_mode.py` | 集成测试：Shadow Mode 嵌入验证 | 10/10 ✅ |
+
+### Redis 架构修复
+
+**问题**：Worker（Upstash Redis）与 Node API（local Redis 自动降级）使用不同 Redis 实例，导致任务无法被 Worker 消费。
+
+**修复**：
+1. [`.env`](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/python_worker/.env)：`LOCAL_REDIS_MODELS` 增加 `qwen`
+2. [`worker_config.py`](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/python_worker/worker_config.py#L95-L97)：`get_redis_type_for_model()` 增加 auto 模式降级到 local Redis 的逻辑，匹配 Node API 行为
+
+### 真实链路验证（进行中）
+
+- **目标**：通过 `test_observe_task_system.py` R5→R6→R7 完整生产链路验证 Shadow Mode
+- **当前进展**：
+  - R5（architecture）：链路成功 ✅，执行/质量/治理 ❌（FileOps 解析异常 `'NoneType' object has no attribute 'endswith'`）
+  - R6（write_code）：进行中被中断
+- **待继续**：R6→R7 完成，重点观察 R7（bug_fix）的 Shadow Mode impact_profile 输出
+
+### 待进入 Step 2
+
+- [ ] R5-R7 真实链路验证完成
+- [ ] Shadow Mode impact_profile 与预期对比分析
+- [ ] Step 2：Static Check Capability（编译 + ruff + mypy）

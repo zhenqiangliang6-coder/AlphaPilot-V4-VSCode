@@ -13,10 +13,19 @@ ALL_INTENTS = (
     "fix_code", "explain_and_fix", "explain_code",
     "creative_writing", "analysis", "architecture",
     "refactor", "generate_doc", "set_preference",
-    "vision_analysis",
+    "vision_analysis", "execute_operation", "run_tests",
 )
 
 ALL_TARGET_TYPES = ("file", "code", "test", "config", "infra", "dep", "none")
+
+ALL_TARGET_LANGUAGES = ("python", "java", "javascript", "typescript")
+
+LANGUAGE_TO_TASK_TYPE = {
+    "python": "qwen_generate",
+    "java": "java_generate",
+    "javascript": "node_generate",
+    "typescript": "ts_generate",
+}
 
 LITE_CLASSIFY_PROMPT = """你是意图路由器。根据用户输入，只输出一个 JSON 对象，不要任何解释。
 
@@ -28,6 +37,7 @@ LITE_CLASSIFY_PROMPT = """你是意图路由器。根据用户输入，只输出
     - workspace_maintenance: 项目级别维护（缩进/格式化/语法检查）
     - write_code: 编写/生成/创建/修改/添加 代码/文件/配置/测试/文档/模块/组件/功能
     - fix_code: 修复编译错误/类型错误/运行时错误（有明确错误信息）
+    - run_tests: 运行现有项目测试；不得生成测试或修改项目文件
     - explain_and_fix: 既解释原因又修复问题
     - explain_code: 解释代码含义/阅读代码/理解逻辑
     - creative_writing: 创作性写作（非代码）
@@ -37,6 +47,43 @@ LITE_CLASSIFY_PROMPT = """你是意图路由器。根据用户输入，只输出
     - generate_doc: 生成文档/注释/API文档
     - set_preference: 设定项目偏好/记录约定/记住规则（不是教学解释。如"记住XX放YY"、"以后都用ZZ"、"默认遵循AA规范"）
     - vision_analysis: 图片/截图/设计稿/图表分析（用户上传了图片或明确提到图片分析）
+    - execute_operation: 执行系统操作（Git上传/推送/统计代码行数/运行shell命令/环境检测等，不是生成工具脚本，是直接执行操作并返回结果）
+
+    复合请求（is_compound）：
+    - 如果请求包含多个需要先后执行的独立动作（如"写XX然后上传GitHub"、"创建功能并测试然后统计代码"），设置 is_compound=true
+    - 每个子任务必须是一个独立的、可执行的指令
+    - "更新CHANGELOG"/"更新日志"/"工作日志"/"测试"/"运行测试" → 不是独立任务，应合并到上一个 write_code 中（CHANGELOG和测试是写代码链的内置步骤）
+    - phases 中每个元素是一个 {"type": "<intent>", "prompt": "<该阶段的完整指令>"} 对象
+
+    输出格式（必须严格 JSON）：
+    {"intent":"<intent>","target_type":"<target_type>","target_language":"<target_language>","confidence":<float>,"reasoning":"<一句话推理>","is_compound":false,"phases":[]}
+
+    目标语言（target_language）— 仅在 write_code/fix_code/refactor 时有效：
+    - python: 用户要求写Python代码、.py文件、FastAPI/Django/flask、pytest、pip/requirements.txt
+    - java: 用户要求写Java代码、.java文件、Spring Boot/Maven/Java项目、JUnit
+    - javascript: 用户要求写Node.js代码、.js文件、Express/NestJS、npm包、React/Vue组件
+    - typescript: 用户要求写TypeScript代码、.ts文件、tsconfig.json、类型注解、Next.js
+    - default: python（未明确指定时默认）
+
+    单任务示例：
+    用户："帮我写个排序函数"
+    输出：{"intent":"write_code","target_type":"code","target_language":"python","confidence":0.98,"reasoning":"明确要求编写代码函数","is_compound":false,"phases":[]}
+
+    用户："用Java写一个User类"
+    输出：{"intent":"write_code","target_type":"code","target_language":"java","confidence":0.96,"reasoning":"明确指定Java语言编写类","is_compound":false,"phases":[]}
+
+    用户："写一个TypeScript interface定义"
+    输出：{"intent":"write_code","target_type":"code","target_language":"typescript","confidence":0.97,"reasoning":"明确指定TypeScript编写接口","is_compound":false,"phases":[]}
+
+    用户："用Node.js写一个Express路由"
+    输出：{"intent":"write_code","target_type":"code","target_language":"javascript","confidence":0.95,"reasoning":"明确指定Node.js/Express框架","is_compound":false,"phases":[]}
+
+    复合任务示例：
+    用户："写一个登录功能，然后上传到GitHub"
+    输出：{"intent":"write_code","target_type":"code","confidence":0.95,"reasoning":"复合请求：先写代码后上传GitHub","is_compound":true,"phases":[{"type":"write_code","prompt":"写一个登录功能"},{"type":"execute_operation","prompt":"上传到GitHub"}]}
+
+    用户："创建用户管理模块并更新CHANGELOG，最后push到GitHub"
+    输出：{"intent":"write_code","target_type":"code","confidence":0.95,"reasoning":"复合请求：写代码+CHANGELOG合并为write_code，然后push","is_compound":true,"phases":[{"type":"write_code","prompt":"创建用户管理模块并更新CHANGELOG"},{"type":"execute_operation","prompt":"push到GitHub"}]}
 
     目标类型（target_type）：
     - code: 源代码/业务逻辑
@@ -85,6 +132,7 @@ LITE_CLASSIFY_PROMPT = """你是意图路由器。根据用户输入，只输出
 
     重要：运行测试、执行测试、run test 属于 write_code 而不是 workspace_maintenance。workspace_maintenance 仅限缩进/格式化/语法检查/环境安装。"记住""以后都""默认用""统一放"这类设定偏好的指令属于 set_preference 而不是 mentor_explain。
     "画项目结构图""画架构图""展示系统组成""描述模块关系""项目有哪些模块"这类请求属于 mentor_explain（教学解释性展示），而不是 generate_doc。generate_doc 仅限生成代码注释、API 文档、README 等技术文档。
+    重要：统计代码行数、项目有多少行代码、上传到Github、推送代码等请求属于 execute_operation（直接执行操作并返回结果），不是 write_code（不需要生成工具脚本）。
 
     现在分类（只输出 JSON）："""
 
@@ -361,6 +409,17 @@ INTENT_PATTERNS: Dict[str, list] = {
         r"(?:describe|analyze|explain).{0,12}(?:image|picture|screenshot)",
         r"screenshot|看图|OCR|图片识别",
     ],
+
+    "execute_operation": [
+        r"(?:上传|推送|push).{0,12}(?:到|至|github|GitHub|git)",
+        r"(?:github|git).{0,12}(?:上传|推送|push|upload)",
+        r"有多少行代码", r"代码行数统计", r"统计.*代码行",
+        r"count.*(?:line|代码)", r"(?:line|代码).*count",
+        r"(?:帮|请).{0,8}(?:运行|执行|run).{0,8}(?:命令|脚本|shell|bash)",
+        r"(?:检查|检测).{0,8}(?:环境|git.*环境|ssh.*环境|python.*环境|node.*环境)",
+        r"(?:配置|设置).{0,8}(?:git|ssh|github).{0,8}(?:密钥|key|token)",
+        r"git remote", r"git init", r"(?:clone|克隆).{0,8}(?:仓库|repo|项目)",
+    ],
 }
 
 # =========================================================
@@ -384,6 +443,8 @@ INTENT_TO_PERSONA: Dict[str, str] = {
     "generate_doc": "engineer",
     "set_preference": "engineer",
     "vision_analysis": "engineer",
+    "execute_operation": "engineer",
+    "run_tests": "engineer",
 }
 
 # =========================================================
@@ -444,6 +505,8 @@ _INTENT_DEFAULT_PROFILE: Dict[str, dict] = {
     "generate_doc":      dict(output_mode="document", ws_dep="read_only", fileops=True, scan=True, test=False, fmt="md", complexity="simple"),
     "set_preference":    dict(output_mode="text", ws_dep="read_write", fileops=True, scan=False, test=False, fmt="plain_text", complexity="simple"),
     "vision_analysis":  dict(output_mode="code", ws_dep="rw", fileops=True, scan=True, test=True, fmt="py", complexity="moderate"),
+    "execute_operation": dict(output_mode="text", ws_dep="rw", fileops=False, scan=True, test=False, fmt="plain_text", complexity="moderate"),
+    "run_tests":         dict(output_mode="text", ws_dep="read_only", fileops=False, scan=True, test=True, fmt="plain_text", complexity="simple"),
 }
 
 # 测试执行请求的正则模式 — 用于硬覆盖 LLM 误判为 workspace_maintenance 的情况
@@ -455,4 +518,16 @@ _TEST_EXECUTION_PATTERNS = [
     r"pytest\b",
     r"(?:npm|yarn|pnpm)\s+(?:run\s+)?test",
     r"python\s+(?:-m\s+)?pytest",
+]
+
+# ⭐ G7.0: 强制执行操作模式 — 硬覆盖 LLM 对操作型请求的误判
+FORCE_EXECUTE_OPERATION_PATTERNS = [
+    r"(?:上传|推送|push).{0,12}(?:到|至|github|GitHub|git|仓库|remote)",
+    r"帮我.{0,12}(?:上传|推送|push).{0,8}(?:到|github|项目)",
+    r"有多少行代码",
+    r"代码行数",
+    r"统计.*(?:代码行|行数)",
+    r"(?:项目|仓库).{0,16}(?:多少.*行|行数.*多少)",
+    r"git\s+push",
+    r"git\s+remote\s+add",
 ]

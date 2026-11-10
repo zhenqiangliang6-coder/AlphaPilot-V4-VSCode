@@ -1,0 +1,129 @@
+{
+  "baseline_version": "R8-FROZEN-v1.0",
+  "frozen_at": "2026-11-04",
+  "workspace": "C:\\Users\\49772\\Desktop\\shopflow_ecommerce",
+  "contract_changes": {
+    "schema_order_py": {
+      "change": "OrderItemCreate.unit_price: float → Optional[float] = None",
+      "reason": "R8 inventory integration uses inventory price; R6 backward compat needs optional field",
+      "verified": {
+        "missing_field": "PASS (unit_price=None)",
+        "explicit_null": "PASS (unit_price=None)",
+        "valid_number": "PASS (unit_price=99.99)",
+        "pydantic_version": "2.13.5"
+      }
+    },
+    "test_inventory_py": {
+      "change": "POST /orders assert 200 → 201",
+      "reason": "R6 router definition uses status_code=201; R8 LLM-generated test had wrong expectation",
+      "verified": {
+        "router_status_code": "201 (line 11 of routers/orders.py)",
+        "r6_test_orders_py": "already asserts 201 (unchanged)"
+      }
+    },
+    "order_service_py": {
+      "change": "restored OrderService class + VALID_TRANSITIONS + CRUD + optional inventory check",
+      "reason": "R8 LLM deleted OrderService class, replaced with bare create_order() function",
+      "preserved_contracts": [
+        "OrderService(db) constructor",
+        "create_order(), get_orders(), get_order(), update_status(), delete_order()",
+        "VALID_TRANSITIONS dict (state machine)",
+        "illegal transition → HTTP 422"
+      ]
+    },
+    "routers_orders_py": {
+      "change": "restored class-based service call (OrderService(db)) + original CRUD endpoints",
+      "reason": "R8 LLM replaced with direct function calls, removed status validation"
+    },
+    "routers__init___py": {
+      "change": "export both orders and inventory routers",
+      "reason": "R8 LLM only exported inventory router, breaking orders router loading"
+    },
+    "services__init___py": {
+      "change": "restored from backend.services import OrderService",
+      "reason": "R8 LLM removed the import, causing ImportError chain"
+    }
+  },
+  "test_results": {
+    "total": 19,
+    "passed": 19,
+    "failed": 0,
+    "pytest_version": "9.0.2",
+    "python_version": "3.11.3",
+    "timestamp": "2026-11-04",
+    "key_preserved_tests": [
+      "test_update_order_status_valid",
+      "test_update_order_status_invalid_transition",
+      "test_create_order",
+      "test_get_orders_with_data",
+      "test_get_single_order",
+      "test_delete_order",
+      "test_order_deducts_inventory",
+      "test_order_insufficient_stock"
+    ]
+  },
+  "rollback_verification": {
+    "test_new_files_deleted": "PASS",
+    "test_modified_files_restored": "PASS",
+    "test_deleted_files_recreated": "PASS",
+    "test_non_python_files": "PASS",
+    "test_empty_dir_cleanup": "PASS",
+    "test_consistency": "PASS"
+  },
+  "traceback_extraction": {
+    "old_behavior": "keyword-based line matching, max 60 lines, potential truncation of final exception",
+    "new_behavior": "dual-layer: [1] structured diagnosis (exception type + message + call chain + failed summary) [2] raw tail 6000 chars context",
+    "ast_verified": "PASS",
+    "boundary_tests": {
+      "status": "VERIFIED",
+      "total": 8,
+      "passed": 8,
+      "scenarios": {
+        "T1_truncation": "PASS (超长输出末尾异常保留)",
+        "T2_unicode": "PASS (中文+特殊字符)",
+        "T3_multiple_exceptions": "PASS (stdout+stderr 双流)",
+        "T4_empty_output": "PASS (全通过不崩溃)",
+        "T5_importerror_deep_chain": "PASS (R8 真实场景回放)",
+        "T6_no_file_lines": "PASS (无调用链不崩溃)",
+        "T7_pytest_assertion_rewrite": "PASS (pytest 断言重写格式)",
+        "T8_syntax_error": "PASS (编译错误提取)"
+      },
+      "known_boundary": "pytest 断言重写不生成 AssertionError: 字符串，依赖 [失败摘要] 和证据层保留比较值"
+    }
+  },
+  "unverified_items": [
+    {
+      "item": "R8 full LLM贯穿 (test_round8_incremental_feature)",
+      "status": "VERIFICATION_BLOCKED",
+      "reason": "需要 MODELSCOPE_API_KEY",
+      "residual_risk": "手动修复的 workspace 可能与 LLM 实际生成行为有差异"
+    },
+    {
+      "item": "R9 cascading enum change (test_round9_cascading_change)",
+      "status": "VERIFICATION_BLOCKED",
+      "reason": "依赖 R8 贯穿通过",
+      "residual_risk": "prompt 需审计"
+    },
+    {
+      "item": "R10 service layer extraction (test_round10_refactor_service_layer)",
+      "status": "VERIFICATION_BLOCKED",
+      "reason": "依赖 R8/R9 贯穿通过",
+      "residual_risk": "prompt 需审计; R10 可能与已有 service 层冲突"
+    },
+    {
+      "item": "Traceback extraction boundary tests",
+      "status": "NOT_VERIFIED",
+      "reason": "已修改代码但未运行独立边界测试（截断、编码、多异常、无匹配）",
+      "residual_risk": "边界情况可能未正确提取"
+    }
+  ],
+  "verification_governance_rules_frozen": [
+    "每次修改前，记录已有契约和受影响范围",
+    "每次失败，保存完整原始证据",
+    "每次修复，记录具体文件差异和修复理由",
+    "每次回滚，验证工作区与快照一致",
+    "每次完成，执行针对性测试和必要的回归测试",
+    "每个未执行的检查，都必须有跳过理由和残余风险",
+    "最终报告必须区分 VERIFIED / PARTIALLY_VERIFIED / NOT_VERIFIED / VERIFICATION_FAILED / VERIFICATION_BLOCKED"
+  ]
+}

@@ -10,6 +10,12 @@ import { StepPanel } from './components/StepPanel';  // ⭐ v3.2 新增
 import { TaskHistoryPanel } from './components/TaskHistoryPanel';  // ⭐ v3.5+ 新增
 import { FileVersionPanel } from './components/FileVersionPanel';  // ⭐ v3.5+ 新增
 import { ProjectMemoryPanel } from './components/ProjectMemoryPanel';  // ⭐ v3.5+ 新增
+import { ConfirmationCard } from './components/ConfirmationCard';  // ⭐ Phase 2.4 P0-4
+import {
+  TestAuthorizationRequest,
+} from './components/TestAuthorizationCard';
+import { TestAuthorizationBar } from './components/TestAuthorizationBar';
+import { FileOpsConfirmCard } from './components/FileOpsConfirmCard';
 import { vscodeAPI } from './utils/vscode';
 
 function App() {
@@ -22,12 +28,26 @@ function App() {
     updateStep,
     setCurrentPhase,
     addArtifact,  // P1
+    pendingConfirmation,  // Phase 2.4 P0-4
+    setPendingConfirmation,
+    clearPendingConfirmation,
   } = useChatStore();
 
   // ⭐ v2.7 新增：FileOps 状态管理
   const [showFileOps, setShowFileOps] = useState(false);
+  const [showFileOpsPanel, setShowFileOpsPanel] = useState(false);
   const [currentFileOps, setCurrentFileOps] = useState<any[]>([]);
   const [currentTaskIdForFileOps, setCurrentTaskIdForFileOps] = useState<string | null>(null);
+  const [testAuthorizations, setTestAuthorizations] = useState<TestAuthorizationRequest[]>([]);
+
+  // P2: conversationId 多轮对话连续性
+  const [conversationId] = useState<string>(() => {
+    const saved = (vscodeAPI.getState() as any)?.conversationId;
+    if (saved) return saved;
+    const id = `conv-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    vscodeAPI.setState({ ...(vscodeAPI.getState() as any || {}), conversationId: id });
+    return id;
+  });
 
   // ⭐ v3.2 新增：StepPanel 侧边栏状态
   const [showStepPanel, setShowStepPanel] = useState(false);
@@ -50,6 +70,28 @@ function App() {
       console.log('📥 Extension → Webview:', message);
 
       switch (message.type) {
+        case 'test_authorization_required':
+          setTestAuthorizations((current) => [
+            ...current.filter((request) => request.taskId !== message.payload?.taskId),
+            { ...message.payload, mode: 'run', status: 'pending' },
+          ]);
+          break;
+
+        case 'test_repair_required':
+          setTestAuthorizations((current) => [
+            ...current.filter((request) => request.taskId !== message.payload?.taskId),
+            { ...message.payload, mode: 'repair', status: 'pending' },
+          ]);
+          break;
+
+        case 'test_authorization_status':
+          setTestAuthorizations((current) => current.map((request) => (
+            request.taskId === message.payload?.taskId
+              ? { ...request, ...message.payload }
+              : request
+          )));
+          break;
+
         case 'task_started':
           handleTaskStarted(message.payload);
           break;
@@ -96,14 +138,56 @@ function App() {
           console.log('[P1] Webview 收到 artifact_created:', message.payload.artifact_id);
           handleArtifactCreated(message.payload);
           break;
+
+        // Phase 2.4 P0-4: 确认请求
+        case 'confirmation_required':
+          console.log('🔔 [P0-4] Webview 收到 confirmation_required:', message.payload);
+          handleConfirmationRequired(message.payload);
+          break;
+
+        case 'confirmation_resolved':
+          console.log('✅ [P0-4] Webview 收到 confirmation_resolved:', message.payload);
+          handleConfirmationResolved(message.payload);
+          break;
       }
     };
 
     window.addEventListener('message', handleMessage);
+    vscodeAPI.postMessage({ type: 'webview_ready' });
     return () => window.removeEventListener('message', handleMessage);
   }, []);
 
+  const handleTestAuthorizationDecision = (
+    taskId: string,
+    action: 'run' | 'skip' | 'repair' | 'stop',
+  ) => {
+    const request = testAuthorizations.find((item) => item.taskId === taskId);
+    if (!request || request.status !== 'pending') return;
+
+    setTestAuthorizations((current) => current.map((item) => (
+      item.taskId === taskId
+        ? {
+          ...item,
+          status: action === 'run' ? 'running' : action === 'repair' ? 'submitting' : 'skipped',
+        }
+        : item
+    )));
+    vscodeAPI.postMessage({
+      type: 'test_authorization_decision',
+      payload: {
+        taskId,
+        action,
+      },
+    });
+  };
+
   const handleTaskStarted = (payload: any) => {
+    // P3: 校验 payload 完整性
+    if (!payload || !payload.task_id) {
+      console.warn('[P3] task_started payload 缺少 task_id，跳过');
+      return;
+    }
+
     // === 去重守卫：同一 task_id 只处理一次，防止 HTTP+WebSocket 双重推送 ===
     if (processedTaskIds.current.has(payload.task_id)) {
       console.log('⚠️ 跳过重复的 task_started:', payload.task_id);
@@ -121,13 +205,7 @@ function App() {
     
     console.log('🧠 Intent Router 决策:', { intent, persona });
     
-    // 添加用户消息
-    addMessage({
-      id: `user-${Date.now()}`,
-      role: 'user',
-      content: payload.prompt,
-      timestamp: Date.now()
-    });
+    // 用户消息已在 ChatInput.handleSubmit 中添加，此处只添加 AI 占位消息
 
     // 添加 AI 占位消息（支持分离的通道 + 意图/人格元数据）
     addMessage({
@@ -243,7 +321,8 @@ function App() {
     
     setCurrentTaskIdForFileOps(taskId);
     setCurrentFileOps(fileOps);
-    setShowFileOps(true);
+    // ⭐ v3.5: 不再自动弹窗，改为面板按钮触发
+    setShowFileOpsPanel(true);
   };
 
   // P1：处理 artifact_created 消息
@@ -258,6 +337,32 @@ function App() {
       created_at: payload.created_at || Date.now(),
     };
     addArtifact(payload.task_id, artifact);
+  };
+
+  // Phase 2.4 P0-4: 收到确认请求
+  const handleConfirmationRequired = (payload: any) => {
+    if (!payload || !payload.confirmation_id) {
+      console.warn('[P0-4] confirmation_required payload 缺少 confirmation_id');
+      return;
+    }
+    setPendingConfirmation({
+      confirmation_id: payload.confirmation_id,
+      task_id: payload.task_id,
+      target_path: payload.target_path,
+      project_mode: payload.project_mode,
+      allowed_paths: payload.allowed_paths,
+      estimated_impact: payload.estimated_impact,
+      expires_at: payload.expires_at,
+      expires_in_seconds: payload.expires_in_seconds,
+    });
+  };
+
+  // Phase 2.4 P0-4: 确认已解决（确认或拒绝后 Extension 发回结果）
+  const handleConfirmationResolved = (payload: any) => {
+    clearPendingConfirmation();
+    if (payload.status === 'submitted') {
+      console.log('[P0-4] Task submitted after confirmation:', payload.task_id);
+    }
   };
 
   // ⭐ v2.7 新增：应用文件操作
@@ -298,10 +403,29 @@ function App() {
         setShowFileVersion={setShowFileVersion}
         showProjectMemory={showProjectMemory}
         setShowProjectMemory={setShowProjectMemory}
+        showFileOpsPanel={showFileOpsPanel}
+        setShowFileOpsPanel={setShowFileOpsPanel}
+        pendingFileOpsCount={currentFileOps.length}
       />
       <ModelSelector />
       <MessageList />
-      <ChatInput />
+
+      {/* Phase 2.4 P0-4: 确认卡片 — 内联嵌入聊天流 */}
+      {pendingConfirmation && (
+        <div className="px-4 pb-2">
+          <ConfirmationCard
+            confirmation={pendingConfirmation}
+            onResolved={clearPendingConfirmation}
+          />
+        </div>
+      )}
+
+      <TestAuthorizationBar
+        requests={testAuthorizations}
+        onDecision={(taskId, action) => handleTestAuthorizationDecision(taskId, action)}
+      />
+
+      <ChatInput conversationId={conversationId} />
 
       {/* ⭐ v3.2 新增：StepPanel 侧边栏 */}
       {showStepPanel && (
@@ -355,6 +479,30 @@ function App() {
           projectId={selectedProjectId}
           projectName={selectedProjectName}
           onClose={() => setShowProjectMemory(false)}
+        />
+      )}
+
+      {/* P0: FileOps 确认卡片 — 内联嵌入聊天流（替代固定侧边栏） */}
+      {showFileOpsPanel && currentFileOps.length > 0 && (
+        <FileOpsConfirmCard
+          fileOps={currentFileOps}
+          taskId={currentTaskIdForFileOps}
+          onApplyAll={() => {
+            console.log('✅ 应用文件操作:', currentFileOps.length);
+            vscodeAPI.postMessage({
+              type: 'apply_file_ops',
+              taskId: currentTaskIdForFileOps,
+              fileOps: currentFileOps,
+            });
+            setShowFileOpsPanel(false);
+            setCurrentFileOps([]);
+            setCurrentTaskIdForFileOps(null);
+          }}
+          onRejectAll={() => {
+            setShowFileOpsPanel(false);
+            setCurrentFileOps([]);
+            setCurrentTaskIdForFileOps(null);
+          }}
         />
       )}
 

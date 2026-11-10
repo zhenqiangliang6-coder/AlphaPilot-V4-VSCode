@@ -1,14 +1,6 @@
 export const TASK_PROTOCOL_VERSION = '1.0' as const;
 
-export type ProtocolTaskStatus =
-  | 'pending'
-  | 'running'
-  | 'awaiting_authorization'
-  | 'completed'
-  | 'done'
-  | 'failed'
-  | 'error'
-  | 'cancelled';
+export type { ProtocolTaskStatus } from '../taskModel';
 
 export type AuthorizationStatus = 'pending' | 'approved' | 'denied' | 'expired';
 

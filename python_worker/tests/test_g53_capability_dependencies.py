@@ -682,11 +682,12 @@ class TestFinalGateConsistency:
         validate_architecture_evidence 通过检查 _capability_results
         中的 'workspace.scan' 键来区分这两种情况。
         """
-        # 场景 1: 架构意图 + 扫描未执行
+        # 场景 1: 架构意图 + 扫描未执行（需 workspace_scan 表示非空工作区）
         meta_no_scan = {
             "intent": "architecture",
             "_capability_results": {},
             "architecture_evidence": None,
+            "workspace_scan": {"python_file_count": 10},
         }
         gate1 = validate_architecture_evidence(meta_no_scan)
         assert not gate1.can_proceed()
@@ -697,8 +698,9 @@ class TestFinalGateConsistency:
         # 场景 2: 架构意图 + 扫描已执行但 arch 失败
         meta_scan_done = {
             "intent": "architecture",
-            "_capability_results": {"workspace.scan": {"file_count": 10}},
+            "_capability_results": {"workspace.scan": {"file_count": 10, "python_file_count": 10}},
             "architecture_evidence": None,
+            "workspace_scan": {"python_file_count": 10},
         }
         gate2 = validate_architecture_evidence(meta_scan_done)
         assert not gate2.can_proceed()

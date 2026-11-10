@@ -92,6 +92,10 @@ def get_redis_type_for_model(model_name: str = None) -> str:
         if domestic in model_lower:
             return "tair"
     
+    # auto 模式下优先本地 Redis（匹配 Node API 行为）
+    if os.getenv("REDIS_HOST") or os.getenv("REDIS_PORT"):
+        return "local"
+
     # 默认使用 Upstash（国际模型）
     return "upstash"
 
@@ -268,6 +272,56 @@ def get_worker_model_type():
 # ⭐ 全局 Redis 客户端（延迟初始化）
 _redis_client = None
 
+# ⭐ 本地 Redis 后备实例（惰性创建）
+_local_fallback_client = None
+
+def _get_local_fallback():
+    """获取本地 Redis 后备实例"""
+    global _local_fallback_client
+    if _local_fallback_client is None:
+        _local_fallback_client = create_redis_client(redis_type="local")
+    return _local_fallback_client
+
+
+class _AutoFallbackRedis:
+    """
+    自动降级 Redis 包装器
+    
+    当上游 Redis（Upstash/Tair）因限流等原因报错时，
+    自动降级到本地 Redis (localhost:6379)，保证服务不中断。
+    """
+    def __init__(self, primary_client):
+        self._primary = primary_client
+        self._fallback = None
+        self._degraded = False
+    
+    def _try_call(self, method_name, *args, **kwargs):
+        if self._degraded and self._fallback is not None:
+            return getattr(self._fallback, method_name)(*args, **kwargs)
+        
+        try:
+            return getattr(self._primary, method_name)(*args, **kwargs)
+        except Exception as e:
+            error_msg = str(e).lower()
+            if "max requests limit" in error_msg or "rate limit" in error_msg:
+                print(f"\n⚠️  Upstash Redis 限流，自动降级到本地 Redis (localhost:6379)")
+                print(f"   原因: {e}")
+                self._fallback = _get_local_fallback()
+                self._degraded = True
+                return getattr(self._fallback, method_name)(*args, **kwargs)
+            raise
+    
+    def __getattr__(self, name):
+        if name.startswith('_'):
+            raise AttributeError(name)
+        primary_attr = getattr(self._primary, name, None)
+        if callable(primary_attr):
+            def wrapper(*args, **kwargs):
+                return self._try_call(name, *args, **kwargs)
+            return wrapper
+        return primary_attr
+
+
 def get_redis_client():
     """
     获取 Redis 客户端（单例模式，延迟初始化）
@@ -278,7 +332,7 @@ def get_redis_client():
     - 其他国际模型 → Upstash
     
     返回:
-        Redis 客户端实例
+        Redis 客户端实例（带自动降级保护）
     """
     global _redis_client
     
@@ -289,10 +343,16 @@ def get_redis_client():
     model_type = get_worker_model_type()
     
     # 创建对应的 Redis 客户端
-    _redis_client = create_redis_client(model_name=f"{model_type}_worker")
+    raw_client = create_redis_client(model_name=f"{model_type}_worker")
     
     print(f"💡 Worker 类型: {model_type}")
     print(f"💡 Redis 类型: {get_redis_type_for_model(f'{model_type}_worker')}")
+    
+    # ⭐ 包装为自动降级客户端（Upstash 限流时自动切本地 Redis）
+    if get_redis_type_for_model(f"{model_type}_worker") == "upstash":
+        _redis_client = _AutoFallbackRedis(raw_client)
+    else:
+        _redis_client = raw_client
     
     return _redis_client
 

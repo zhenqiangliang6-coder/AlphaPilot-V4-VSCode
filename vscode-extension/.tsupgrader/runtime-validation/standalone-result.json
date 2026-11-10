@@ -1,0 +1,104 @@
+{
+  "planHash": "2d908cba8d851a0c1ce7a98350f705d45a12663eff8e0e01daeeb6f071a8a166",
+  "phase": "standalone",
+  "recordedAtUtc": "2026-11-02T10:27:04.9945308Z",
+  "retryCount": 1,
+  "resetBaseline": false,
+  "complete": true,
+  "result": {
+    "setupSucceeded": true,
+    "setupDurationMs": 0,
+    "setupFailureOutput": null,
+    "assertions": [
+      {
+        "name": "tests-pass",
+        "kind": "process",
+        "verificationMethod": "test-results",
+        "passed": true,
+        "timedOut": false,
+        "skipped": false,
+        "skippedReason": null,
+        "exitCode": 0,
+        "outputSample": "\r\n\u003E alphapilot@2.0.0 pretest\r\n\u003E npm run compile\r\n\r\n\r\n\u003E alphapilot@2.0.0 compile\r\n\u003E tsc -p ./\r\n\r\n\r\n\u003E alphapilot@2.0.0 test\r\n\u003E node --test --test-reporter=tap test/taskLifecycle.test.cjs\r\n\r\nTAP version 13\r\n# Subtest: allows recognized test commands and rejects shell chaining\r\nok 1 - allows recognized test commands and rejects shell chaining\r\n  ---\r\n  duration_ms: 1.8206\r\n  type: \u0027test\u0027\r\n  ...\r\n# Subtest: accepts only clean successful test evidence\r\nok 2 - accepts only clean successful test evidence\r\n  ---\r\n  duration_ms: 1.6333\r\n  type: \u0027test\u0027\r\n  ...\r\n1..2\r\n# tests 2\r\n# suites 0\r\n# pass 2\r\n# fail 0\r\n# cancelled 0\r\n# skipped 0\r\n# todo 0\r\n# duration_ms 132.8788\r\n",
+        "durationMs": 5723,
+        "testResults": {
+          "testFramework": "unknown",
+          "runnerDetectedFrom": "none",
+          "testsTotal": 0,
+          "testsPassed": 0,
+          "testsFailed": 0,
+          "testsSkipped": 0,
+          "parseFailed": true
+        }
+      },
+      {
+        "name": "webview-build",
+        "kind": "process",
+        "verificationMethod": "exit-code",
+        "passed": true,
+        "timedOut": false,
+        "skipped": false,
+        "skippedReason": null,
+        "exitCode": 0,
+        "outputSample": "\r\n\u003E alphapilot-webview@2.2.0 build\r\n\u003E tsc \u0026\u0026 vite build\r\n\r\n\u001B[36mvite v5.4.21 \u001B[32mbuilding for production...\u001B[36m\u001B[39m\r\ntransforming...\r\nBrowserslist: browsers data (caniuse-lite) is 7 months old. Please run:\r\n  npx update-browserslist-db@latest\r\n  Why you should do it regularly: https://github.com/browserslist/update-db#readme\r\n\u001B[32m\u2713\u001B[39m 3177 modules transformed.\r\nrendering chunks...\r\ncomputing gzip size...\r\n\u001B[2m../webview-dist/\u001B[22m\u001B[32mindex.html                              \u001B[39m\u001B[1m\u001B[2m    0.45 kB\u001B[22m\u001B[1m\u001B[22m\u001B[2m \u2502 gzip:   0.28 kB\u001B[22m\r\n\u001B[2m../webview-dist/\u001B[22m\u001B[35massets/index.css                        \u001B[39m\u001B[1m\u001B[2m   35.02 kB\u001B[22m\u001B[1m\u001B[22m\u001B[2m \u2502 gzip:   6.98 kB\u001B[22m\r\n\u001B[2m../webview-dist/\u001B[22m\u001B[36massets/channel.js                       \u001B[39m\u001B[1m\u001B[2m    0.10 kB\u001B[22m\u001B[1m\u001B[22m\u001B[2m \u2502 gzip:   0.11 kB\u001B[22m\r\n\u001B[2m../webview-dist/\u001B[22m\u001B[36massets/init.js                          \u001B[39m\u001B[1m\u001B[2m    0.15 kB\u001B[22m\u001B[1m\u001B[22m\u001B[2m \u2502 gzip:   0.13 kB\u001B[22m\r\n\u001B[2m../webview-dist/\u001B[22m\u001B[36massets/chunk-2Q5K7J3B.js                \u001B[39m\u001B[1m\u001B[2m    0.18 kB\u001B[22m\u001B[1m\u001B[22m\u001B[2m \u2502 gzip:   0.15 kB\u001B[22m\r\n\u001B[2m../webview-dist/\u001B[22m\u001B[36massets/chunk-XXDRQBXY.js                \u001B[39m\u001B[1m\u001B[2m    0.21 kB\u001B[22m\u001B[1m\u001B[22m\u001B[2m \u2502 gzip:   0.19 kB\u001B[22m\r\n\u001B[2m../webview-dist/\u001B[22m\u001B[36massets/chunk-JWPE2WC7.js                \u001B[39m\u001B[1m\u001B[2m    0.28 kB\u001B[22m\u001B[1m\u001B[22m\u001B[2m \u2502 gzip:   0.19 kB\u001B[22m\r\n\u001B[2m../webview-dist/\u001B[22m\u001B[36massets/chunk-5VM5RSS4.js                \u001B[39m\u001B[1m\u001B[2m    0.35 kB\u001B[22m\u001B[1m\u001B[22m\u001B[2m \u2502 gzip:   0.26 kB\u001B[22m\r\n\u001B[2m../webview-dist/\u001B[22m\u001B[36massets/swimlanesDiagram-AYQRV4AK.js     \u001B[39m\u001B[1m\u001B[2m    0.45 kB\u001B[22m\u001B[1m\u001B[22m\u001B[2m \u2502 gzip:   0.29 kB\u001B[22m\r\n\u001B[2m../webview-dist/\u001B[22m\u001B[36massets/chunk-VQ5W62QI.js                \u001B[39m\u001B[1m\u001B[2m    0.52 kB\u001B[22m\u001B[1m\u001B[22m\u001B[2m \u2502 gzip:   0.36 kB\u001B[22m\r\n\u001B[2m../webview-dist/\u001B[22m\u001B[36massets/infoDiagram-MVDRKAX5.js          \u001B[39m\u001B[1m\u001B[2m    0.53 kB\u001B[22m\u001B[1m\u001B[22m\u001B[2m \u2502 gzip:   0.36 kB\u001B[22m\r\n\u001B[2m../webview-dist/\u001B[22m\u001B[36massets/sizeCapture-INFHLROL.js          \u001B[39m\u001B[1m\u001B[2m    0.95 kB\u001B[22m\u001B[1m\u001B[22m\u001B[2m \u2502 gzip:   0.53 kB\u001B[22m\r\n\u001B[2m../webview-dist/\u001B[22m\u001B[36massets/ordinal.js                       \u001B[39m\u001B[1m\u001B[2m    1.18 kB\u001B[22m\u001B[1m\u001B[22m\u001B[2m \u2502 gzip:   0.56 kB\u001B[22m\r\n\u001B[2m../webview-dist/\u001B[22m\u001B[36massets/railroadDiagram-Y72NRBL7.js      \u001B[39m\u001B[1m\u001B[2m    1.54 kB\u001B[22m\u001B[1m\u001B[22m\u001B[2m \u2502 gzip:   0.70 kB\u001B[22m\r\n\u001B[2m../webview-dist/\u001B[22m\u001B[36massets/abnfDiagram-WEYOIA3C.js          \u001B[39m\u001B[1m\u001B[2m    1.74 kB\u001B[22m\u001B[1m\u001B[22m\u001B[2m \u2502 gzip:   0.84 kB\u001B[22m\r\n\u001B[2m../webview-dist/\u001B[22m\u001B[36massets/chunk-55XCU76K.js                \u001B[39m\u001B[1m\u001B[2m    1.84 kB\u001B[22m\u001B[1m\u001B[22m\u001B[2m \u2502 gzip:   0.81 kB\u001B[22m\r\n\u001B[2m../webview-dist/\u001B[22m\u001B[36massets/pegDiagram-ECIUJNBX.js           \u001B[39m\u001B[1m\u001B[2m    1.89 kB\u001B[22m\u001B[1m\u001B[22m\u001B[2m \u2502 gzip:   0.87 kB\u001B[22m\r\n\u001B[2m../webview-dist/\u001B[22m\u001B[36massets/ebnfDiagram-V4P3TTPT.js          \u001B[39m\u001B[1m\u001B[2m    1.93 kB\u001B[22m\u001B[1m\u001B[22m\u001B[2m \u2502 gzip:   0.82 kB\u001B[22m\r\n\u001B[2m../webview-dist/\u001B[22m\u001B[36massets/arc.js                           \u001B[39m\u001B[1m\u001B[2m    3.43 kB\u001B[22m\u001B[1m\u001B[22m\u001B[2m \u2502 gzip:   1.47 kB\u001B[22m\r\n\u001B[2m../webview-dist/\u001B[22m\u001B[36massets/diagram-I5XIIV2D.js              \u001B[39m\u001B[1m\u001B[2m    4.24 kB\u001B[22m\u001B[1m\u001B[22m\u001B[2m \u2502 gzip:   1.86 kB\u001B[22m\r\n\u001B[2m../webview-dist/\u001B[22m\u001B[36massets/defaultLocale.js                 \u001B[39m\u001B[1m\u001B[2m    4.69 kB\u001B[22m\u001B[1m\u001B[22m\u001B[2m \u2502 gzip:   2.18 kB\u001B[22m\r\n\u001B[2m../webview-dist/\u001B[22m\u001B[36massets/chunk-4EMNKR2T.js                \u001B[39m\u001B[1m\u001B[2m    5.60 kB\u001B[22m\u001B[1m\u001B[22m\u001B[2m \u2502 gzip:   2.58 kB\u001B[22m\r\n\u001B[2m../webview-dist/\u001B[22m\u001B[36massets/linear.js                        \u001B[39m\u001B[1m\u001B[2m    5.63 kB\u001B[22m\u001B[1m\u001B[22m\u001B[2m \u2502 gzip:   2.27 kB\u001B[22m\r\n\u001B[2m../webview-dist/\u001B[22m\u001B[36massets/diagram-RJA3I4VV.js              \u001B[39m\u001B[1m\u001B[2m    6.17 kB\u001B[22m\u001B[1m\u001B[22m\u001B[2m \u2502 gzip:   2.63 kB\u001B[22m\r\n\u001B[2m../webview-dist/\u001B[22m\u001B[36massets/pieDiagram-GNMPY74T.js           \u001B[39m\u001B[1m\u001B[2m    6.26 kB\u001B[22m\u001B[1m\u001B[22m\u001B[2m \u2502 gzip:   2.58 kB\u001B[22m\r\n\u001B[2m../webview-dist/\u001B[22m\u001B[36massets/diagram-ODIL2UCW.js              \u001B[39m\u001B[1m\u001B[2m    8.22 kB\u001B[22m\u001B[1m\u001B[22m\u001B[2m \u2502 gzip:   3.67 kB\u001B[22m\r\n\u001B[2m../webview-dist/\u001B[22m\u001B[36massets/cynefinDiagram-WF24UDRP.js       \u001B[39m\u001B[1m\u001B[2m   10.02 kB\u001B[22m\u001B[1m\u001B[22m\u001B[2m \u2502 gzip\n\u2026[truncated]",
+        "durationMs": 31131
+      },
+      {
+        "name": "extension-package",
+        "kind": "process",
+        "verificationMethod": "exit-code",
+        "passed": false,
+        "timedOut": false,
+        "skipped": false,
+        "skippedReason": null,
+        "exitCode": 1,
+        "outputSample": " WARNING  LICENSE, LICENSE.md, or LICENSE.txt not found\r\n ERROR  The specified icon \u0027extension/images/icon.png\u0027 wasn\u0027t found in the extension.\r\n",
+        "durationMs": 7064
+      }
+    ],
+    "executions": [
+      {
+        "source": "tests-pass",
+        "resolvedExecutable": "C:\\Program Files\\nodejs\\npm.CMD",
+        "args": [
+          "test"
+        ],
+        "cwd": "D:\\Copilot_Alphapilot\\Copilot_Alphapilot\\vscode-extension",
+        "env": {},
+        "prependPath": [],
+        "platform": "win32"
+      },
+      {
+        "source": "webview-build",
+        "resolvedExecutable": "C:\\Program Files\\nodejs\\npm.CMD",
+        "args": [
+          "--prefix",
+          "webview",
+          "run",
+          "build"
+        ],
+        "cwd": "D:\\Copilot_Alphapilot\\Copilot_Alphapilot\\vscode-extension",
+        "env": {},
+        "prependPath": [],
+        "platform": "win32"
+      },
+      {
+        "source": "extension-package",
+        "resolvedExecutable": "C:\\Program Files\\nodejs\\npm.CMD",
+        "args": [
+          "exec",
+          "--",
+          "vsce",
+          "package",
+          "--no-dependencies",
+          "--out",
+          ".tsupgrader/runtime-validation/alphapilot-validation.vsix"
+        ],
+        "cwd": "D:\\Copilot_Alphapilot\\Copilot_Alphapilot\\vscode-extension",
+        "env": {},
+        "prependPath": [],
+        "platform": "win32"
+      }
+    ]
+  }
+}

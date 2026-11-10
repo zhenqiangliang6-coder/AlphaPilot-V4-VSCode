@@ -12,9 +12,9 @@
 import os
 from .utils import extract_code
 from .prompts import docstring_prompt
-from ....file_ops import create_file_op, filter_valid_file_ops, get_python_files
+from ....file_ops import create_file_op, filter_valid_file_ops, get_python_files, merge_file_ops
 from ....worker_config import create_event, stream_start, stream_chunk, stream_end
-from ..qwen_api import call_qwen_with_persona, call_qwen
+from ..qwen_api import call_qwen_with_persona, call_llm, call_llm_with_persona
 
 
 def run_docstring_step(step, context, events, task_id=None):
@@ -77,9 +77,9 @@ def run_docstring_step(step, context, events, task_id=None):
             prompt = docstring_prompt(content)
             
             if persona_config:
-                response = call_qwen_with_persona(prompt, persona_config, use_stream=False)
+                response = call_llm_with_persona(prompt, persona_config, use_stream=False)
             else:
-                response = call_qwen(prompt)
+                response = call_llm(prompt)
             
             documented_code = extract_code(response, fallback_strategies=True)
             
@@ -127,8 +127,8 @@ def run_docstring_step(step, context, events, task_id=None):
             ))
 
     if successful_results:
-        context["final_file_ops"] = updated_file_ops
-        context["file_ops"] = updated_file_ops
+        # v3.5: 使用 merge_file_ops 增量合并，保护非 Python 文件不被丢弃
+        merge_file_ops(context, updated_file_ops, source_step="docstring")
 
     failed_results = [result for result in results if result.get("error")]
     if successful_results:

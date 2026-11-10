@@ -336,9 +336,7 @@ Write-Host "   🐍 Python: $pythonExe" -ForegroundColor Cyan
 $workers = @(
     @{Name="Qwen"; Script="python_worker.agents.qwen.qwen_worker_v2"; EnvId="qwen-worker-1"},
     @{Name="Gemini"; Script="python_worker.agents.gemini.gemini_worker_v2"; EnvId="gemini-worker-1"},
-    @{Name="MaaS"; Script="python_worker.agents.maas.maas_worker_v3"; EnvId="maas-worker-1"},
     @{Name="ModelScope"; Script="python_worker.agents.modelscope.modelscope_worker_v3"; EnvId="modelscope-worker-1"},
-    @{Name="DeepSeek"; Script="python_worker.agents.deepeek.deepseek_worker_v3"; EnvId="deepseek-worker-1"},
     @{Name="Local LLM"; Script="python_worker.agents.local_llm.local_worker_v3"; EnvId="local-worker-1"}
 )
 
@@ -366,6 +364,17 @@ foreach ($worker in $workers) {
 }
 
 # -------------------------------
+# 3. 多语言编译/测试工具链（已统一为 PythonWorker + LanguageAdapter）
+# -------------------------------
+# G8.11: Java/Node/TS Worker 已移除，不再启动独立的语言 Worker 进程。
+# 所有语言的编译、测试、修复由 PythonWorker + LanguageAdapter + CommandExecutor 统一处理。
+# 多语言 Worker 进程仅为环境工具技能（jdk/mvn/node/npm/tsc），由 LanguageAdapter 按需调用。
+Write-Host ""
+Write-Host "3️⃣ 多语言工具链（已统一为 PythonWorker + LanguageAdapter）" -ForegroundColor Yellow
+Write-Host "   ℹ️ Java/Node/TS Worker 已移除 (G8.11 统一 CodingWorker 架构)" -ForegroundColor Cyan
+Write-Host "   ℹ️ 编译/测试由 LanguageAdapter + CommandExecutor 统一执行" -ForegroundColor Cyan
+
+# -------------------------------
 # 4. 完成
 # -------------------------------
 Write-Host ""
@@ -389,8 +398,6 @@ Write-Host "   Node API: $(if (Test-PortInUse -Port 3000) { '✅ 运行中' } el
 Write-Host "   AlphaPilot Proxy: $(if (Test-PortInUse -Port 8000) { '✅ 运行中' } else { '❌ 未运行' })" -ForegroundColor White
 Write-Host "   Qwen Worker: ✅ 已启动 (新窗口)" -ForegroundColor White
 Write-Host "   Gemini Worker: ✅ 已启动 (新窗口)" -ForegroundColor White
-Write-Host "   MaaS Worker: ✅ 已启动 (新窗口)" -ForegroundColor White
 Write-Host "   ModelScope Worker: ✅ 已启动 (新窗口)" -ForegroundColor White
-Write-Host "   DeepSeek Worker: ✅ 已启动 (新窗口)" -ForegroundColor White
 Write-Host "   Local LLM Worker: ✅ 已启动 (新窗口)" -ForegroundColor White
 Write-Host ""

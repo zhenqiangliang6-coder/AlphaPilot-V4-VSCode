@@ -7,7 +7,7 @@
 from .utils import extract_code
 from .prompts import profile_prompt
 from ....code_executor import run_python
-from ..qwen_api import call_qwen
+from ..qwen_api import call_llm
 
 
 def run_profile_step(step, context, events, task_id=None):
@@ -63,7 +63,7 @@ def run_profile_step(step, context, events, task_id=None):
     
     try:
         prompt = profile_prompt.format(code=code)
-        response = call_qwen(prompt)
+        response = call_llm(prompt)
         
         # 验证返回值
         if response is None:

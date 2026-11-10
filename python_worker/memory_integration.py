@@ -81,15 +81,20 @@ class MemoryIntegration:
         workspace_path: str = None
     ) -> MemoryContext:
         """
-        构建记忆上下文（任务开始前调用）—— 融合三层记忆
-        
+        构建记忆上下文（任务开始前调用）—— PG 中枢优先，临时层降级
+
+        策略：
+        1. 优先从 PG 检索（语义向量搜索 + 关键词回退）
+        2. PG 无结果或不可用时，降级到临时会话记忆（JSON 文件关键词匹配）
+        3. 避免两层结果拼接导致内容重复
+
         参数:
             user_id: 用户ID
             task_id: 任务ID
             prompt: 原始提示词
             max_tokens: 最大 token 数
-            workspace_path: 项目工作区路径（用于临时会话记忆）
-            
+            workspace_path: 项目工作区路径（用于临时会话记忆降级）
+
         返回:
             MemoryContext: 包含记忆上下文的对象
         """
@@ -97,8 +102,9 @@ class MemoryIntegration:
 
         pg_memory = ""
         temp_memory = ""
-        has_any_memory = False
+        source = "none"
 
+        # ---- 1. PG 中枢检索（优先） ----
         if service is not None:
             try:
                 pg_memory = service.build_memory_context(
@@ -109,28 +115,27 @@ class MemoryIntegration:
             except Exception as e:
                 print(f"[MEMORY] PostgreSQL 记忆检索失败: {e}")
 
-        if workspace_path:
-            try:
-                temp_mem = get_temp_memory()
-                store = temp_mem.get_or_create_store(workspace_path)
-                temp_results = temp_mem.search(store, prompt, top_k=5)
-                if temp_results:
-                    temp_memory = temp_mem.format_context(temp_results)
-            except Exception as e:
-                print(f"[TEMP_MEMORY] 临时记忆检索失败: {e}")
-
-        parts = []
         if pg_memory.strip():
-            parts.append(pg_memory.strip())
-            has_any_memory = True
-        if temp_memory.strip():
-            parts.append(temp_memory.strip())
-            has_any_memory = True
+            source = "pg"
+        else:
+            # ---- 2. 临时会话记忆（降级：PG 无结果或不可用时） ----
+            if workspace_path:
+                try:
+                    temp_mem = get_temp_memory()
+                    store = temp_mem.get_or_create_store(workspace_path)
+                    temp_results = temp_mem.search(store, prompt, top_k=5)
+                    if temp_results:
+                        temp_memory = temp_mem.format_context(temp_results)
+                        source = "temp"
+                except Exception as e:
+                    print(f"[TEMP_MEMORY] 临时记忆检索失败: {e}")
 
-        full_context = "\n\n".join(parts)
+        full_context = (pg_memory or temp_memory).strip()
+        has_any_memory = bool(full_context)
 
         if has_any_memory:
-            print(f"[MEMORY] ✅ 为任务 {task_id} 注入记忆上下文 ({len(full_context)} 字符, PG={bool(pg_memory.strip())}, Temp={bool(temp_memory.strip())})")
+            print(f"[MEMORY] ✅ 为任务 {task_id} 注入记忆上下文 "
+                  f"({len(full_context)} 字符, source={source})")
         else:
             print(f"[MEMORY] ℹ️ 任务 {task_id} 无相关记忆")
 
@@ -183,23 +188,79 @@ class MemoryIntegration:
         workspace_path: str = None,
     ) -> bool:
         """
-        保存任务洞察（任务完成后调用）—— 同时保存到 PostgreSQL + 临时会话记忆
+        保存任务洞察（任务完成后调用）—— PG 中枢优先，临时层降级
         
+        策略：
+        1. 优先写入 PG（语义检索 + 持久化）
+        2. PG 不可用或写入 0 条时，降级到临时会话记忆（JSON 文件）
+        3. 避免两层同时写入导致检索时内容重复
+
         参数:
             user_id: 用户ID
             task_id: 任务ID
             task_result: 任务结果
             context: 任务上下文
-            workspace_path: 项目工作区路径（用于临时会话记忆）
+            workspace_path: 项目工作区路径（用于临时会话记忆降级）
             
         返回:
-            bool: 是否成功保存
+            bool: 是否成功保存（任意一层写入成功即返回 True）
         """
         context = context or {}
         saved_any = False
 
-        # ---- 1. 保存到临时会话记忆（最稳定的层，必定尝试） ----
-        if workspace_path:
+        # ---- 1. PG 记忆中枢（优先） ----
+        service = get_memory_service()
+        pg_saved_count = 0
+
+        if service is not None:
+            try:
+                insights = MemoryIntegration._extract_insights(task_result, context)
+
+                for insight in insights:
+                    decision = service.should_remember(
+                        user_id=user_id,
+                        content=insight["content"],
+                        context={
+                            "task_id": task_id,
+                            "task_outcome": insight.get("outcome", "success"),
+                            "task_complexity": insight.get("complexity", 0.5),
+                            "source_type": insight.get("source_type", "model_output"),
+                            "source_id": task_id,
+                        }
+                    )
+
+                    if decision.remember:
+                        if decision.target == "user_profiles":
+                            service.save_user_preference(user_id, insight["content"])
+                            pg_saved_count += 1
+                            continue
+
+                        from .memory_service import MemoryItem, MemoryType, MemoryStatus
+
+                        memory = MemoryItem(
+                            user_id=user_id,
+                            content=insight["content"],
+                            memory_type=decision.memory_type or MemoryType.KNOWLEDGE,
+                            importance_score=decision.importance,
+                            domain_tags=insight.get("tags", []),
+                            source_type=getattr(decision, "source_type", "") or insight.get("source_type", "model_output"),
+                            source_id=getattr(decision, "source_id", "") or task_id,
+                            status=MemoryStatus.ACTIVE,
+                        )
+
+                        memory_id = service.save_memory(memory)
+                        pg_saved_count += 1
+                        print(f"[MEMORY] ✅ 保存记忆: {memory_id} ({decision.reason})")
+
+                if pg_saved_count > 0:
+                    saved_any = True
+                print(f"[MEMORY] 📊 任务 {task_id} PG 中枢保存 {pg_saved_count} 条")
+
+            except Exception as e:
+                print(f"[MEMORY] ⚠️ PG 保存洞察失败: {e}")
+
+        # ---- 2. 临时会话记忆（降级：PG 不可用或写入 0 条时才用） ----
+        if not saved_any and workspace_path:
             try:
                 temp_mem = get_temp_memory()
                 store = temp_mem.get_or_create_store(workspace_path)
@@ -222,67 +283,10 @@ class MemoryIntegration:
                     result_preview=result_preview,
                 )
                 saved_any = True
-                print(f"[TEMP_MEMORY] ✅ 已保存会话记忆 (workspace: {workspace_path[:60]})")
+                print(f"[TEMP_MEMORY] ✅ 降级保存 (PG不可用或无洞察, workspace: {workspace_path[:60]})")
             except Exception as e:
-                print(f"[TEMP_MEMORY] 保存会话记忆失败: {e}")
+                print(f"[TEMP_MEMORY] 降级保存失败: {e}")
 
-        # ---- 2. 保存到 PostgreSQL 记忆中枢 ----
-        service = get_memory_service()
-        if service is None:
-            return saved_any
-        
-        try:
-            # 提取任务中的关键信息
-            insights = MemoryIntegration._extract_insights(task_result, context)
-            
-            saved_count = 0
-            for insight in insights:
-                # 守门人决策（传入 source_type 以区分可信度）
-                decision = service.should_remember(
-                    user_id=user_id,
-                    content=insight["content"],
-                    context={
-                        "task_id": task_id,
-                        "task_outcome": insight.get("outcome", "success"),
-                        "task_complexity": insight.get("complexity", 0.5),
-                        "source_type": insight.get("source_type", "model_output"),
-                        "source_id": task_id,
-                    }
-                )
-                
-                if decision.remember:
-                    if decision.target == "user_profiles":
-                        service.save_user_preference(user_id, insight["content"])
-                        saved_count += 1
-                        continue
-
-                    # 导入 MemoryItem 和 MemoryType
-                    from .memory_service import MemoryItem, MemoryType, MemoryStatus
-                    
-                    # 创建记忆（含来源追踪 + 验证状态）
-                    memory = MemoryItem(
-                        user_id=user_id,
-                        content=insight["content"],
-                        memory_type=decision.memory_type or MemoryType.KNOWLEDGE,
-                        importance_score=decision.importance,
-                        domain_tags=insight.get("tags", []),
-                        source_type=getattr(decision, "source_type", "") or insight.get("source_type", "model_output"),
-                        source_id=getattr(decision, "source_id", "") or task_id,
-                        status=getattr(decision, "verification_status", MemoryStatus.ACTIVE),
-                    )
-                    
-                    # 保存
-                    memory_id = service.save_memory(memory)
-                    saved_count += 1
-                    print(f"[MEMORY] ✅ 保存记忆: {memory_id} ({decision.reason})")
-            
-            if saved_count > 0:
-                saved_any = True
-            print(f"[MEMORY] 📊 任务 {task_id} 共保存 {saved_count} 条 PG 记忆")
-            
-        except Exception as e:
-            print(f"[MEMORY] ⚠️ 保存任务洞察失败: {e}")
-        
         return saved_any
     
     @staticmethod

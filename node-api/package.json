@@ -6,7 +6,10 @@
   "scripts": {
     "start": "node index.js",
     "dev": "node index.js",
-    "test": "node --test test-taskProtocol.js"
+    "test": "node --test test-taskProtocol.js",
+    "test:phase24": "node test-phase2.4-runner.js",
+    "test:confirm": "node test-confirmationManager.js",
+    "test:traffic": "node test-trafficMonitor.js"
   },
   "keywords": [],
   "author": "",

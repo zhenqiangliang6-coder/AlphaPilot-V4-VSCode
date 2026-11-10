@@ -1,0 +1,31 @@
+{
+  "audit_version": "R9-R10-PROMPT-AUDIT-v2.0",
+  "audited_at": "2026-11-04",
+  "status": "COMPLETE — R9 READY / R10 PROMPT+FIXED+VERIFICATION UPGRADED",
+  "r9_prompt": {
+    "verdict": "READY — 无需修改",
+    "summary": "修改订单状态枚举值 confirmed→processing, shipped→in_transit, delivered→completed",
+    "risk": "LOW"
+  },
+  "r10_prompt": {
+    "verdict": "FIXED — P0 gap 已修复, P1 gap 已修复",
+    "changes_applied": {
+      "prompt_fix": {
+        "old": "新建 backend/services/order_service.py",
+        "new": "完善已有 backend/services/order_service.py（该文件已存在，不得删除或退化）",
+        "added": "必须保留 OrderService 类、VALID_TRANSITIONS、库存扣减逻辑"
+      },
+      "verification_upgrade": {
+        "old_check": "'service' in router_content.lower()",
+        "new_checks": [
+          "OrderService class 存在",
+          "VALID_TRANSITIONS 存在",
+          "create_order/get_orders/get_order/update_status/delete_order 方法存在",
+          "InventoryService class 存在",
+          "create_inventory/get_inventory_list/get_inventory/update_inventory 方法存在",
+          "inventory router 不含 db.query()/db.add()/db.commit()/db.delete()/db.merge()/db.execute()"
+        ]
+      }
+    }
+  }
+}

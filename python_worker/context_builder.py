@@ -4,6 +4,7 @@ import ast
 import builtins
 import importlib.metadata
 import io
+import json
 import re
 import os
 import sys
@@ -338,6 +339,31 @@ def read_project_context(workspace_path):
     groups = [
         ("README", [*root.glob("README*"), *root.glob("readme*")]),
         ("tests", _matching_files(root / "tests", ("test_*.py", "*_test.py", "*.test.*", "*.spec.*"))),
+        (
+            "test configuration",
+            [
+                *(
+                    root / name
+                    for name in (
+                        "package.json",
+                        "pyproject.toml",
+                        "pytest.ini",
+                        "tox.ini",
+                        "setup.cfg",
+                        "Cargo.toml",
+                        "go.mod",
+                        "pom.xml",
+                        "build.gradle",
+                        "build.gradle.kts",
+                        "Makefile",
+                    )
+                ),
+                *root.glob("jest.config.*"),
+                *root.glob("vitest.config.*"),
+                *root.glob("playwright.config.*"),
+                *root.glob("cypress.config.*"),
+            ],
+        ),
         ("startup", _matching_files(root, ("*.ps1", "*.bat", "*.cmd", "*.sh", "docker-compose.y*", "Makefile"))),
     ]
     sections = []
@@ -366,6 +392,50 @@ def read_project_context(workspace_path):
             selected += 1
 
     return "\n\n".join(sections), sources
+
+
+def discover_project_test_command(workspace_path):
+    """Return a known test command only when its project configuration is present."""
+    if not isinstance(workspace_path, str) or not workspace_path.strip():
+        return None
+
+    try:
+        root = Path(workspace_path).resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+    if not root.is_dir():
+        return None
+
+    package_manifest = root / "package.json"
+    if package_manifest.is_file():
+        try:
+            package_data = json.loads(package_manifest.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            package_data = None
+        scripts = package_data.get("scripts") if isinstance(package_data, dict) else None
+        if isinstance(scripts, dict) and isinstance(scripts.get("test"), str) and scripts["test"].strip():
+            return "npm test"
+
+    python_tests = _matching_files(
+        root / "tests",
+        ("test_*.py", "*_test.py"),
+    )
+    if python_tests or any(
+        (root / name).is_file()
+        for name in ("pytest.ini", "tox.ini")
+    ):
+        return "python -m pytest"
+
+    pyproject = root / "pyproject.toml"
+    if pyproject.is_file():
+        try:
+            pyproject_text = pyproject.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            pyproject_text = ""
+        if re.search(r"(?m)^\s*\[tool\.pytest(?:\.|])", pyproject_text):
+            return "python -m pytest"
+
+    return None
 
 
 def read_requested_python_files(workspace_path, prompt):

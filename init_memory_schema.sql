@@ -210,7 +210,7 @@ BEGIN
     WHERE
         m.tenant_id = target_tenant_id
         AND m.user_id = target_user_id
-        AND m.status = 'active'
+        AND m.status IN ('active', 'verified', 'confirmed')
         AND m.activation_score >= min_activation
         AND m.embedding IS NOT NULL
     ORDER BY m.embedding <=> query_embedding

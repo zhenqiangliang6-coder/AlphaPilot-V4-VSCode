@@ -1030,7 +1030,7 @@ class MemoryService:
                        m.importance_score, m.activation_score
                 FROM memory_items m
                 WHERE m.user_id = %s
-                  AND m.status = 'active'
+                  AND m.status IN ('active', 'verified', 'confirmed')
                   AND ({where_clause})
                 ORDER BY m.importance_score DESC, m.last_accessed_at DESC NULLS LAST
                 LIMIT %s
@@ -1178,7 +1178,7 @@ class MemoryService:
                 SELECT id, content, summary, memory_type, importance_score
                 FROM memory_items
                 WHERE user_id = %s
-                  AND status = 'active'
+                  AND status IN ('active', 'verified', 'confirmed')
                   AND importance_score >= %s
                   AND created_at >= NOW() - make_interval(days => %s)
                 ORDER BY importance_score DESC, created_at DESC
@@ -1223,7 +1223,7 @@ class MemoryService:
             cursor.execute("""
                 UPDATE memory_items
                 SET activation_score = activation_score * %s
-                WHERE status = 'active'
+                WHERE status IN ('active', 'verified', 'confirmed')
                   AND last_accessed_at < %s
                   AND last_accessed_at >= %s
             """, (
@@ -1236,7 +1236,7 @@ class MemoryService:
             cursor.execute("""
                 UPDATE memory_items
                 SET activation_score = activation_score * %s
-                WHERE status = 'active'
+                WHERE status IN ('active', 'verified', 'confirmed')
                   AND last_accessed_at < %s
                   AND last_accessed_at >= %s
             """, (
@@ -1249,7 +1249,7 @@ class MemoryService:
             cursor.execute("""
                 UPDATE memory_items
                 SET activation_score = activation_score * %s
-                WHERE status = 'active'
+                WHERE status IN ('active', 'verified', 'confirmed')
                   AND last_accessed_at < %s
                   AND last_accessed_at >= %s
             """, (
@@ -1262,7 +1262,7 @@ class MemoryService:
             cursor.execute("""
                 UPDATE memory_items
                 SET activation_score = activation_score * %s
-                WHERE status = 'active'
+                WHERE status IN ('active', 'verified', 'confirmed')
                   AND last_accessed_at < %s
             """, (
                 self.config.ACTIVATION_DECAY_RATE_60D,

@@ -4,7 +4,7 @@
 # plan 步骤：生成代码结构规划（工业级容错 + 流式输出 + 人格配置版本）
 # ---------------------------------------------------------
 
-from ..qwen_api import call_qwen, call_qwen_stream, call_qwen_with_persona
+from ..qwen_api import call_llm, call_qwen_stream, call_qwen_with_persona, call_llm_with_persona
 from .prompts import plan_prompt, mentor_plan_prompt
 from ....worker_config import create_event, stream_chunk, stream_start, stream_end
 import re
@@ -88,7 +88,24 @@ def run_plan_step(step, context, events, task_id=None):
     llm_success = False
     
     try:
-        if context.get("meta", {}).get("intent") == "mentor_explain":
+        if context.get("meta", {}).get("intent") == "run_tests":
+            discovered_command = context.get("meta", {}).get("proposed_test_command")
+            if discovered_command:
+                prompt = (
+                    "你负责说明测试计划，不得修改或生成代码/测试，也不得更改系统已验证的测试命令。\n"
+                    f"系统根据项目实际测试文件/配置发现的命令：{discovered_command}\n"
+                    "准确说明将由宿主请求用户授权后运行该命令；不得声称命令已经运行。\n\n"
+                    f"项目分析：\n{analysis}"
+                )
+            else:
+                prompt = (
+                    "你负责识别现有项目测试命令，而不是编写或修改代码/测试。\n"
+                    "只根据项目分析和清单识别一个已配置的安全测试命令。若配置不足，明确写“未发现可确认的测试命令”。\n"
+                    "若找到命令，必须单独输出一行：TEST_COMMAND: <command>\n"
+                    "不要猜测不存在的脚本，不要输出安装依赖命令，不要执行命令。\n\n"
+                    f"项目分析：\n{analysis}"
+                )
+        elif context.get("meta", {}).get("intent") == "mentor_explain":
             prompt = mentor_plan_prompt(analysis)
         else:
             prompt = plan_prompt(analysis)
@@ -98,21 +115,21 @@ def run_plan_step(step, context, events, task_id=None):
             # ⭐ 使用带人格配置的流式调用
             if persona_config:
                 print(f"🚀 使用人格配置进行流式调用: {persona_config['name']}")
-                for chunk in call_qwen_with_persona(prompt, persona_config, use_stream=True):
+                for chunk in call_llm_with_persona(prompt, persona_config, use_stream=True):
                     result += chunk
                     # 实时发送到前端 (channel=reasoning)
                     stream_chunk(task_id, chunk, phase="plan", channel="reasoning")
             else:
                 # 降级到普通流式调用
-                for chunk in call_qwen_stream(prompt):
+                for chunk in call_llm_stream(prompt):
                     result += chunk
                     stream_chunk(task_id, chunk, phase="plan", channel="reasoning")
         else:
             # 非流式模式（向后兼容）
             if persona_config:
-                result = call_qwen_with_persona(prompt, persona_config, use_stream=False)
+                result = call_llm_with_persona(prompt, persona_config, use_stream=False)
             else:
-                result = call_qwen(prompt)
+                result = call_llm(prompt)
         
         # 验证返回值
         if not result:
@@ -143,14 +160,18 @@ def run_plan_step(step, context, events, task_id=None):
         r"(?im)^\s*TEST_COMMAND:\s*(.+?)\s*$",
         result or "",
     )
-    if command_match and context.get("meta", {}).get("intent") not in {
+    if (
+        command_match
+        and not context.get("meta", {}).get("proposed_test_command")
+        and context.get("meta", {}).get("intent") not in {
         "architecture",
         "code_review",
         "mentor_explain",
         "chat",
         "explain_code",
         "delete_files",
-    }:
+        }
+    ):
         context.setdefault("meta", {})["proposed_test_command"] = command_match.group(1).strip().strip("`")
 
     # ===== 第3.5层：⭐ Planning Contract v1.0 — 提取结构化产物 =====

@@ -77,6 +77,17 @@
   }
 }
 
+@keyframes slide-up {
+  from {
+    transform: translateY(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
 /* 动画类 */
 .animate-fade-in {
   animation: fade-in 0.3s ease-out;
@@ -92,6 +103,10 @@
 
 .animate-pulse-glow {
   animation: pulse-glow 2s infinite;
+}
+
+.animate-slide-up {
+  animation: slide-up 0.25s ease-out;
 }
 
 /* VS Code 主题颜色变量 */

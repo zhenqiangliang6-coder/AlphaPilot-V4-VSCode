@@ -4,28 +4,24 @@ from python_worker.agents.gemini.step_executor.execute_step import (
 from python_worker.agents.local_llm.step_executor.execute_step import (
     STEP_DISPATCHER as LOCAL_STEPS,
 )
-from python_worker.agents.maas.step_executor.execute_step import (
-    STEP_DISPATCHER as MAAS_STEPS,
-)
 from python_worker.agents.modelscope.step_executor.execute_step import (
     STEP_DISPATCHER as MODELSCOPE_STEPS,
 )
 from python_worker.agents.gemini import gemini_worker_v2 as GEMINI_WORKER
 from python_worker.agents.local_llm import local_worker_v3 as LOCAL_WORKER
-from python_worker.agents.maas import maas_worker_v3 as MAAS_WORKER
 from python_worker.agents.modelscope import modelscope_worker_v3 as MODELSCOPE_WORKER
 from python_worker.worker_runtime import prepare_worker_request
 
 
 def test_non_qwen_workers_dispatch_read_only_and_workspace_steps():
-    for dispatcher in (GEMINI_STEPS, MAAS_STEPS, MODELSCOPE_STEPS, LOCAL_STEPS):
+    for dispatcher in (GEMINI_STEPS, MODELSCOPE_STEPS, LOCAL_STEPS):
         assert "respond" in dispatcher
         assert "workspace" in dispatcher
         assert "docstring" in dispatcher
 
 
 def test_non_qwen_worker_entrypoints_expose_protocol_aware_task_execution():
-    for worker in (GEMINI_WORKER, MAAS_WORKER, MODELSCOPE_WORKER, LOCAL_WORKER):
+    for worker in (GEMINI_WORKER, MODELSCOPE_WORKER, LOCAL_WORKER):
         assert callable(worker.execute_task)
         assert "protocol_metadata" in worker.execute_task.__code__.co_varnames
 
@@ -33,7 +29,6 @@ def test_non_qwen_worker_entrypoints_expose_protocol_aware_task_execution():
 def test_non_qwen_workers_execute_the_shared_read_only_chain_without_provider_calls(monkeypatch):
     workers = (
         (GEMINI_WORKER, "gemini_generate", "gemini"),
-        (MAAS_WORKER, "maas_generate", "maas"),
         (MODELSCOPE_WORKER, "modelscope_generate", "modelscope"),
         (LOCAL_WORKER, "local_generate", "local"),
     )

@@ -6,15 +6,22 @@ import os, subprocess, sys
 
 from .utils import extract_code
 from .prompts import fix_prompt
-from ....file_ops import parse_fileops_v3, create_file_op
+from ....file_ops import parse_fileops_v3, create_file_op, merge_file_ops
 from ....worker_config import stream_start, stream_chunk, stream_end
-from ..qwen_api import call_qwen_with_persona, call_qwen
+from ..qwen_api import call_qwen_with_persona, call_llm, call_llm_with_persona
 from ....self_healing_adapter import run_healing_fix
 
 
 def _get_test_context(context):
     """
     从 context 中提取测试相关信息（错误信息 + 测试代码）
+
+    多路径容错读取，按优先级聚合：
+      路径1: item["error"]                    — 旧版兼容字段
+      路径2: item["output"]["text"]           — step 输出文本
+      路径3: item["test_result"]["stderr"]    — v3.3+ pytest 真实 stderr（主路径）
+      路径4: item["test_result"]["stdout"]    — 兜底（ImportError/SyntaxError 有时在 stdout）
+
     返回: (error_info: str, test_code: str)
     """
     ctx = context or {}
@@ -26,19 +33,33 @@ def _get_test_context(context):
         if item.get("type") != "test":
             continue
 
-        # 提取错误信息
-        if isinstance(item, dict) and item.get("status") == "failed":
-            test_errors.append(item.get("error", ""))
+        # 路径1: 旧的 error 字段（历史兼容）
+        raw_error = item.get("error")
+        if isinstance(raw_error, str) and raw_error.strip():
+            test_errors.append(raw_error)
+
+        # 路径2: step["output"]["text"] 中的测试摘要
         output = item.get("output", {})
         if isinstance(output, dict):
             text = output.get("text", "")
             if text:
                 test_errors.append(text)
 
-        # ⭐ 新增：提取测试代码
+        # 路径3: test_result.stderr — v3.3+ pytest 子进程的真实错误输出（主路径）
+        # 路径4: test_result.stdout — ImportError/SyntaxError 有时只出现在 stdout
+        test_result = item.get("test_result", {})
+        if isinstance(test_result, dict):
+            stderr = test_result.get("stderr") or ""
+            stdout = test_result.get("stdout") or ""
+            if stderr:
+                test_errors.append(stderr)
+            if stdout:
+                test_errors.append(stdout)
+
+        # 提取测试代码（取最新）
         item_test_code = item.get("test_code", "")
         if item_test_code:
-            test_code = item_test_code  # 取最新的测试代码
+            test_code = item_test_code
 
     error_info = "\n".join(test_errors) if test_errors else ""
     return error_info, test_code
@@ -62,18 +83,6 @@ def _get_source_files_from_context(context):
         if result:
             return result
     return {}
-
-
-def _dedup_merge_file_ops(context, new_ops):
-    ctx = context or {}
-    if not new_ops:
-        return
-    changed = {op.get("path") for op in new_ops if op.get("path")}
-    existing = ctx.get("final_file_ops") or ctx.get("file_ops", [])
-    merged = [op for op in existing if op.get("path") not in changed]
-    merged.extend(new_ops)
-    ctx["final_file_ops"] = merged
-    ctx["file_ops"] = merged
 
 
 def run_fix_step(
@@ -135,7 +144,7 @@ def run_fix_step(
 
         test_output = error_info
 
-        raw_llm = call_qwen_with_persona if persona else call_qwen
+        raw_llm = call_qwen_with_persona if persona else call_llm
 
         def llm_call_fn(prompt):
             return raw_llm(prompt, persona, use_stream=False) if persona else raw_llm(prompt)
@@ -147,7 +156,7 @@ def run_fix_step(
                 test_output=test_output,
                 project_dir=project_dir,
                 llm_call_fn=llm_call_fn,
-                max_rounds=1,
+                max_rounds=3,
             )
         except Exception as e:
             if task_id:
@@ -189,9 +198,9 @@ def run_fix_step(
                 response = llm_client.call(prompt)
             else:
                 if persona:
-                    response = call_qwen_with_persona(prompt, persona, use_stream=False)
+                    response = call_llm_with_persona(prompt, persona, use_stream=False)
                 else:
-                    response = call_qwen(prompt)
+                    response = call_llm(prompt)
 
             if file_parser is not None:
                 parsed_ops = file_parser.parse(response)
@@ -224,7 +233,7 @@ def run_fix_step(
         except Exception as error:
             errors.append(f"{path}: {error}")
 
-    _dedup_merge_file_ops(context, file_ops)
+    merge_file_ops(context, file_ops, source_step="fix")
 
     if file_ops and meta.get("collaboration_mode") == "engineer":
         status_text = f"{len(file_ops)} fix:VS Code"

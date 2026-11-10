@@ -303,7 +303,7 @@ class TaskModel:
 
         return {
             "version": TaskModel.VERSION,
-            "task_id": original_task["task_id"],
+            "task_id": original_task.get("task_id", "unknown"),
             "original_task": original_task,
             "failure_record": failure_record,
             "retry_count": retry_count,

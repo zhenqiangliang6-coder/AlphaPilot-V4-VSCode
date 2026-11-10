@@ -13,8 +13,8 @@ class QwenLLMClient(LLMClient):
     
     def __init__(self):
         # 延迟导入，避免循环依赖
-        from ..qwen_api import call_qwen, call_qwen_stream
-        self._call = call_qwen
+        from ..qwen_api import call_llm, call_qwen_stream
+        self._call = call_llm
         self._call_stream = call_qwen_stream
     
     def call(self, prompt: str, **kwargs) -> str:

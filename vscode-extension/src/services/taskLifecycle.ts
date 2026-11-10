@@ -16,7 +16,7 @@ export interface StopDecision {
   reasons: string[];
 }
 
-const TEST_COMMAND_PREFIX = /^(?:pytest|python(?:\.exe)?\s+-m\s+(?:pytest|unittest)|py\s+-m\s+(?:pytest|unittest)|npm\s+(?:test|run\s+test)|node(?:\.exe)?\s+--test|dotnet\s+test|go\s+test|cargo\s+test|mvn\s+test|gradle\s+test)(?:\s|$)/i;
+const TEST_COMMAND_PREFIX = /^(?:pytest|python(?:\.exe)?\s+-m\s+(?:pytest|unittest)|py\s+-m\s+(?:pytest|unittest)|npm\s+(?:test|run\s+test(?::[A-Za-z0-9_-]+)?)|(?:yarn|pnpm)\s+(?:(?:run\s+)?test(?::[A-Za-z0-9_-]+)?)|node(?:\.exe)?\s+--test|dotnet\s+test|go\s+test|cargo\s+test|mvn\s+test|gradle\s+test)(?:\s|$)/i;
 const SAFE_TEST_COMMAND_CHARACTERS = /^[A-Za-z0-9_./:=+\-\s]+$/;
 
 export function isAllowedTestCommand(command: string): boolean {

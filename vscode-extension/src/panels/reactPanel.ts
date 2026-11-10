@@ -13,6 +13,8 @@ export class ReactPanel {
   private disposables: vscode.Disposable[] = [];
   private currentTaskId: string | null = null;
   private imageSessions: Map<string, string> = new Map();
+  private webviewReady = false;
+  private pendingWebviewMessages: any[] = [];
 
   public static show(extensionUri: vscode.Uri): ReactPanel {
     if (ReactPanel.currentPanel) {
@@ -39,6 +41,10 @@ export class ReactPanel {
 
     ReactPanel.currentPanel = new ReactPanel(panel, extensionUri);
     return ReactPanel.currentPanel;
+  }
+
+  public static postToCurrentPanel(extensionUri: vscode.Uri, message: any): void {
+    ReactPanel.show(extensionUri).postToWebview(message);
   }
 
   private constructor(panel: vscode.WebviewPanel, extensionUri: vscode.Uri) {
@@ -210,6 +216,17 @@ export class ReactPanel {
     console.log('📥 Webview → Extension:', message);
 
     switch (message.type) {
+      case 'webview_ready':
+        this.webviewReady = true;
+        this.pendingWebviewMessages.splice(0).forEach((pending) => {
+          void this.panel.webview.postMessage(pending);
+        });
+        break;
+
+      case 'test_authorization_decision':
+        websocketService.triggerLocal('test_authorization_decision', message.payload);
+        break;
+
       case 'submit_task':
         this.handleSubmitTask(message.payload);
         break;
@@ -226,13 +243,31 @@ export class ReactPanel {
       case 'apply_file_ops':
         this.handleApplyFileOps(message.payload);
         break;
+
+      // Phase 2.4 P0-4: 用户确认
+      case 'confirm_task':
+        this.handleConfirmTask(message.payload);
+        break;
+
+      case 'deny_task':
+        this.handleDenyTask(message.payload);
+        break;
     }
+
+  }
+
+  private postToWebview(message: any): void {
+    if (!this.webviewReady) {
+      this.pendingWebviewMessages.push(message);
+      return;
+    }
+    void this.panel.webview.postMessage(message);
   }
 
   private async handleSubmitTask(payload: any): Promise<void> {
     let imageSessionId: string | null = null;
     try {
-      const { prompt, model, images: webviewImages } = payload;
+      const { prompt, model, images: webviewImages, conversationId } = payload;
 
       let imageRefs: { path: string; name: string }[] = [];
 
@@ -260,6 +295,7 @@ export class ReactPanel {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          conversation_id: conversationId,
           type: model,
           payload: {
             prompt,
@@ -271,6 +307,20 @@ export class ReactPanel {
       });
 
       const data = await response.json();
+      console.log('📨 服务器响应:', data.status);
+
+      if (data.status === 'confirmation_required') {
+        console.log('🔔 任务需要用户确认:', data.confirmation);
+        if (imageSessionId) {
+          this.imageSessions.set(data.task_id, imageSessionId);
+        }
+        this.panel.webview.postMessage({
+          type: 'confirmation_required',
+          payload: data.confirmation,
+        });
+        return;
+      }
+
       const taskId = data.task_id;
 
       console.log('✅ 任务提交成功:', taskId, imageRefs.length ? `(含 ${imageRefs.length} 张图片)` : '');
@@ -330,17 +380,32 @@ export class ReactPanel {
   }
 
   // ⭐ v2.7 新增：处理 apply_file_ops 请求,真正写盘
+  // ⭐ R6 安全契约：写盘前调用 /auth/approve 完成审批
   private async handleApplyFileOps(payload: any): Promise<void> {
     const { taskId, fileOps } = payload;
     
     console.log('📁 应用文件操作:', { taskId, count: fileOps.length });
-    
+
     try {
+      // ⭐ R6：写盘前先调用 /auth/approve 完成授权审批
+      const approveResp = await fetch('http://localhost:3000/auth/approve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ task_id: taskId }),
+      });
+      if (!approveResp.ok) {
+        throw new Error(`授权审批 HTTP ${approveResp.status}`);
+      }
+      const approveData = await approveResp.json();
+      if (approveData.success !== true) {
+        throw new Error(`授权审批失败: ${String(approveData.error || '未获准')}`);
+      }
+      console.log(`   🔓 [R6] 审批通过: task_id=${taskId}, approved_count=${approveData.approved_count}`);
+
       // 获取工作区根目录
       const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri;
       if (!workspaceRoot) {
-        vscode.window.showErrorMessage('❌ 未打开工作区文件夹');
-        return;
+        throw new Error('未打开工作区文件夹');
       }
       
       let successCount = 0;
@@ -350,38 +415,44 @@ export class ReactPanel {
       for (const op of fileOps) {
         try {
           const uri = vscode.Uri.joinPath(workspaceRoot, op.path);
-          
-          if (op.action === 'create' && op.type === 'file') {
+
+          // ⭐ v3.4: 兼容 Worker 格式 (op.op / op.file_type) 和旧格式 (op.action / op.type)
+          const action = op.op || op.action;
+          const type = op.file_type || op.type || 'file';
+
+          if (action === 'create' && type === 'file') {
             // 创建文件
             await vscode.workspace.fs.writeFile(
-              uri, 
+              uri,
               Buffer.from(op.content || '', 'utf8')
             );
             console.log(`✅ Created: ${op.path}`);
             successCount++;
-          }
-          
-          if (op.action === 'modify' && op.type === 'file') {
+          } else if (action === 'modify' && type === 'file') {
             // 修改文件
             await vscode.workspace.fs.writeFile(
-              uri, 
+              uri,
               Buffer.from(op.content || '', 'utf8')
             );
             console.log(`✅ Modified: ${op.path}`);
             successCount++;
-          }
-          
-          if (op.action === 'create' && op.type === 'folder') {
+          } else if (action === 'create' && type === 'folder') {
             // 创建目录
             await vscode.workspace.fs.createDirectory(uri);
             console.log(`✅ Created directory: ${op.path}`);
             successCount++;
-          }
-          
-          if (op.action === 'delete') {
+          } else if (action === 'delete') {
             // 删除文件/目录
             await vscode.workspace.fs.delete(uri, { recursive: true });
             console.log(`✅ Deleted: ${op.path}`);
+            successCount++;
+          } else {
+            // ⭐ 其他操作类型的文件写入（test, doc, rewrite 等）
+            await vscode.workspace.fs.writeFile(
+              uri,
+              Buffer.from(op.content || '', 'utf8')
+            );
+            console.log(`✅ Written (${action}): ${op.path}`);
             successCount++;
           }
           
@@ -403,6 +474,12 @@ export class ReactPanel {
       }
       
       // 通知 Webview 应用结果
+      websocketService.triggerLocal('file_ops_applied', {
+        taskId,
+        success: errorCount === 0,
+        successCount,
+        errorCount,
+      });
       this.panel.webview.postMessage({
         type: 'file_ops_applied',
         success: errorCount === 0,
@@ -418,11 +495,88 @@ export class ReactPanel {
       );
       
       // 通知 Webview 应用失败
+      websocketService.triggerLocal('file_ops_applied', {
+        taskId,
+        success: false,
+        error: error.message,
+      });
       this.panel.webview.postMessage({
         type: 'file_ops_applied',
         success: false,
         error: error.message,
         taskId
+      });
+    }
+  }
+
+  // Phase 2.4 P0-4: 用户确认
+  private async handleConfirmTask(payload: { confirmation_id: string; task_id: string }): Promise<void> {
+    try {
+      console.log('✅ 用户确认任务:', payload);
+      const response = await fetch('http://localhost:3000/task/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          confirmation_id: payload.confirmation_id,
+          task_id: payload.task_id,
+        }),
+      });
+      const data = await response.json();
+      console.log('📨 confirm 响应:', data);
+
+      if (data.status === 'submitted') {
+        websocketService.subscribeTask(payload.task_id);
+        this.currentTaskId = payload.task_id;
+
+        // ⭐ 确认路径补充：发送 task_started，让前端显示 AI 占位 + 开启流式监听
+        this.panel.webview.postMessage({
+          type: 'task_started',
+          payload: {
+            task_id: payload.task_id,
+            prompt: data.prompt || '',
+            model: data.model || '',
+          },
+        });
+      }
+
+      this.panel.webview.postMessage({
+        type: 'confirmation_resolved',
+        payload: { status: data.status, task_id: payload.task_id },
+      });
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error('❌ 确认任务失败:', msg);
+      this.panel.webview.postMessage({
+        type: 'confirmation_resolved',
+        payload: { status: 'error', task_id: payload.task_id, error: msg },
+      });
+    }
+  }
+
+  private async handleDenyTask(payload: { confirmation_id: string; task_id: string }): Promise<void> {
+    try {
+      console.log('❌ 用户拒绝任务:', payload);
+      const response = await fetch('http://localhost:3000/task/deny', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          confirmation_id: payload.confirmation_id,
+          task_id: payload.task_id,
+        }),
+      });
+      const data = await response.json();
+      console.log('📨 deny 响应:', data);
+
+      this.panel.webview.postMessage({
+        type: 'confirmation_resolved',
+        payload: { status: 'denied', task_id: payload.task_id },
+      });
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error('❌ 拒绝任务失败:', msg);
+      this.panel.webview.postMessage({
+        type: 'confirmation_resolved',
+        payload: { status: 'error', task_id: payload.task_id, error: msg },
       });
     }
   }

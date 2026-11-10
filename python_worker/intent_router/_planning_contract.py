@@ -18,6 +18,7 @@ IMPL_PLAN_REQUIREMENT: Dict[str, str] = {
     "mentor_explain":   "not_applicable",
     "explain_code":     "not_applicable",
     "code_review":      "not_applicable",
+    "run_tests":        "not_applicable",
 
     # optional: 需要分析但可跳过实施方案（如生成文档/架构设计）
     "analysis":         "optional",

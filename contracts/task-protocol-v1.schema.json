@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://alphapilot.dev/contracts/task-protocol-v1.schema.json",
   "title": "AlphaPilot Task Protocol v1",
-  "description": "Versioned task submission and execution envelope used by the VS Code Extension, Node API, and the Qwen Worker protocol adapter.",
+  "description": "Versioned task submission and execution envelope used by the VS Code Extension, Node API, and the Qwen Worker protocol adapter. Extended with TaskContext $defs (Phase 2.1).",
   "oneOf": [
     { "$ref": "#/$defs/submission" },
     { "$ref": "#/$defs/queuedTask" },
@@ -105,6 +105,167 @@
         },
         "decision_id": { "type": "string" },
         "decided_at": { "type": "string", "format": "date-time" }
+      },
+      "additionalProperties": false
+    },
+
+    "projectMode": {
+      "type": "string",
+      "enum": ["create_new_project", "modify_existing_project"],
+      "description": "Project strategy: create a new project or modify an existing one."
+    },
+
+    "allowedPaths": {
+      "type": "object",
+      "required": ["read", "write", "execute"],
+      "properties": {
+        "read": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1,
+          "description": "Paths authorized for file read and directory enumeration."
+        },
+        "write": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1,
+          "description": "Paths authorized for file write, create_dir, delete, and move. Must be within authorized_roots."
+        },
+        "execute": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1,
+          "description": "Paths authorized for command execution (cwd constraint). Does NOT grant file write permission."
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "confirmationScope": {
+      "type": "object",
+      "required": ["target_project_path", "project_mode", "allowed_paths", "estimated_impact"],
+      "properties": {
+        "target_project_path": { "type": "string", "minLength": 1 },
+        "project_mode": { "$ref": "#/$defs/projectMode" },
+        "allowed_paths": { "$ref": "#/$defs/allowedPaths" },
+        "estimated_impact": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Human-readable description of the operation's impact."
+        },
+        "operation_specific": {
+          "type": "object",
+          "description": "Operation-specific metadata (e.g., for delete: {path, recursive, estimated_files})."
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "userConfirmation": {
+      "type": "object",
+      "required": ["confirmation_id", "task_id", "scope", "granted_at", "context_hash"],
+      "properties": {
+        "confirmation_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Idempotency key for this confirmation."
+        },
+        "task_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The task this confirmation is bound to. Confirmation cannot be reused across tasks."
+        },
+        "scope": {
+          "$ref": "#/$defs/confirmationScope",
+          "description": "What operation, on what paths, with what impact was confirmed."
+        },
+        "granted_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO 8601 timestamp when confirmation was granted."
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Optional expiry. If absent, confirmation is valid until context changes."
+        },
+        "context_hash": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Hash of authorization-relevant task_context fields at confirmation time. Confirmation is invalidated if task_context changes."
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "taskContext": {
+      "type": "object",
+      "required": [
+        "context_id",
+        "workspace_roots",
+        "authorized_roots",
+        "allowed_paths",
+        "target_project_path",
+        "project_mode",
+        "created_at"
+      ],
+      "properties": {
+        "context_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Unique identifier for this context snapshot. SERVER-GENERATED."
+        },
+        "workspace_roots": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1,
+          "maxItems": 1,
+          "description": "VS Code workspace root directories. v1 supports exactly one root. Multi-root requests are rejected."
+        },
+        "authorized_roots": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1,
+          "description": "Root directories authorized by the SERVER for task operations. SERVER-GENERATED authoritative field. Client-submitted values are ignored and regenerated."
+        },
+        "allowed_paths": {
+          "$ref": "#/$defs/allowedPaths",
+          "description": "Per-operation path restrictions within authorized_roots. SERVER-GENERATED authoritative field."
+        },
+        "target_project_path": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Absolute path to the target project directory. Must fall within authorized_roots."
+        },
+        "project_mode": {
+          "$ref": "#/$defs/projectMode",
+          "description": "Whether this task creates a new project or modifies an existing one."
+        },
+        "user_confirmation": {
+          "$ref": "#/$defs/userConfirmation",
+          "description": "User confirmation record, if authorization was granted interactively. Bound to task_id, target path, project_mode, and allowed_paths hash."
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO 8601 timestamp when this context was created and frozen by the server."
+        },
+        "schema_version": {
+          "type": "string",
+          "const": "1.0",
+          "description": "Schema version for forward-compatible deserialization."
+        },
+        "context_hash": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Canonical SHA-256 hash computed by the server. Covers authorization-relevant fields: workspace_roots, authorized_roots, allowed_paths, target_project_path, project_mode, schema_version. Excludes runtime-only fields like target_stack, validation_plan, parent_task_id."
+        },
+        "compatibility_policy": {
+          "type": "string",
+          "enum": ["strict", "compat_readonly", "none"],
+          "default": "strict",
+          "description": "Policy for legacy tasks without task_context. 'strict': requires valid task_context. 'compat_readonly': read-only operations only, no write/execute. 'none': disables all compatibility paths."
+        }
       },
       "additionalProperties": false
     }

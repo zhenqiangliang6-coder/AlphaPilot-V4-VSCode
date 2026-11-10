@@ -1,4 +1,4 @@
-﻿// node-api/index.js
+// node-api/index.js
 // ---------------------------------------------------------
 // AlphaPilot OS v3.0 Node API Server
 // 整合了 HTTP 服务、WebSocket 通信以及 FileOps Handler
@@ -12,13 +12,24 @@ const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const os = require('os');
+const crypto = require('crypto');
 const { v4: uuidv4 } = require("uuid");
 const { Redis } = require("@upstash/redis");
 const {
     PROTOCOL_VERSION,
     TaskProtocolError,
-    normalizeTaskSubmission
+    TaskContextValidationError,
+    normalizeTaskSubmission,
+    buildOrExtractTaskContext,
+    computeContextHash,
 } = require('./taskProtocol');
+
+const {
+    ProjectStrategyResolver,
+    ProjectStrategyAuthorizer,
+    ConfirmationRequiredError,
+    AuthorizationDeniedError,
+} = require('./projectStrategy');
 
 // =========================
 // 1. Import FileOps Handler
@@ -31,6 +42,23 @@ const { FileOpsHandler } = require('./fileOpsHandler');
 const memoryService = require('./services/memoryService');
 
 console.log('✅ Memory Service 已加载');
+
+// =========================
+// ⭐ Phase 2.4: Import Confirmation Manager (P0-4)
+// =========================
+const { ConfirmationManager } = require('./confirmationManager');
+const confirmationManager = new ConfirmationManager();
+
+const pendingSubmissions = new Map();
+
+console.log('✅ Confirmation Manager 已加载');
+
+// ⭐ Phase 2.4: Import Traffic Monitor
+// =========================
+const { TrafficMonitor } = require('./trafficMonitor');
+const trafficMonitor = new TrafficMonitor();
+
+console.log('✅ Traffic Monitor 已加载');
 
 // =========================
 // 2. 启动 Express & Socket.io 服务器
@@ -67,15 +95,18 @@ let redisTair = null;
 try {
     const IORedis = require('ioredis');
 
+    // ⭐ 始终创建本地 Redis 作为后备（Upstash 限流时自动降级用）
+    redisLocal = new IORedis({
+        host: process.env.REDIS_HOST || '127.0.0.1',
+        port: parseInt(process.env.REDIS_PORT || '6379'),
+        password: process.env.REDIS_PASSWORD || undefined,
+        maxRetriesPerRequest: 3,
+        lazyConnect: true,
+    });
     if (REDIS_TYPE === 'local' || localRedisModels.size > 0) {
-        redisLocal = new IORedis({
-            host: process.env.REDIS_HOST || '127.0.0.1',
-            port: parseInt(process.env.REDIS_PORT || '6379'),
-            password: process.env.REDIS_PASSWORD || undefined,
-            maxRetriesPerRequest: 3,
-            lazyConnect: true,
-        });
-        console.log('🐳 本地 Docker Redis 已配置');
+        console.log('🐳 本地 Docker Redis 已配置（主用）');
+    } else {
+        console.log('🐳 本地 Docker Redis 已就绪（降级后备）');
     }
     
     const tairHost = process.env.TAIR_HOST;
@@ -102,6 +133,77 @@ try {
     console.log('💡 请运行: npm install ioredis');
 }
 
+// ⭐ 自动降级包装器：Upstash 限流时自动切换到本地 Redis
+// 确保 Node API 与 Python Worker 使用同一个 Redis 实例
+function createAutoFallbackRedis(upstashClient, getFallbackClient) {
+    let degraded = false;
+    let fallbackClient = null;
+
+    return new Proxy(upstashClient, {
+        get(target, prop, receiver) {
+            // 内部属性直接访问
+            if (typeof prop === 'symbol' || prop.startsWith('_')) {
+                return Reflect.get(target, prop, receiver);
+            }
+
+            const originalValue = Reflect.get(target, prop, receiver);
+
+            // 非函数属性直接返回
+            if (typeof originalValue !== 'function') {
+                return originalValue;
+            }
+
+            // 包装函数调用，捕获限流错误后降级
+            return function (...args) {
+                if (degraded && fallbackClient) {
+                    return fallbackClient[prop](...args);
+                }
+
+                try {
+                    const result = originalValue.apply(target, args);
+                    // 处理 Promise（@upstash/redis 返回 Promise）
+                    if (result && typeof result.then === 'function') {
+                        return result.catch((err) => {
+                            const msg = (err.message || String(err)).toLowerCase();
+                            if (msg.includes('max requests limit') || msg.includes('rate limit')) {
+                                if (!degraded) {
+                                    console.log(`\n⚠️  Upstash Redis 限流，Node API 自动降级到本地 Redis (localhost:6379)`);
+                                    console.log(`   原因: ${err.message}`);
+                                    fallbackClient = getFallbackClient();
+                                    degraded = true;
+                                }
+                                return fallbackClient[prop](...args);
+                            }
+                            throw err;
+                        });
+                    }
+                    return result;
+                } catch (err) {
+                    const msg = (err.message || String(err)).toLowerCase();
+                    if (msg.includes('max requests limit') || msg.includes('rate limit')) {
+                        if (!degraded) {
+                            console.log(`\n⚠️  Upstash Redis 限流，Node API 自动降级到本地 Redis (localhost:6379)`);
+                            console.log(`   原因: ${err.message}`);
+                            fallbackClient = getFallbackClient();
+                            degraded = true;
+                        }
+                        return fallbackClient[prop](...args);
+                    }
+                    throw err;
+                }
+            };
+        }
+    });
+}
+
+// ⭐ 用自动降级包装器包裹 Upstash 客户端
+const redisUpstashSafe = createAutoFallbackRedis(redisUpstash, () => {
+    if (!redisLocal) {
+        throw new Error('本地 Redis 不可用，无法降级。请确保 Docker Redis 已启动 (localhost:6379)');
+    }
+    return redisLocal;
+});
+
 // 智能路由函数：根据模型选择 Redis 实例
 function getRedisClient(model, taskType) {
     const modelPrefix = (taskType || model).split('_')[0].split('-')[0].toLowerCase();
@@ -113,8 +215,8 @@ function getRedisClient(model, taskType) {
         return redisLocal;
     }
 
-    if (REDIS_TYPE === 'upstash') return redisUpstash;
-    if (REDIS_TYPE === 'tair') return redisTair || redisUpstash;
+    if (REDIS_TYPE === 'upstash') return redisUpstashSafe;
+    if (REDIS_TYPE === 'tair') return redisTair || redisUpstashSafe;
     
     // 国内模型列表
     const domesticModels = ['deepseek', 'doubao', 'maas'];
@@ -123,12 +225,16 @@ function getRedisClient(model, taskType) {
         return redisTair;
     }
     
-    // 默认使用 Upstash（包括 Qwen）
-    return redisUpstash;
+    // ⭐ auto 模式下优先本地 Redis（如果可用），不依赖 Upstash
+    if (REDIS_TYPE === 'auto' && redisLocal) {
+        return redisLocal;
+    }
+    // 默认使用 Upstash（包括 Qwen）—— 带自动降级保护
+    return redisUpstashSafe;
 }
 
-// 为了向后兼容，保留 redis 变量（指向 Upstash）
-const redis = redisUpstash;
+// 为了向后兼容，保留 redis 变量（指向带降级保护的 Upstash）
+const redis = redisUpstashSafe;
 
 // =========================
 // 4. 初始化 FileOps Handler
@@ -150,10 +256,23 @@ function autoSetWorkspaceIfNeeded(workspacePath) {
 }
 
 // =========================
+// ⭐ R6: Import Authorization Verifier (最小安全契约 v1.0)
+// =========================
+const { AuthorizationVerifier } = require('./authorizationVerifier');
+const authorizationVerifier = new AuthorizationVerifier({
+    primaryRedis: redisUpstashSafe,
+    localRedis: redisLocal,
+    tairRedis: redisTair,
+});
+
+console.log('✅ Authorization Verifier (R6) 已加载');
+
+// =========================
 // 5. WebSocket 连接管理
 // =========================
 const taskSubscriptions = new Map(); // { task_id => Set<socket_id> }
 const completedTasks = new Set();    // P1：已终态的任务 ID，用于拒绝迟到的产物事件
+const streamContentCache = new Map(); // P2：缓存流式内容用于完整性校验 { task_id => accumulated_text }
 const io = new Server(server, { cors: { origin: "*", methods: ["GET", "POST"] } });
 
 io.on('connection', (socket) => {
@@ -198,8 +317,9 @@ app.post('/task/submit', async (req, res) => {
         console.log(JSON.stringify(req.body, null, 2));
 
         const submission = normalizeTaskSubmission(req.body, uuidv4);
-        const { type, payload, source, meta } = submission;
+        let { type, payload, source, meta } = submission;
         const task_id = uuidv4();
+        const conversation_id = resolveConversationId(req.body, meta, payload.workspace_path);
 
         const collaborationMode = payload.collaboration_mode || "automatic";
         const supportedCollaborationModes = new Set([
@@ -210,7 +330,7 @@ app.post('/task/submit', async (req, res) => {
             return res.status(400).json({ error: "不支持的协作模式", collaboration_mode: collaborationMode });
         }
 
-        // ⭐ 提取模型配置（支持自动推断）
+// ⭐ 提取模型配置（支持自动推断）
         let model = meta.model;
         
         // 如果未指定模型，根据任务类型自动推断
@@ -265,6 +385,108 @@ app.post('/task/submit', async (req, res) => {
 
         // ⭐ 智能工作区检测：首次任务自动学习工作区路径
         autoSetWorkspaceIfNeeded(finalPayload.workspace_path || payload.workspace_path);
+
+        // ⭐ Phase 2.2: ProjectStrategy — Resolver (建议) + Authorizer (授权)
+        let taskContext = null;
+        try {
+            const promptText = finalPayload.prompt || '';
+            const wsRoot = finalPayload.workspace_path || workspaceRoot;
+            const workspaceRoots = wsRoot ? [path.resolve(wsRoot)] : [];
+
+            const resolver = new ProjectStrategyResolver();
+            const authorizer = new ProjectStrategyAuthorizer();
+
+            const proposal = resolver.resolve(promptText, workspaceRoots);
+            console.log(`   🎯 [Strategy] Resolver: mode=${proposal.mode} target=${proposal.targetPath} confidence=${proposal.confidence}`);
+
+            if (workspaceRoots.length > 0) {
+                const authorizedRoots = [workspaceRoots[0]];
+                const result = authorizer.authorize(proposal, authorizedRoots);
+                taskContext = {
+                    context_id: task_id,
+                    conversation_id: conversation_id || undefined,
+                    workspace_roots: workspaceRoots,
+                    authorized_roots: authorizedRoots,
+                    allowed_paths: result.allowedPaths,
+                    target_project_path: result.proposal.targetPath,
+                    project_mode: result.proposal.mode,
+                    created_at: new Date().toISOString(),
+                    schema_version: '1.0',
+                    context_hash: result.contextHash,
+                    compatibility_policy: 'strict',
+                };
+                console.log(`   🔒 [Strategy] Authorizer: context_hash=${result.contextHash.slice(0, 16)}...`);
+            } else {
+                console.warn(`   ⚠️ [Strategy] No workspace roots; skipping Authorizer, using compat context`);
+            }
+        } catch (authErr) {
+            if (authErr instanceof ConfirmationRequiredError) {
+                console.warn(`   🔔 [Strategy] Confirmation required: ${authErr.message}`);
+
+                const scope = authErr.scope instanceof Object && authErr.scope.toDict
+                    ? authErr.scope.toDict()
+                    : authErr.scope;
+
+                const pendingContextHash = computeContextHash({
+                    workspace_roots: (finalPayload.workspace_path ? [path.resolve(finalPayload.workspace_path)] : []),
+                    authorized_roots: (finalPayload.workspace_path ? [path.resolve(finalPayload.workspace_path)] : []),
+                    allowed_paths: { read: [], write: [], execute: [] },
+                    target_project_path: finalPayload.workspace_path || '',
+                    project_mode: scope.project_mode || scope.projectMode || '',
+                    schema_version: '1.0',
+                });
+
+                const confirmation = confirmationManager.createConfirmation(task_id, scope, pendingContextHash);
+
+                pendingSubmissions.set(task_id, {
+                    finalPayload,
+                    type,
+                    model,
+                    stream,
+                    source,
+                    meta,
+                    submission,
+                    collaborationMode,
+                    conversation_id,
+                });
+
+                console.log(`   📋 [Confirmation] Created: ${confirmation.confirmationId}`);
+                return res.json({
+                    status: 'confirmation_required',
+                    task_id,
+                    confirmation: confirmation.toWebviewPayload(),
+                });
+            } else if (authErr instanceof AuthorizationDeniedError) {
+                console.warn(`   🚫 [Strategy] Authorization denied: ${authErr.message}`);
+            } else {
+                console.warn(`   ⚠️ [Strategy] Strategy failed (will use compat context): ${authErr.message}`);
+            }
+        }
+
+        if (!taskContext) {
+            try {
+                taskContext = buildOrExtractTaskContext(finalPayload);
+                if (conversation_id) {
+                    taskContext.conversation_id = conversation_id;
+                }
+                console.warn(`   🔄 [Strategy] Built compat_readonly task_context (write/execute denied)`);
+            } catch (compatErr) {
+                console.warn(`   ⚠️ [Strategy] Compat context build failed: ${compatErr.message}`);
+            }
+        }
+
+        if (taskContext) {
+            finalPayload.task_context = taskContext;
+            finalPayload.workspace_path = taskContext.target_project_path;
+
+            // ⭐ Phase 2.4: 流量监控 — 记录协议类型
+            if (taskContext.compatibility_policy === 'strict') {
+                trafficMonitor.recordNewProtocol();
+            } else {
+                trafficMonitor.recordCompatProtocol();
+            }
+            console.log(`   📊 [Traffic] Protocol: ${taskContext.compatibility_policy === 'strict' ? 'new (strict)' : 'compat (old)'} | Ratio: ${trafficMonitor.getReport().compat_ratio}`);
+        }
 
         // ⭐ v3.1 新增：记录任务到 Memory Service
         let userId = meta.user_id || 'default-user';
@@ -452,6 +674,31 @@ app.post('/task/notify/:task_id', async (req, res) => {
             console.error(`   ⚠️ [Memory] 更新任务状态失败（不影响主流程）:`, memoryError.message);
         }
 
+        // ⭐ v3.4: 执行 FileOps 写入磁盘（不依赖 VSCode 扩展）
+        if (result.context?.final_file_ops && Array.isArray(result.context.final_file_ops)) {
+            const writeOps = result.context.final_file_ops.filter(
+                op => op.op !== 'delete' && op.op !== 'meta' && op.op !== 'depends'
+            );
+            if (writeOps.length > 0 && fileOpsHandler.isWorkspaceConfigured()) {
+                console.log(`   💾 正在写入 ${writeOps.length} 个文件到工作区: ${fileOpsHandler.workspaceRoot}`);
+                try {
+                    const fileResult = await fileOpsHandler.handleRequest(writeOps, task_id);
+                    if (fileResult.success) {
+                        console.log(`   ✅ FileOps 写入成功: ${fileResult.files?.length || writeOps.length} 个文件`);
+                        if (fileResult.files) {
+                            fileResult.files.forEach(f => console.log(`      📄 ${f.path}`));
+                        }
+                    } else {
+                        console.error(`   ❌ FileOps 写入失败:`, fileResult.errors || fileResult.error);
+                    }
+                } catch (fileWriteError) {
+                    console.error(`   ❌ FileOps 写入异常:`, fileWriteError.message);
+                }
+            } else if (writeOps.length > 0 && !fileOpsHandler.isWorkspaceConfigured()) {
+                console.log(`   ⚠️ 工作区未配置，跳过 FileOps 写入（${writeOps.length} 个文件等待 VSCode 扩展处理）`);
+            }
+        }
+
         // ⭐ 通过 WebSocket 推送给订阅的前端
         if (taskSubscriptions.has(task_id)) {
             const subscribers = taskSubscriptions.get(task_id);
@@ -478,7 +725,192 @@ app.post('/task/notify/:task_id', async (req, res) => {
 });
 
 // =========================
-// 7.5. [REMOVED] Duplicate stream_chunk handler merged into section 8
+// 7.5. Phase 2.4: 用户确认端点 (P0-4)
+// =========================
+
+app.post('/task/confirm', async (req, res) => {
+    try {
+        const { confirmation_id, task_id } = req.body;
+
+        if (!confirmation_id && !task_id) {
+            return res.status(400).json({ error: 'confirmation_id or task_id is required' });
+        }
+
+        let confirmId = confirmation_id;
+        if (!confirmId && task_id) {
+            const record = confirmationManager.getByTaskId(task_id);
+            if (!record) {
+                return res.json({ status: 'confirmation_not_found', message: 'No pending confirmation for this task' });
+            }
+            confirmId = record.confirmationId;
+        }
+
+        const result = confirmationManager.confirm(confirmId);
+
+        if (!result.success) {
+            return res.json({
+                status: 'confirmation_failed',
+                reason: result.reason,
+            });
+        }
+
+        const pending = pendingSubmissions.get(result.record.taskId);
+        if (!pending) {
+            return res.json({
+                status: 'confirmed',
+                confirmation_id: confirmId,
+                message: 'Confirmed, but no pending submission found (may have expired)',
+            });
+        }
+
+        const { finalPayload, type, model, stream, source, meta, submission, collaborationMode, conversation_id } = pending;
+
+        const wsRoot = finalPayload.workspace_path || workspaceRoot;
+        const workspaceRoots = wsRoot ? [path.resolve(wsRoot)] : [];
+        const authorizedRoots = workspaceRoots.length > 0 ? [workspaceRoots[0]] : [];
+        const allowedPaths = result.record.scope.allowed_paths
+            || result.record.scope.allowedPaths
+            || { read: authorizedRoots, write: authorizedRoots, execute: [] };
+
+        const taskContext = {
+            context_id: result.record.taskId,
+            workspace_roots: workspaceRoots,
+            authorized_roots: authorizedRoots,
+            allowed_paths: allowedPaths,
+            target_project_path: result.record.scope.target_project_path
+                || result.record.scope.targetProjectPath
+                || wsRoot,
+            project_mode: result.record.scope.project_mode
+                || result.record.scope.projectMode
+                || 'modify_existing_project',
+            created_at: new Date().toISOString(),
+            schema_version: '1.0',
+            conversation_id,
+            context_hash: result.record.contextHash,
+            compatibility_policy: 'strict',
+            confirmation_id: confirmId,
+        };
+
+        finalPayload.task_context = taskContext;
+        finalPayload.workspace_path = taskContext.target_project_path;
+
+        // ⭐ v3.5 补充：确认路径加载记忆上下文（与非确认路径对齐）
+        let prompt = finalPayload.prompt || JSON.stringify(finalPayload);
+        let userId = meta?.user_id || 'default-user';
+        let projectId = meta?.project_id || null;
+        let context = null;
+        try {
+            const user = await memoryService.getOrCreateUser(userId, `User-${userId}`, {});
+            let project = null;
+            if (projectId) {
+                project = await memoryService.getOrCreateProject(user.id, `Project-${projectId}`, '', {});
+            }
+            const actualTaskId = result.record.taskId;
+            await memoryService.createTask(actualTaskId, user.id, project?.id || null, prompt, model, source);
+            if (project) {
+                context = await memoryService.loadContextForWorker(actualTaskId);
+                console.log(`   🧠 [Memory/Confirm] 上下文已加载 (${context.memory_context?.project_memories?.length || 0} 条记忆)`);
+            }
+        } catch (memoryError) {
+            console.error(`   ⚠️ [Memory/Confirm] 记忆加载失败（不影响主流程）:`, memoryError.message);
+        }
+
+        const task = {
+            protocol_version: PROTOCOL_VERSION,
+            trace_id: submission.trace_id,
+            task_id: result.record.taskId,
+            type,
+            payload: finalPayload,
+            source,
+            model,
+            stream,
+            timestamp: Date.now(),
+            status: 'pending',
+            context: context || undefined  // ⭐ v3.5 新增
+        };
+
+        const queueName = getWorkerQueue(type);
+        const targetRedis = getRedisClient(model, type);
+        await targetRedis.lpush(queueName, JSON.stringify(task));
+
+        pendingSubmissions.delete(result.record.taskId);
+
+        console.log(`   ✅ [Confirmation] Task ${result.record.taskId} confirmed and pushed to queue`);
+        return res.json({
+            status: 'submitted',
+            task_id: result.record.taskId,
+            confirmation_id: confirmId,
+            prompt: prompt,
+            model: model,
+            message: 'Task confirmed and submitted',
+        });
+    } catch (err) {
+        console.error('❌ /task/confirm error:', err);
+        res.status(500).json({ error: 'Internal Server Error', message: err.message });
+    }
+});
+
+app.post('/task/deny', (req, res) => {
+    try {
+        const { confirmation_id, task_id } = req.body;
+
+        if (!confirmation_id && !task_id) {
+            return res.status(400).json({ error: 'confirmation_id or task_id is required' });
+        }
+
+        let confirmId = confirmation_id;
+        if (!confirmId && task_id) {
+            const record = confirmationManager.getByTaskId(task_id);
+            if (!record) {
+                return res.json({ status: 'no_pending_confirmation', message: 'No pending confirmation found' });
+            }
+            confirmId = record.confirmationId;
+        }
+
+        const record = confirmationManager.getById(confirmId);
+        const result = confirmationManager.deny(confirmId);
+
+        if (record) {
+            pendingSubmissions.delete(record.taskId);
+        }
+
+        console.log(`   ❌ [Confirmation] Denied: ${confirmId} (reason: ${result.reason})`);
+        return res.json({
+            status: 'denied',
+            confirmation_id: confirmId,
+            reason: result.reason,
+        });
+    } catch (err) {
+        console.error('❌ /task/deny error:', err);
+        res.status(500).json({ error: 'Internal Server Error', message: err.message });
+    }
+});
+
+// =========================
+// 7.5 Phase 2.4: Traffic Monitor 端点
+// =========================
+app.get('/admin/traffic', (req, res) => {
+    try {
+        const report = trafficMonitor.getReport();
+        return res.json(report);
+    } catch (err) {
+        console.error('❌ /admin/traffic error:', err);
+        res.status(500).json({ error: 'Internal Server Error', message: err.message });
+    }
+});
+
+app.post('/admin/traffic/reset', (req, res) => {
+    try {
+        trafficMonitor.reset();
+        return res.json({ status: 'reset', message: 'Traffic monitor reset' });
+    } catch (err) {
+        console.error('❌ /admin/traffic/reset error:', err);
+        res.status(500).json({ error: 'Internal Server Error', message: err.message });
+    }
+});
+
+// =========================
+// 7.6. [REMOVED] Duplicate stream_chunk handler merged into section 8
 // =========================
 
 // =========================
@@ -582,6 +1014,11 @@ app.post('/task/stream_chunk/:task_id', (req, res) => {
     }
     
     // 常规文本增量（现有行为不变）
+    // P2：累积 content 通道的文本用于完整性校验
+    if (content && channel === 'content') {
+      const prev = streamContentCache.get(task_id) || '';
+      streamContentCache.set(task_id, prev + content);
+    }
     io.emit('stream_chunk', {
         task_id,
         chunk: content || '',
@@ -614,8 +1051,26 @@ app.post('/task/stream_end/:task_id', (req, res) => {
     
     console.log(`\n✅ [Stream] stream_end: ${task_id}`);
     
-    // P1：标记任务终态，防止迟到的产物事件
+    // P2：标记任务终态，防止迟到的产物事件
     completedTasks.add(task_id);
+
+    // P2：流式完整性校验 — 检查是否有未闭合的 Mermaid/Markdown 块
+    const cached = streamContentCache.get(task_id);
+    if (cached && typeof cached === 'string') {
+        const backtickGroups = (cached.match(/```/g) || []).length;
+        if (backtickGroups % 2 !== 0) {
+            console.warn(`⚠️ [P2] stream_end 检测到未闭合代码块: task ${task_id}, content 长度 ${cached.length}`);
+            io.emit('stream_chunk', {
+                task_id,
+                chunk: '\n```',
+                phase: null,
+                channel: 'content',
+                timestamp: Date.now(),
+            });
+        }
+        // P2：清理缓存，防止内存泄漏
+        streamContentCache.delete(task_id);
+    }
     
     // 通过 WebSocket 广播给所有订阅者
     io.emit('stream_end', {
@@ -777,28 +1232,122 @@ app.post('/workspace/set', (req, res) => {
 // 13. 路由：FileOps 执行（VSCode 扩展调用）
 // =========================
 app.post('/fileops/execute', async (req, res) => {
-    const { file_ops } = req.body;
-    
+    const { file_ops, task_id } = req.body;
+
     try {
+        console.log(`\n📁 FileOps 执行请求:`);
+        console.log(`   task_id: ${task_id || '(未提供)'}`);
+        console.log(`   原始: ${file_ops?.length || 0} 个操作`);
+        console.log(`   工作区: ${fileOpsHandler.workspaceRoot}`);
+
+        // ⭐ R6 安全契约：执行端独立授权验证
+        const nonMetaOps = (file_ops || []).filter(
+            (op) => op.op && !["meta", "depends"].includes(op.op)
+        );
+        if (nonMetaOps.length > 0) {
+            const authResult = await authorizationVerifier.verifyExecutionAuthorization(
+                task_id,
+                nonMetaOps
+            );
+
+            if (!authResult.authorized) {
+                console.warn(
+                    `   🚫 [AuthVerifier] 授权验证失败: ${authResult.reason}`
+                );
+                return res.status(403).json({
+                    success: false,
+                    error: "执行授权验证失败",
+                    reason: authResult.reason,
+                    auth_source: authResult.authSource || null,
+                });
+            }
+        }
+
         // ⭐ v3.1.1 过滤内部元数据
         const filteredOps = filterInternalOps(file_ops);
-        
-        console.log(`\n FileOps 执行请求:`);
-        console.log(`   原始: ${file_ops?.length || 0} 个操作`);
+
         console.log(`   过滤后: ${filteredOps.length} 个操作`);
-        console.log(`   工作区: ${fileOpsHandler.workspaceRoot}`);
-        
-        const result = await fileOpsHandler.handleRequest(filteredOps);
-        
+
+        const result = await fileOpsHandler.handleRequest(filteredOps, task_id || null);
+
         console.log(`   ✅ FileOps 执行完成: ${result.success ? '成功' : '失败'}`);
         if (result.files) {
             console.log(`   📄 生成文件: ${result.files.length} 个`);
             result.files.forEach(f => console.log(`      - ${f.path}`));
         }
-        
+
         res.json(result);
     } catch (error) {
         console.error(`   ❌ FileOps 执行失败:`, error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// =========================
+// 13b. 治理：失败回滚与审计（G1/G2/G4 生产层）
+// =========================
+app.post('/governance/rollback/:task_id', (req, res) => {
+    const { task_id } = req.params;
+    if (!fileOpsHandler.isWorkspaceConfigured()) {
+        return res.status(400).json({ success: false, error: '工作区未配置' });
+    }
+    try {
+        const result = fileOpsHandler.rollback(task_id);
+        res.json(result);
+    } catch (error) {
+        console.error(`   ❌ 回滚失败:`, error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+app.get('/governance/snapshot/:task_id', (req, res) => {
+    const { task_id } = req.params;
+    if (!fileOpsHandler.isWorkspaceConfigured()) {
+        return res.status(400).json({ success: false, error: '工作区未配置' });
+    }
+    try {
+        const snapshot = fileOpsHandler.getSnapshot(task_id);
+        if (!snapshot) {
+            return res.status(404).json({ success: false, error: `快照不存在: ${task_id}` });
+        }
+        res.json({ success: true, snapshot });
+    } catch (error) {
+        console.error(`   ❌ 读取快照失败:`, error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// =========================
+// R6 安全契约：用户审批端点
+// VSCode Extension 用户确认后调用，将授权状态从 awaiting_host_policy 更新为 approved
+// =========================
+app.post('/auth/approve', async (req, res) => {
+    const { task_id } = req.body;
+
+    try {
+        console.log(`\n🔓 授权审批请求:`);
+        console.log(`   task_id: ${task_id || '(未提供)'}`);
+
+        const result = await authorizationVerifier.approveAuthorization(task_id);
+
+        if (result.success) {
+            console.log(`   ✅ 授权审批完成: ${result.approvedCount || 0} 项`);
+            res.json({
+                success: true,
+                task_id,
+                approved_count: result.approvedCount || 0,
+                reason: result.reason || null,
+            });
+        } else {
+            console.warn(`   ❌ 授权审批失败: ${result.reason}`);
+            res.status(400).json({
+                success: false,
+                task_id,
+                error: result.reason,
+            });
+        }
+    } catch (error) {
+        console.error(`   ❌ 授权审批异常:`, error);
         res.status(500).json({ success: false, error: error.message });
     }
 });
@@ -820,6 +1369,21 @@ function filterInternalOps(fileOps) {
 }
 
 // =========================
+// 14.5 工具函数：会话 ID 解析（conversation_id 归属后端，多轮连续性兜底）
+// =========================
+function resolveConversationId(body, meta, workspacePath) {
+    // 1) 前端显式续接（恢复历史会话）→ 沿用
+    if (typeof body.conversation_id === 'string' && body.conversation_id.trim()) {
+        return body.conversation_id.trim();
+    }
+    // 2) 后端自动生成稳定会话 ID（同 user + 同 project 共享，跨 project 隔离）
+    const userId = (meta && meta.user_id) || 'default-user';
+    const projectId = (meta && meta.project_id) || workspacePath || 'default-project';
+    const raw = `${userId}\x00${projectId}`;
+    return 'conv-' + crypto.createHash('sha256').update(raw).digest('hex').slice(0, 16);
+}
+
+// =========================
 // 15. 工具函数：根据任务类型获取队列名称（✅ 符合架构信条）
 // =========================
 function getWorkerQueueByType(taskType) {
@@ -829,10 +1393,13 @@ function getWorkerQueueByType(taskType) {
         "doubao_generate": "task_queue:doubao",
         "maas_generate": "task_queue:maas",
         "modelscope_generate": "task_queue:modelscope",
-        "local_generate": "task_queue:local",  // ⭐ Local LLM Worker
+        "local_generate": "task_queue:local",
         "openai_generate": "task_queue:openai",
         "claude_generate": "task_queue:claude",
         "gemini_generate": "task_queue:gemini",
+        "node_generate": "node_worker",
+        "java_generate": "java_worker",
+        "ts_generate": "ts_worker",
     };
 
     return TYPE_QUEUE_MAP[taskType] || "task_queue";
@@ -848,10 +1415,13 @@ function getWorkerQueue(modelOrType) {
         "doubao": "task_queue:doubao",
         "maas": "task_queue:maas",
         "modelscope": "task_queue:modelscope",
-        "local": "task_queue:local",  // ⭐ Local LLM Worker
+        "local": "task_queue:local",
         "gpt": "task_queue:openai",
         "claude": "task_queue:claude",
         "gemini": "task_queue:gemini",
+        "node": "node_worker",
+        "java": "java_worker",
+        "ts": "ts_worker",
     };
 
     let modelPrefix;

@@ -40,7 +40,7 @@ def test_workspace_maintenance_reads_files_and_routes_to_fix_and_workspace_tools
     )
 
     # v4.0 动态链：workspace_maintenance 为完整 code 模式链
-    expected_chain = ["analyze", "workspace", "plan", "write", "refine", "fix", "doc", "docstring"]
+    expected_chain = ["analyze", "workspace", "plan", "setup", "write", "refine", "fix", "doc", "docstring"]
     assert executed_steps == expected_chain, f"预期 {expected_chain}, 实际 {executed_steps}"
     assert context["meta"]["source_files"] == {
         "src/broken.py": "def broken(:\n    pass\n"

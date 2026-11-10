@@ -30,7 +30,7 @@ if project_root not in sys.path:
 from worker_config import (
     NODE_API_URL,
     WORKER_ID,
-    create_redis_client,
+    get_redis_client,
     get_worker_queue,
     check_stop_flag,
     clear_stop_flag,
@@ -52,7 +52,7 @@ from agents.local_llm.local_api import call_local_llm
 from file_ops import create_file_op
 
 # 为了代码能跑通，这里需要初始化 redis 客户端
-redis = create_redis_client()
+redis = get_redis_client()
 
 # DLQ 名称
 DLQ_NAME = "dlq"

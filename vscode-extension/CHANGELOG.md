@@ -1,5 +1,99 @@
 # 变更日志 (CHANGELOG)
 
+## 2026-11-10 — 🧹 状态类型收敛（前后端契约对齐）
+
+### 概述
+收敛前端三套互不一致的任务状态类型，确立单一「线上状态」与「UI 状态」边界，消除散落的隐式 done→completed / error→failed 映射。
+
+### 改动范围
+| 文件 | 改动 |
+|---|---|
+| `src/taskModel.ts` | 新增线上权威类型 `ProtocolTaskStatus`（`pending`/`done`/`error`/`awaiting_authorization`，与后端 `taskStateContract.js` 逐值对齐）；`ResolvedStatus.status` 由宽泛 `string` 收紧为该类型；`TASK_STATE_TO_STATUS` 同步收紧；新增 `toUiTaskStatus` 显式映射 |
+| `src/types/taskContract.ts` | 删除 8 值混装的 `ProtocolTaskStatus`，改为从 `taskModel` 重导出 |
+| `src/taskHistory.ts` | 内联 `pending/done/error` 字面量收敛为 `ProtocolTaskStatus` |
+| `src/services/taskService.ts` | `setTaskResult` 不再硬编码 `'completed'`，改用 `toUiTaskStatus(resolveTaskStatus(result).status)` |
+| `src/extension.ts` | 删除死代码 `resolvedStatus !== 'completed'`（`resolveTaskStatus` 永不可能返回该值） |
+
+### 核心设计决策
+- **单一线上状态来源**：`ProtocolTaskStatus` 仅在 `taskModel.ts` 定义一次，与后端 `taskStateContract.js` 的 status 域逐值对齐（done/error/pending/awaiting_authorization）
+- **显式边界映射**：`toUiTaskStatus` 是线上态 → UI 态（`types/task.ts` 的 `TaskStatus`，含 running/cancelled）的唯一桥接点，不再有隐式转换
+- **行为零变化**：`resolveTaskStatus` 语义保持不变，由契约向量测试兜底
+
+### 验证
+- `npm run compile`：通过
+- `node test-contractVectors.js`：59/59 通过，0 意外失败
+- `npm run lint`：因项目既有缺失 ESLint 配置（`.eslintrc`）而无法运行，与本次改动无关
+
+---
+
+## 2026-11-02 — 🧪 面板内测试授权与失败修复确认
+
+### 概述
+将测试运行授权和失败后的修复决策从 VS Code 原生确认弹窗移入 AlphaPilot 聊天面板。测试运行、修复任务提交和后续复测仍要求用户逐步确认，不启用无人值守执行。
+
+### 改动范围
+| 文件 | 改动 |
+|---|---|
+| `src/extension.ts` | 登记待处理测试授权；仅接受匹配任务的有效面板决定；运行/跳过测试和提交/停止修复均需用户操作；面板重开时恢复待处理卡片 |
+| `src/panels/reactPanel.ts` | 修复 Webview 消息桥接结构，缓存页面就绪前的消息并转发授权决定 |
+| `webview/src/App.tsx` | 展示多个并行任务的授权卡片并向 Extension 返回用户决定 |
+| `webview/src/components/TestAuthorizationCard.tsx` | 展示命令、工作目录、失败摘要、当前状态和可执行操作 |
+| `test/taskLifecycle.test.cjs` | 增加测试命令白名单和测试完成门控回归测试 |
+
+### 验证
+- Extension TypeScript 编译通过；Webview TypeScript 检查和生产构建通过
+- `npm test`：2 项通过
+- VSIX 打包验证受仓库既有缺失图标 `images/icon.png` 阻断；未改变无关打包元数据
+
+## 2026-10-30 — 🔒 R6 最小安全契约 v1.0（前端审批接入）
+
+### 概述
+实施 R6 最小安全契约第④步：Extension 用户审批通过后自动调用 `POST /auth/approve` 端点，将 Redis 共享授权存储中的 `awaiting_host_policy` 状态更新为 `approved`。至此 R6 四步全链路完成——Worker 创建授权 → Node API 独立验证 → 用户审批 → 执行端准入。
+
+### 改动范围
+
+#### Extension (vscode-extension/src/)
+| 文件 | 改动 |
+|---|---|
+| `panels/reactPanel.ts` | `handleApplyFileOps` 写盘前新增 `POST /auth/approve` 调用，将用户审批决策同步到 Redis 共享授权存储 |
+
+### 核心设计决策
+- **审批不阻断写盘**：`/auth/approve` 调用失败（网络不可达 / Redis auth 不存在）静默不抛出，原有写盘流程正常继续
+- **审批在写盘之前**：时序保证——先更新 Redis 授权状态为 `approved`，再写入文件系统
+- **单点注入**：Webview 的 `FileOpsList` 审批面板（`apply_file_ops` 消息）和 `App.tsx` 的审批路径最终都汇聚到 `reactPanel.ts` 的 `handleApplyFileOps`，在此一处接入即可覆盖所有审批通道
+
+### R6 全链路架构
+
+```
+Worker                    Node API                     Extension (本次变更)
+  │                          │                              │
+  ├─ 写 auth:{task_id} ────►│                              │
+  │  (awaiting_host_policy)  │                              │
+  │                          │                              │
+  │── WS file_ops ──────────►│── WS file_ops ──────────────►│
+  │                          │                              │
+  │                          │                    用户点击 [应用所有改动] │
+  │                          │◄── POST /auth/approve ───────│ ← ⭐ 本次变更
+  │                          │    { task_id }               │
+  │                          │                              │
+  │                          ├─ Redis: status → "approved"  │
+  │                          │                              │
+  │                          │◄── POST /fileops/execute ────│
+  │                          │    { task_id, file_ops }     │
+  │                          │                              │
+  │                          ├─ verifyExecutionAuthorization│
+  │                          │  ├─ _verifyOpType ✅          │
+  │                          │  ├─ _verifyApprovalStatus ✅  │
+  │                          │  └─ _verifyPath ✅            │
+  │                          ├─ FileOpsHandler ──────────► 磁盘 │
+```
+
+### 测试结果
+- Node API：21 项授权验证测试 ✓ + 4 项协议测试 ✓
+- Python Worker：10 项核心测试 ✓
+
+---
+
 ## 2026-10-24 — 🔧 前端输出显示修复（三层治理）
 
 ### 概述

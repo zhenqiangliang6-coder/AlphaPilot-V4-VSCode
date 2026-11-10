@@ -88,7 +88,7 @@ def test_t2_no_modules_with_files_partial():
 
 
 # ── T3 ─────────────────────────────────────────────────────────
-# architecture intent + 证据缺失 + workspace.scan 不存在 → ARCH_NOT_EXECUTED
+# architecture intent + 证据缺失 + workspace.scan 不存在（空工作区） → not_required
 
 def test_t3_no_evidence_no_workspace_scan():
     meta = _make_meta(
@@ -97,9 +97,8 @@ def test_t3_no_evidence_no_workspace_scan():
         cap_results={},
     )
     gate = validate_architecture_evidence(meta)
-    assert gate.status == EVIDENCE_STATUS_FAILED, f"T3: expected failed, got {gate.status}"
-    assert gate.can_proceed() is False, "T3: expected can_proceed=False"
-    assert "未执行" in gate.failure_reason, f"T3: reason should mention '未执行', got {gate.failure_reason}"
+    assert gate.status == EVIDENCE_STATUS_NOT_REQUIRED, f"T3: expected not_required, got {gate.status}"
+    assert gate.can_proceed() is True, "T3: expected can_proceed=True (empty workspace, evidence not required)"
 
 
 # ── T4 ─────────────────────────────────────────────────────────
@@ -109,8 +108,9 @@ def test_t4_no_evidence_with_workspace_scan():
     meta = _make_meta(
         intent="architecture",
         arch_evidence=None,
-        cap_results={"workspace.scan": {"file_count": 500}},
+        cap_results={"workspace.scan": {"file_count": 500, "python_file_count": 500}},
     )
+    meta["workspace_scan"] = {"python_file_count": 500}
     gate = validate_architecture_evidence(meta)
     assert gate.status == EVIDENCE_STATUS_FAILED, f"T4: expected failed, got {gate.status}"
     assert gate.can_proceed() is False, "T4: expected can_proceed=False"
@@ -227,8 +227,9 @@ def test_t12_workspace_scan_exists_but_arch_missing():
     meta = _make_meta(
         intent="architecture",
         arch_evidence=None,
-        cap_results={"workspace.scan": {"file_count": 500}},
+        cap_results={"workspace.scan": {"file_count": 500, "python_file_count": 500}},
     )
+    meta["workspace_scan"] = {"python_file_count": 500}
     gate = validate_architecture_evidence(meta)
     assert gate.status == EVIDENCE_STATUS_FAILED, f"T12: expected failed, got {gate.status}"
     assert gate.can_proceed() is False, "T12: expected can_proceed=False"
@@ -326,6 +327,7 @@ def test_cap_results_none_still_distinguishes():
         "intent": "architecture",
         "architecture_evidence": None,
         "_capability_results": None,
+        "workspace_scan": {"python_file_count": 10},
     }
     gate = validate_architecture_evidence(meta)
     assert gate.status == EVIDENCE_STATUS_FAILED

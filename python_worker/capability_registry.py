@@ -411,3 +411,33 @@ def _init_defaults(registry: CapabilityRegistry) -> None:
         input_schema="str (root_path)",
         output_schema="ArchitectureReport",
     )
+
+    # ── Skill 声明的能力（委托 LLM） ──
+    _delegate = lambda **kw: {
+        "success": True,
+        "data": {"delegated_to": "llm", "note": "此能力委托给 Qwen LLM 处理"},
+    }
+    _delegated_capabilities = [
+        ("workspace.read", "只读读取工作区文件内容"),
+        ("workspace.write", "写入工作区文件（委托 LLM 生成）"),
+        ("tests.propose", "提议测试用例"),
+        ("coverage.report", "生成测试覆盖率报告"),
+        ("manifest.read", "读取项目清单文件（package.json/pyproject.toml/pom.xml）"),
+        ("changes.propose", "提议代码变更"),
+        ("schema.propose", "提议数据库 Schema 变更"),
+        ("migration.propose", "提议数据库迁移"),
+        ("fileops.delete.propose", "提议文件删除操作"),
+        ("infra.propose", "提议基础设施变更"),
+        ("dockerfile.propose", "提议 Dockerfile 配置"),
+        ("diagnosis.log", "诊断日志分析"),
+        ("docs.propose", "提议文档变更"),
+    ]
+    for cap_id, cap_desc in _delegated_capabilities:
+        registry.register(
+            capability_id=cap_id,
+            handler=_delegate,
+            read_only=True,
+            description=f"{cap_desc}（委托 LLM）",
+            input_schema="dict",
+            output_schema="dict",
+        )

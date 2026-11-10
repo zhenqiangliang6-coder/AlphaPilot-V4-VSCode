@@ -2,7 +2,7 @@
 from .utils import extract_code
 from .prompts import doc_prompt, docstring_prompt
 from ....code_executor import run_python
-from ..qwen_api import call_qwen
+from ..qwen_api import call_llm
 from ....worker_config import create_event, stream_start, stream_chunk, stream_end
 
 
@@ -78,7 +78,7 @@ def run_doc_step(step, context, events, task_id=None):
     
     try:
         prompt = doc_prompt(code)
-        markdown = call_qwen(prompt)
+        markdown = call_llm(prompt)
         
         if markdown is None or not isinstance(markdown, str):
             markdown = str(markdown) if markdown else "# 文档生成失败"
@@ -93,7 +93,7 @@ def run_doc_step(step, context, events, task_id=None):
     try:
         # ⭐ 修复：使用 docstring_prompt() 函数，而不是手写 prompt
         ds_prompt = docstring_prompt(code)
-        docstring_code = call_qwen(ds_prompt)
+        docstring_code = call_llm(ds_prompt)
         
         if docstring_code and isinstance(docstring_code, str):
             documented = extract_code(docstring_code, fallback_strategies=True)

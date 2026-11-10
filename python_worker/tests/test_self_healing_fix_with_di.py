@@ -58,9 +58,8 @@ def test_test_step_with_mock_llm_and_executor():
         code_executor=mock_executor
     )
     
-    # Verify mocks were called
+    # Verify mock LLM was called (code_executor no longer used in v3.3, uses real pytest)
     assert mock_llm.call_count == 1  # Non-streaming call
-    assert mock_executor.execute_count == 1
     
     # Verify test code was saved to context
     test_entries = [item for item in context["intermediate_results"] if item.get("type") == "test"]

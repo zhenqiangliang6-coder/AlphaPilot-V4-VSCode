@@ -197,7 +197,7 @@ def _requests_architecture_document(prompt):
         return False
     has_architecture_document = re.search(
         r"(?i)(?:架构(?:设计)?文档|architecture document|"
-        r"docs[/\\][\w./\\-]*(?:architecture|架构)[\w./\\-]*\.(?:md|mmd|puml))",
+        r"[\w./\\-]*(?:architecture|架构)[\w./\\-]*\.(?:md|mmd|puml))",
         prompt,
     )
     if not has_architecture_document:
@@ -227,7 +227,9 @@ def _is_architecture_document_operation(operation):
     if re.match(r"^[A-Za-z]:", normalized):
         return False
     parts = PurePosixPath(normalized.lstrip("/")).parts
-    if not parts or parts[0] != "docs" or ".." in parts:
+    if not parts or ".." in parts:
+        return False
+    if len(parts) >= 2 and parts[0] != "docs":
         return False
     filename = parts[-1].lower()
     suffix = PurePosixPath(filename).suffix

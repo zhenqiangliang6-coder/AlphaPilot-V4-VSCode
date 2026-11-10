@@ -4,7 +4,7 @@
 # analyze 步骤：分析用户需求，提取关键点（工业级容错 + 流式输出 + 人格配置版本）
 # ---------------------------------------------------------
 
-from ..qwen_api import call_qwen, call_qwen_stream, call_qwen_with_persona
+from ..qwen_api import call_llm, call_llm_stream, call_llm_with_persona
 from .prompts import analyze_prompt
 from ....worker_config import create_event, stream_chunk, stream_start, stream_end
 
@@ -83,21 +83,21 @@ def run_analyze_step(step, context, events, task_id=None):
             # ⭐ 使用带人格配置的流式调用
             if persona_config:
                 print(f"🚀 使用人格配置进行流式调用: {persona_config['name']}")
-                for chunk in call_qwen_with_persona(prompt, persona_config, use_stream=True):
+                for chunk in call_llm_with_persona(prompt, persona_config, use_stream=True):
                     result += chunk
                     # 实时发送到前端 (channel=reasoning)
                     stream_chunk(task_id, chunk, phase="analyze", channel="reasoning")
             else:
                 # 降级到普通流式调用
-                for chunk in call_qwen_stream(prompt):
+                for chunk in call_llm_stream(prompt):
                     result += chunk
                     stream_chunk(task_id, chunk, phase="analyze", channel="reasoning")
         else:
             # 非流式模式（向后兼容）
             if persona_config:
-                result = call_qwen_with_persona(prompt, persona_config, use_stream=False)
+                result = call_llm_with_persona(prompt, persona_config, use_stream=False)
             else:
-                result = call_qwen(prompt)
+                result = call_llm(prompt)
         
         # 验证返回值
         if not result:
