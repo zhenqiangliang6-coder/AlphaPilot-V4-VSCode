@@ -174,4 +174,4 @@ def run_changelog_step(step: dict, context: dict, events: list, task_id: str | N
     events.append(create_event("changelog_updated", {
         "file": changelog_path,
         "entry": entry,
-    }))
+    }, task_id=task_id, sequence=len(events) + 1))

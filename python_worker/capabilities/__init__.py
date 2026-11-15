@@ -29,6 +29,10 @@ from .shell_executor import (
     ShellResult,
     run_command,
 )
+from .dependency_installer import (
+    DependencyInstallResult,
+    install_dependencies,
+)
 
 __all__ = [
     "TreeNode",
@@ -46,4 +50,6 @@ __all__ = [
     "upload_to_github",
     "ShellResult",
     "run_command",
+    "DependencyInstallResult",
+    "install_dependencies",
 ]

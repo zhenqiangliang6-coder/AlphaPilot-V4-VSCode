@@ -1,20 +1,30 @@
 // src/components/EnhancedStreamingOutput.tsx
-// v3.6 P0: 流式输出智能渲染 - 区分文本/代码块/Mermaid，消除冗余打字机延迟
+// v4.0 Tech 重构 — rAF 打字机引擎 + 增量 Markdown 渲染 + 流式光标 + shimmer 思考态
+// 渲染策略：
+//   - 已稳定文本段  → memo 隔离的 MarkdownRenderer（chunk 到达时不重渲）
+//   - 已闭合代码块  → memo 隔离的 Prism 高亮（只渲一次）
+//   - 尾部活动文本段 → 纯文本 + terminal 风格流式光标
+//   - 生成中代码块   → 流光呼吸卡片 + 纯文本预览
+// 滚动策略：仅当用户位于底部附近时自动跟随，向上翻阅历史不被打断
 
-import React, { useEffect, useRef, useMemo } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { MarkdownRenderer } from './MarkdownRenderer';
+import { useTypewriter } from '../hooks/useTypewriter';
 
 interface EnhancedStreamingOutputProps {
   content: string;
   isStreaming: boolean;
   channel?: 'reasoning' | 'content';
-  speed?: number;
+  speed?: number; // 每字符毫秒（兼容旧参数），默认 5ms → 200 cps
 }
 
 interface ContentSegment {
   type: 'text' | 'code_block';
   content: string;
   language: string;
-  isComplete: boolean;   // 代码块是否已闭合 ```
+  isComplete: boolean; // 代码块是否已闭合 ```
 }
 
 function parseContentSegments(text: string): ContentSegment[] {
@@ -32,18 +42,12 @@ function parseContentSegments(text: string): ContentSegment[] {
         isComplete: true,
       });
     }
-
-    const language = (match[1] || '').toLowerCase();
-    const code = match[2] || '';
-    const isComplete = match[3] === '```';
-
     segments.push({
       type: 'code_block',
-      content: code,
-      language,
-      isComplete,
+      content: match[2] || '',
+      language: (match[1] || '').toLowerCase(),
+      isComplete: match[3] === '```',
     });
-
     lastIndex = match.index + match[0].length;
   }
 
@@ -89,137 +93,147 @@ const BLOCK_LABELS: Record<string, string> = {
   default: '代码块',
 };
 
+/** 稳定文本段 — memo 隔离：chunk 到达 / 打字机推进时，已稳定段落零重渲 */
+const StableText = React.memo(function StableText({ content }: { content: string }) {
+  return (
+    <div className="markdown-renderer text-sm leading-relaxed">
+      <MarkdownRenderer content={content} />
+    </div>
+  );
+});
+
+/** 已闭合代码块 — Prism 高亮一次，内容不再变化 */
+const ClosedCode = React.memo(function ClosedCode({
+  code,
+  language,
+}: {
+  code: string;
+  language: string;
+}) {
+  const isMermaid = language === 'mermaid';
+  const label = BLOCK_LABELS[language] || BLOCK_LABELS.default;
+  return (
+    <div className="my-3 rounded-lg border border-emerald-400/15 bg-[#161b26] overflow-hidden">
+      <div className="flex items-center justify-between px-3 py-1.5 bg-emerald-400/[0.06] border-b border-emerald-400/15">
+        <span className="text-[11px] font-medium text-emerald-300/90 tracking-wide">
+          {BLOCK_ICONS[language] || BLOCK_ICONS.default} {isMermaid ? '架构图' : label}
+        </span>
+        <span className="text-[10px] text-emerald-400/60">✓ 完成</span>
+      </div>
+      <SyntaxHighlighter
+        style={vscDarkPlus}
+        language={isMermaid ? 'text' : language || 'text'}
+        PreTag="div"
+        customStyle={{ margin: 0, fontSize: '12px', lineHeight: '1.6', background: 'transparent' }}
+      >
+        {code}
+      </SyntaxHighlighter>
+    </div>
+  );
+});
+
 export const EnhancedStreamingOutput: React.FC<EnhancedStreamingOutputProps> = ({
   content,
   isStreaming,
   channel = 'content',
-  speed = 5,   // ⭐ 提速：从15ms降到5ms（后端已逐token流式，无需再缓冲）
+  speed = 5,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const isReasoning = channel === 'reasoning';
 
-  const segments = useMemo(() => parseContentSegments(content), [content]);
+  // ⚡ rAF 打字机引擎：时间步进、智能追赶、收尾快速补齐
+  const shown = useTypewriter(content, isStreaming, {
+    cps: Math.min(2000, Math.round(1000 / Math.max(speed, 1))),
+  });
 
+  const segments = useMemo(() => parseContentSegments(shown), [shown]);
+
+  // 智能自动滚动：仅当用户位于底部附近（<80px）时跟随，向上翻阅不打扰
   useEffect(() => {
-    if (containerRef.current) {
-      containerRef.current.scrollTop = containerRef.current.scrollHeight;
+    const el = containerRef.current;
+    if (!el) return;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 80) {
+      el.scrollTop = el.scrollHeight;
     }
-  }, [content]);
+  }, [shown, segments.length]);
 
   if (!content && !isStreaming) {
     return null;
   }
 
+  const lastIdx = segments.length - 1;
+
   return (
     <div
       ref={containerRef}
       className={`enhanced-streaming-output max-h-[500px] overflow-y-auto scrollbar-thin ${
-        isReasoning ? 'text-purple-300' : 'text-vscode-fg'
+        isReasoning ? 'text-purple-300/90' : 'text-vscode-fg'
       }`}
     >
-      {/* 加载动画 */}
-      {isStreaming && content.length === 0 && (
-        <div className="flex items-center gap-2 mb-3 text-xs">
-          <div className="flex gap-1">
-            <span className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
-            <span className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
-            <span className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
+      {/* 思考/生成中 shimmer 态 */}
+      {isStreaming && shown.length === 0 && (
+        <div className="mb-3">
+          <div className="flex items-center gap-2 mb-2.5 text-xs">
+            <span className="w-1.5 h-1.5 rounded-full bg-gradient-to-r from-cyan-400 to-indigo-400 ap-dot" />
+            <span className={isReasoning ? 'text-purple-400/80' : 'text-indigo-400/80'}>
+              {isReasoning ? 'AI 正在思考' : 'AI 正在生成'}
+            </span>
           </div>
-          <span className={isReasoning ? 'text-purple-400' : 'text-blue-400'}>
-            {isReasoning ? '  AI 正在思考...' : '  AI 正在生成...'}
-          </span>
+          <div className="space-y-2">
+            <div className="h-3 ap-shimmer" style={{ width: '86%' }} />
+            <div className="h-3 ap-shimmer" style={{ width: '94%' }} />
+            <div className="h-3 ap-shimmer" style={{ width: '58%' }} />
+          </div>
         </div>
       )}
 
-      {/* 内容展示 */}
       <div className="text-sm leading-relaxed">
         {segments.map((seg, i) => {
+          const isTail = isStreaming && i === lastIdx;
+
           if (seg.type === 'text') {
-            return (
-              <div key={i} className="whitespace-pre-wrap">
-                {seg.content}
-              </div>
-            );
+            if (isTail) {
+              // 尾部活动段：纯文本（低成本），光标统一在末尾
+              return (
+                <div key={i} className="whitespace-pre-wrap">
+                  {seg.content}
+                </div>
+              );
+            }
+            return <StableText key={i} content={seg.content} />;
           }
 
           // 代码块
-          if (seg.type === 'code_block') {
-            const isMermaid = seg.language === 'mermaid';
-            const icon = BLOCK_ICONS[seg.language] || BLOCK_ICONS.default;
-            const label = BLOCK_LABELS[seg.language] || BLOCK_LABELS.default;
-
-            if (isStreaming && !seg.isComplete) {
-              return (
-                <div
-                  key={i}
-                  className="my-3 rounded-lg border border-blue-500/20 bg-[#1e1e1e] overflow-hidden"
-                >
-                  <div className="flex items-center justify-between px-3 py-1.5 bg-blue-500/10 border-b border-blue-500/20">
-                    <div className="flex items-center gap-2 text-xs text-blue-400">
-                      <span>{icon}</span>
-                      <span className="font-semibold">
-                        {isMermaid ? '架构图' : label}
-                      </span>
-                    </div>
-                    <span className="text-xs text-blue-400/70 animate-pulse">生成中...</span>
-                  </div>
-                  <pre className="p-3 text-xs text-gray-300 whitespace-pre-wrap overflow-x-auto max-h-64 overflow-y-auto font-mono leading-relaxed">
-                    {seg.content}
-                  </pre>
-                </div>
-              );
-            }
-
-            if (isStreaming && seg.isComplete) {
-              return (
-                <div
-                  key={i}
-                  className="my-3 rounded-lg border border-green-500/20 bg-[#1e1e1e] overflow-hidden"
-                >
-                  <div className="flex items-center justify-between px-3 py-1.5 bg-green-500/10 border-b border-green-500/20">
-                    <div className="flex items-center gap-2 text-xs text-green-400">
-                      <span>{icon}</span>
-                      <span className="font-semibold">
-                        {isMermaid ? '架构图' : label}
-                      </span>
-                    </div>
-                    <span className="text-xs text-green-400/70">{isMermaid ? ' ✓ 结构图完成' : ' ✓ 代码块完成'}</span>
-                  </div>
-                  <pre className="p-3 text-xs text-gray-300 whitespace-pre-wrap overflow-x-auto max-h-64 overflow-y-auto font-mono leading-relaxed">
-                    {seg.content}
-                  </pre>
-                </div>
-              );
-            }
-
-            // ⭐ 非流式状态 → 折叠卡片（MarkdownRenderer 会渲染真实图表）
+          if (seg.isComplete) {
             return (
-              <div
-                key={i}
-                className="my-3 rounded-lg border border-blue-500/20 bg-blue-500/5 p-3"
-              >
-                <details>
-                  <summary className="text-xs text-gray-500 cursor-pointer hover:text-gray-400 flex items-center gap-2">
-                    <span>{icon}</span>
-                    <span>
-                      {isMermaid ? ' 架构图源码' : `   ${label} 源码`}
-                    </span>
-                  </summary>
-                  <pre className="mt-2 text-xs text-gray-400 whitespace-pre-wrap overflow-x-auto bg-gray-900/50 p-2 rounded max-h-48 overflow-y-auto">
-                    {seg.content}
-                  </pre>
-                </details>
-              </div>
+              <ClosedCode key={i} code={seg.content} language={seg.language} />
             );
           }
 
-          return null;
+          // 生成中代码块：流光呼吸卡片
+          const isMermaid = seg.language === 'mermaid';
+          return (
+            <div
+              key={i}
+              className="my-3 rounded-lg border border-indigo-400/25 bg-[#161b26] overflow-hidden ap-breathe"
+            >
+              <div className="flex items-center justify-between px-3 py-1.5 bg-indigo-400/[0.06] border-b border-indigo-400/20">
+                <span className="text-[11px] font-medium text-indigo-300/90 tracking-wide">
+                  {BLOCK_ICONS[seg.language] || BLOCK_ICONS.default}{' '}
+                  {isMermaid ? '架构图' : BLOCK_LABELS[seg.language] || BLOCK_LABELS.default}
+                </span>
+                <span className="text-[10px] text-indigo-300/70">生成中…</span>
+              </div>
+              <pre className="p-3 text-xs text-gray-300/90 whitespace-pre-wrap overflow-x-auto max-h-64 overflow-y-auto font-mono leading-relaxed">
+                {seg.content}
+              </pre>
+              <div className="h-0.5 ap-shimmer" />
+            </div>
+          );
         })}
 
-        {/* 流式光标 */}
-        {isStreaming && content.length > 0 && (
-          <span className="inline-block w-2 h-4 bg-blue-400 ml-0.5 animate-pulse"></span>
-        )}
+        {/* terminal 风格流式光标 */}
+        {isStreaming && shown.length > 0 && <span className="ap-cursor" />}
       </div>
     </div>
   );

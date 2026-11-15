@@ -55,14 +55,20 @@ def test_modelscope_api():
         print("ModelScope: MODELSCOPE_API_KEY is not configured")
         return False
 
-    configured_model = os.getenv("MODELSCOPE_MODEL", "Qwen/Qwen3.8-Flash-Next")
-    models_to_test = list(dict.fromkeys([
-        configured_model,
-        "deepseek-ai/DeepSeek-V4-Flash-Vision-Exp",
-        "Qwen/Qwen3.8-Flash-Next",
-        "deepseek-ai/DeepSeek-V4.1-Flash",
-        "Qwen/Qwen3.8-27B",
-    ]))
+    # ⭐ 从 .env 降级链读取，避免硬编码旧/已下架模型 ID（如 deepseek 系列已无 provider 服务）
+    chain_keys = [
+        "MODELSCOPE_MODEL",
+        "MODELSCOPE_FALLBACK_1",
+        "MODELSCOPE_FALLBACK_2",
+        "MODELSCOPE_FALLBACK_3",
+        "MODELSCOPE_FALLBACK_4",
+        "MODELSCOPE_FALLBACK_5",
+    ]
+    models_to_test = list(dict.fromkeys(
+        os.getenv(k) for k in chain_keys if os.getenv(k)
+    ))
+    if not models_to_test:
+        models_to_test = ["Qwen/Qwen3.8-Flash-Next"]
     api_base = os.getenv("MODELSCOPE_BASE_URL", "https://api-inference.modelscope.cn/v1").rstrip("/")
     api_url = api_base if api_base.endswith("/chat/completions") else f"{api_base}/chat/completions"
 

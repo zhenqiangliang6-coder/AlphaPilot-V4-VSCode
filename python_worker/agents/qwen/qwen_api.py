@@ -95,6 +95,8 @@ def _call_qwen_sse(prompt: str, model: str, temperature: float = 0.3) -> Generat
 
     response = _call_with_retry(_do_connect, max_retries=2)
     response.raise_for_status()
+    # SSE 无 charset 时 requests 默认 ISO-8859-1，中文会变 mojibake
+    response.encoding = "utf-8"
     for line in response.iter_lines(decode_unicode=True):
         if not line:
             continue
@@ -171,6 +173,24 @@ def call_qwen_stream(prompt: str, temperature: float = 0.3) -> Generator[str, No
     return call_llm_stream(prompt, temperature)
 
 
+# G10.29：主链瞬时网络抖动时，跨 Provider 降级前先做一次短退避重试。
+# v8 实测 R5/R9 的失败根因是 api-inference.modelscope.cn 的 DNS 解析
+# 11001 抖动 + 兜底链被进程内旧状态拉黑，不是额度真耗尽；直接降级会把
+# 一次瞬时抖动放大成整轮任务失败。只对网络型失败文本重试，额度/鉴权型
+# 失败仍立即降级，FAIL-CLOSED 对失败文本的拦截语义不变。
+_NETWORK_FAILURE_MARKERS = (
+    "nameresolutionerror", "getaddrinfo", "connectionerror",
+    "proxyerror", "max retries exceeded", "timed out", "readtimeout",
+    "ssleof", "connection reset", "connection aborted",
+)
+_PROVIDER_NETWORK_RETRY_DELAY_SEC = 2.0
+
+
+def _is_transient_network_failure(text: str) -> bool:
+    low = (text or "").lower()
+    return any(marker in low for marker in _NETWORK_FAILURE_MARKERS)
+
+
 def call_qwen_with_persona(
     prompt: str,
     persona_config: Optional[Dict] = None,
@@ -212,8 +232,27 @@ def call_llm_stream(prompt: str, temperature: float = 0.3) -> Generator[str, Non
 
     gen = client.call_stream(prompt, temperature=temperature)
     if provider != "qwen":
-        first = next(gen, None)
-        if first and "[API 调用失败" in str(first):
+        try:
+            first = next(gen, None)
+        except Exception as e:
+            print(f"[Provider] {provider} 流式调用异常，自动降级到 DashScope (Qwen): {e}")
+            from .providers.qwen_client import QwenClient
+            fallback = QwenClient()
+            yield from fallback.call_stream(prompt, temperature=temperature)
+            return
+        if first is None or "[API 调用失败" in str(first):
+            if first is not None and _is_transient_network_failure(str(first)):
+                print(f"[Provider] {provider} 网络型失败，"
+                      f"{_PROVIDER_NETWORK_RETRY_DELAY_SEC:.0f}s 后重试一次主链")
+                time.sleep(_PROVIDER_NETWORK_RETRY_DELAY_SEC)
+                retried = client.call_stream(prompt, temperature=temperature)
+                retry_first = next(retried, None)
+                if retry_first is not None and "[API 调用失败" not in str(retry_first):
+                    print(f"[Provider] {provider} 重试成功，继续使用主链")
+                    yield retry_first
+                    yield from retried
+                    return
+                print(f"[Provider] {provider} 重试仍失败，执行跨 Provider 降级")
             print(f"[Provider] {provider} 流式全部不可用，自动降级到 DashScope (Qwen)")
             from .providers.qwen_client import QwenClient
             fallback = QwenClient()

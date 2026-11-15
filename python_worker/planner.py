@@ -7,10 +7,36 @@
 # ---------------------------------------------------------
 
 import json
+import os
 import re
 import requests
 import ast
 from .worker_config import DASHSCOPE_API_KEY   # ← ★ 修复后的正确路径
+from .provider_health import is_open as _provider_circuit_open
+
+
+def _planner_endpoint():
+    """Planner 与 Worker 主链共用同一 LLM 上游，避免旁路走到别家接口。"""
+    provider = os.getenv("LLM_PROVIDER", "qwen").lower().strip()
+    # 熔断/额度冷却期间 Planner 直接走 DashScope，避免每轮规划再撞一次墙
+    if provider == "modelscope" and _provider_circuit_open("modelscope"):
+        provider = "qwen"
+    if provider == "modelscope":
+        base = os.getenv(
+            "MODELSCOPE_BASE_URL", "https://api-inference.modelscope.cn/v1"
+        ).rstrip("/")
+        return (
+            f"{base}/chat/completions",
+            os.getenv("MODELSCOPE_MODEL", "Qwen/Qwen3.8-Flash-Next"),
+            os.getenv("MODELSCOPE_API_KEY", ""),
+            True,
+        )
+    return (
+        "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+        os.getenv("QWEN_MODEL", "qwen-max"),
+        DASHSCOPE_API_KEY,
+        False,
+    )
 
 
 def llm_decompose_task(prompt: str) -> list:
@@ -47,26 +73,33 @@ def llm_decompose_task(prompt: str) -> list:
 
     user_prompt = f"用户任务：{prompt}"
 
-    url = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {DASHSCOPE_API_KEY}", "Content-Type": "application/json"}
+    url, model_name, api_key, is_modelscope = _planner_endpoint()
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     body = {
-        "model": "qwen-max",
+        "model": model_name,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ],
         "temperature": 0.3,
     }
+    if is_modelscope:
+        body["chat_template_kwargs"] = {"enable_thinking": False}
 
-    r = requests.post(url, headers=headers, json=body, timeout=30)
+    # 直连上游：不继承宿主注入的 HTTP_PROXY，否则代理故障会连带打死规划器
+    session = requests.Session()
+    session.trust_env = False
+    r = session.post(url, headers=headers, json=body, timeout=30, proxies={})
     r.raise_for_status()
     data = r.json()
 
     # -------------------------------
-    # 兼容所有 DashScope 返回格式（compatible-mode + 原生）
+    # 兼容 ModelScope（delta）/ DashScope（message）/ 原生返回格式
     # -------------------------------
     if "choices" in data:
-        raw = data["choices"][0]["message"]["content"]
+        first = data["choices"][0] or {}
+        raw = ((first.get("message") or {}).get("content")
+               or (first.get("delta") or {}).get("content") or "")
     elif "output" in data:
         output = data["output"]
         if "text" in output:

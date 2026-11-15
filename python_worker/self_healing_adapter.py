@@ -420,7 +420,16 @@ def _route_fix(error_type, error_info, source_files, test_output,
                                     project_dir, llm_call_fn, symbol_index)
 
     elif error_type == 'missing_table':
-        return _fix_missing_table(source_files, project_dir)
+        rule_result = _fix_missing_table(source_files, project_dir)
+        if rule_result.get('status') == 'fixed':
+            return rule_result
+        contracts_text = _format_contracts_for_prompt(
+            _build_contract_stubs(source_files)
+        )
+        return _fix_logic_enhanced(
+            error_info, source_files, test_output, llm_call_fn,
+            contracts_text, priority_files=('conftest', 'database.py', 'main.py'),
+        )
 
     elif error_type == 'attribute_error':
         attr_name = error_info.get('missing_attr', '')
@@ -564,9 +573,28 @@ def _fix_import_enhanced(error_info, source_files, test_output,
 #  逻辑修复（多文件上下文 + LLM）
 # ================================================================
 
-def _fix_logic_enhanced(error_info, source_files, test_output, llm_call_fn, contracts_text=""):
+def _fix_logic_enhanced(error_info, source_files, test_output, llm_call_fn, contracts_text="",
+                        priority_files=None):
+    # ⭐ v3.4 修复：优先展示 conftest/database/main/test 文件，
+    #   避免关键文件被 8000 字符截断保护误伤。
+    #   自愈引擎必须能看到 conftest.py / database.py 才能修复「缺表/建表」缺陷。
+    priority_files = tuple(priority_files or ())
+
+    def _order_key(item):
+        fp = item[0]
+        low = fp.lower().replace('\\', '/')
+        if any(k.lower() in low for k in priority_files):
+            return (0, fp)
+        if 'conftest' in low or low.endswith('database.py') or low.endswith('main.py'):
+            return (1, fp)
+        if '/tests/' in low or low.startswith('tests/') or 'test_' in low:
+            return (2, fp)
+        return (3, fp)
+
+    ordered = sorted(source_files.items(), key=_order_key)
+
     files_code = ""
-    for fp, code in source_files.items():
+    for fp, code in ordered:
         files_code += f"\n# === {fp} ===\n{code}"
 
     contract_block = ("\n" + contracts_text + "\n") if contracts_text else ""
@@ -617,12 +645,50 @@ def _fix_logic_enhanced(error_info, source_files, test_output, llm_call_fn, cont
 #  缺表修复 — 添加 Base.metadata.create_all(bind=engine)
 # ================================================================
 
+def _inject_create_all_into_fixture(code):
+    """在 conftest/测试文件的 fixture 函数体首行注入 Base.metadata.create_all(bind=engine)。
+
+    处理常见 fixture 命名：db_session / client / setup_database / override_get_db / db。
+    若无匹配 fixture，则兜底注入到 engine = create_engine(...) 之后。
+    """
+    fixture_re = re.compile(
+        r'^(?P<indent>[ \t]*)(?:async[ \t]+)?def[ \t]+'
+        r'(db_session|client|setup_database|override_get_db|db)[ \t]*\('
+    )
+    lines = code.split('\n')
+    inserted = False
+    new_lines = []
+    for line in lines:
+        new_lines.append(line)
+        if not inserted:
+            m = fixture_re.match(line)
+            if m:
+                indent = m.group('indent') + '    '
+                new_lines.append(f'{indent}Base.metadata.create_all(bind=engine)')
+                inserted = True
+    if inserted:
+        return '\n'.join(new_lines)
+
+    # 兜底：注入到 engine = create_engine(...) 之后
+    new_lines = []
+    for line in lines:
+        new_lines.append(line)
+        if not inserted and 'engine = create_engine' in line:
+            new_lines.append('Base.metadata.create_all(bind=engine)')
+            inserted = True
+    return '\n'.join(new_lines)
+
+
 def _fix_missing_table(source_files, project_dir):
     table_keywords = ['no such table', 'OperationalError']
     fixed_files = {}
 
     for fp, code in source_files.items():
-        if 'database.py' not in fp and 'conftest.py' not in fp and 'main.py' not in fp:
+        _fp = fp.replace('\\', '/')
+        is_db_file = 'database.py' in _fp or 'main.py' in _fp
+        is_test_file = ('conftest.py' in _fp or '/tests/' in _fp
+                        or _fp.startswith('tests/') or 'test_' in _fp)
+        if not is_db_file and not is_test_file:
             continue
         if 'Base.metadata.create_all' in code:
             continue
@@ -635,15 +701,7 @@ def _fix_missing_table(source_files, project_dir):
                 'Base = declarative_base()\n\nBase.metadata.create_all(bind=engine)'
             )
         elif 'engine = create_engine' in code:
-            lines = code.split('\n')
-            new_lines = []
-            base_found = False
-            for line in lines:
-                new_lines.append(line)
-                if 'Base = declarative_base()' in line and not base_found:
-                    new_lines.append('Base.metadata.create_all(bind=engine)')
-                    base_found = True
-            code = '\n'.join(new_lines)
+            code = _inject_create_all_into_fixture(code)
 
         try:
             compile(code, fp, 'exec')
@@ -661,6 +719,8 @@ def _fix_missing_table(source_files, project_dir):
 
     for fp, code in source_files.items():
         if 'Base = declarative_base()' not in code:
+            continue
+        if 'Base.metadata.create_all' in code:
             continue
         fixed = code.replace(
             'Base = declarative_base()',

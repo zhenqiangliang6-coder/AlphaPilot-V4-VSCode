@@ -684,9 +684,14 @@ def create_empty_context():
 # 事件结构
 # =========================
 
-def create_event(event_type: str, data: dict):
-    return {
+def create_event(event_type: str, data: dict, task_id: str = None, sequence: int = None):
+    event = {
         "timestamp": int(time.time() * 1000),
         "type": event_type,
-        "data": data or {}
+        "data": data or {},
     }
+    if task_id is not None:
+        event["task_id"] = task_id
+    if sequence is not None:
+        event["sequence"] = sequence
+    return event

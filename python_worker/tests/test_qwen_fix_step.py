@@ -10,8 +10,8 @@ def test_fix_step_writes_valid_fix_to_final_fileops(monkeypatch):
     fixed_code = "import numpy as np\n\nprint(np.array([1, 2]))"
     monkeypatch.setattr(
         fix_step,
-        "call_qwen_with_persona",
-        lambda *args, **kwargs: f"# FILE: src/cli.py\n```python\n{fixed_code}\n```",
+        "call_llm_with_persona",
+        lambda prompt, persona=None, use_stream=False: f"# FILE: src/cli.py\n```python\n{fixed_code}\n```",
     )
     context = {
         "final_file_ops": [],
@@ -43,8 +43,8 @@ def test_fix_step_writes_valid_fix_to_final_fileops(monkeypatch):
 def test_fix_step_rejects_invalid_python_without_fileops(monkeypatch):
     monkeypatch.setattr(
         fix_step,
-        "call_qwen_with_persona",
-        lambda *args, **kwargs: "# FILE: src/cli.py\n```python\ndef broken(:\n```",
+        "call_llm_with_persona",
+        lambda prompt, persona=None, use_stream=False: "# FILE: src/cli.py\n```python\ndef broken(:\n```",
     )
     context = {
         "final_file_ops": [],

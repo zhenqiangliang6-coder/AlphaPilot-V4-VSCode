@@ -34,6 +34,8 @@ def run_respond_step(step, context, events, task_id=None):
         if item.get("type") == "plan" and item.get("plan")
     ]
 
+    source = "plan"
+
     # 如果 plan 步骤未产生结果，尝试回退使用 analyze 结果
     if not plans:
         analyze_items = [
@@ -43,20 +45,42 @@ def run_respond_step(step, context, events, task_id=None):
         ]
         if analyze_items:
             plans = [analyze_items[-1]]
+            source = "analyze"
+
+    # ⭐ B: 无 plan/analyze 时，回退消费 operate 步骤的输出
+    # （execute_operation 意图的执行链为 operate → respond，天然没有 analyze/plan 前置）
+    if not plans:
+        operate_items = [
+            item
+            for item in context.get("intermediate_results", [])
+            if item.get("type") == "operate" and item.get("text")
+        ]
+        if operate_items:
+            plans = [operate_items[-1].get("text", "")]
+            source = "operate"
 
     if not request:
         step["output"] = {"text": "无法生成说明：缺少用户请求。"}
         return
 
     if not plans:
-        step["output"] = {"text": "无法生成说明：缺少分析/计划结果。请重试或提供更多上下文。"}
+        step["output"] = {"text": "无法生成说明：缺少分析/计划/操作结果。请重试或提供更多上下文。"}
         return
 
     # 构建增强的 respond prompt，要求输出 Mermaid 结构图
-    base_prompt = (
-        "请将以下计划整理成面向用户的最终答复。保持项目事实准确，不要声称执行过任何操作，"
-        "不要生成文件或代码。"
-    )
+    if source == "operate":
+        base_prompt = (
+            "请将以下操作执行结果整理成面向用户的最终答复。保持事实准确，"
+            "只汇报操作结果中实际发生的内容，不要声称执行过结果中未出现的操作，"
+            "不要生成文件或代码。"
+        )
+        result_label = "操作结果"
+    else:
+        base_prompt = (
+            "请将以下计划整理成面向用户的最终答复。保持项目事实准确，不要声称执行过任何操作，"
+            "不要生成文件或代码。"
+        )
+        result_label = "计划"
     if intent == "mentor_explain":
         base_prompt += (
             "\n\n输出格式要求：\n"
@@ -69,7 +93,7 @@ def run_respond_step(step, context, events, task_id=None):
             "4. 使用步骤编号（1. 2. 3.）表示序列化操作"
         )
 
-    prompt = f"{base_prompt}\n\n用户请求：\n{request}\n\n计划：\n{plans[-1]}"
+    prompt = f"{base_prompt}\n\n用户请求：\n{request}\n\n{result_label}：\n{plans[-1]}"
     persona_config = meta.get("persona_config")
     result = ""
 
@@ -103,4 +127,4 @@ def run_respond_step(step, context, events, task_id=None):
 
     step["output"] = {"text": result}
     context.setdefault("intermediate_results", []).append({"type": "respond", "text": result})
-    events.append(create_event("respond_output", {"text": result}))
+    events.append(create_event("respond_output", {"text": result}, task_id=task_id, sequence=len(events) + 1))

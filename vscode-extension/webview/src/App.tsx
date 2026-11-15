@@ -16,6 +16,7 @@ import {
 } from './components/TestAuthorizationCard';
 import { TestAuthorizationBar } from './components/TestAuthorizationBar';
 import { FileOpsConfirmCard } from './components/FileOpsConfirmCard';
+import { useToast } from './components/Toast';  // ⭐ v4.0 新增：全局 Toast 微交互
 import { vscodeAPI } from './utils/vscode';
 
 function App() {
@@ -32,6 +33,9 @@ function App() {
     setPendingConfirmation,
     clearPendingConfirmation,
   } = useChatStore();
+
+  // ⭐ v4.0 新增：全局 Toast 微交互
+  const { toast } = useToast();
 
   // ⭐ v2.7 新增：FileOps 状态管理
   const [showFileOps, setShowFileOps] = useState(false);
@@ -258,7 +262,8 @@ function App() {
     setCurrentTaskId(null);
     setStreaming(false);
     setCurrentPhase(null);
-    
+    toast(`任务失败: ${payload?.error?.message || '未知错误'}`, 'error');
+
     updateMessage(payload.task_id, {
       content: `❌ 任务失败: ${payload.error.message}`
     });
@@ -403,12 +408,34 @@ function App() {
         setShowFileVersion={setShowFileVersion}
         showProjectMemory={showProjectMemory}
         setShowProjectMemory={setShowProjectMemory}
-        showFileOpsPanel={showFileOpsPanel}
-        setShowFileOpsPanel={setShowFileOpsPanel}
-        pendingFileOpsCount={currentFileOps.length}
       />
       <ModelSelector />
       <MessageList />
+
+      {/* P0: FileOps 确认卡片 — 内联在消息流下方（流式结束后自动展示） */}
+      {showFileOpsPanel && currentFileOps.length > 0 && (
+        <FileOpsConfirmCard
+          fileOps={currentFileOps}
+          onApplyAll={() => {
+            console.log('✅ 应用文件操作:', currentFileOps.length);
+            vscodeAPI.postMessage({
+              type: 'apply_file_ops',
+              taskId: currentTaskIdForFileOps,
+              fileOps: currentFileOps,
+            });
+            toast(`✅ 已应用 ${currentFileOps.length} 个文件变更`, 'success');
+            setShowFileOpsPanel(false);
+            setCurrentFileOps([]);
+            setCurrentTaskIdForFileOps(null);
+          }}
+          onRejectAll={() => {
+            toast('已放弃本次文件变更', 'info');
+            setShowFileOpsPanel(false);
+            setCurrentFileOps([]);
+            setCurrentTaskIdForFileOps(null);
+          }}
+        />
+      )}
 
       {/* Phase 2.4 P0-4: 确认卡片 — 内联嵌入聊天流 */}
       {pendingConfirmation && (
@@ -479,30 +506,6 @@ function App() {
           projectId={selectedProjectId}
           projectName={selectedProjectName}
           onClose={() => setShowProjectMemory(false)}
-        />
-      )}
-
-      {/* P0: FileOps 确认卡片 — 内联嵌入聊天流（替代固定侧边栏） */}
-      {showFileOpsPanel && currentFileOps.length > 0 && (
-        <FileOpsConfirmCard
-          fileOps={currentFileOps}
-          taskId={currentTaskIdForFileOps}
-          onApplyAll={() => {
-            console.log('✅ 应用文件操作:', currentFileOps.length);
-            vscodeAPI.postMessage({
-              type: 'apply_file_ops',
-              taskId: currentTaskIdForFileOps,
-              fileOps: currentFileOps,
-            });
-            setShowFileOpsPanel(false);
-            setCurrentFileOps([]);
-            setCurrentTaskIdForFileOps(null);
-          }}
-          onRejectAll={() => {
-            setShowFileOpsPanel(false);
-            setCurrentFileOps([]);
-            setCurrentTaskIdForFileOps(null);
-          }}
         />
       )}
 

@@ -31,7 +31,7 @@ from ._data import (
     FORCE_WRITE_CODE_PATTERNS, PROJECT_IMPLEMENTATION_PATTERNS,
     FORCE_EXECUTE_OPERATION_PATTERNS, READ_ONLY_DESIGN_PATTERNS,
     _INTENT_DEFAULT_PROFILE, INTENT_TO_PERSONA, INTENT_PATTERNS,
-    ExecutionProfile, _TEST_EXECUTION_PATTERNS,
+    ExecutionProfile, _TEST_EXECUTION_PATTERNS, DEPENDENCY_INSTALL_PATTERNS,
 )
 from ._classification import llm_classify, get_provider_config, call_provider_for_classify
 from ._planning_contract import get_impl_plan_requirement, validate_replan, needs_reauthorization
@@ -71,6 +71,72 @@ class IntentRouter:
     ExecutionProfile = ExecutionProfile
     _INTENT_DEFAULT_PROFILE = _INTENT_DEFAULT_PROFILE
     _TEST_EXECUTION_PATTERNS = _TEST_EXECUTION_PATTERNS
+    DEPENDENCY_INSTALL_PATTERNS = DEPENDENCY_INSTALL_PATTERNS
+
+    # ⭐ 确定性优先：文档-only 的架构设计请求
+    # 取证（2026-11-14 ShopFlow R5）：同一 Prompt、同一模型 qwen3.7-flash
+    # 连续 5 次分类，3 次 architecture / 2 次 write_code —— 40% 漂移。
+    # 误判为 write_code 后协作模式切到 engineer，架构师只读文件策略失效，
+    # 执行链还多出 test/fix/docstring 三个无关步骤（长 Prompt 超时的直接来源）。
+    # 这类请求语言特征明确（要文档 + 明确禁止实现代码），不该交给 LLM 猜。
+    _ARCH_DOC_REQUEST_PATTERNS = (
+        r"架构(?:设计)?文档",
+        r"(?:架构|architecture)\s*(?:设计|design)",
+        r"(?:设计|design)\s*(?:文档|document|blueprint)",
+        r"architecture\s*(?:document|blueprint|design)",
+        r"(?:系统|backend|平台)\s*(?:架构|architecture)",
+    )
+    _NO_IMPLEMENTATION_PATTERNS = (
+        r"不要写(?:任何)?(?:实现)?代码",
+        r"不(?:要)?(?:输出|生成|创建)(?:任何)?(?:实现)?代码",
+        r"只(?:输出|写|生成)(?:设计)?文档",
+        r"仅(?:输出|生成)(?:设计)?文档",
+        r"不(?:写|生成)(?:任何)?实现",
+        r"documentation\s*only",
+        r"do\s*not\s*write\s*(?:any\s*)?(?:implementation\s*)?code",
+        r"design\s*document\s*only",
+    )
+
+    # ⭐ 测试失败修复确定性优先
+    # 取证（2026-11-14 ShopFlow R7）：同一类「pytest 报错 + 请修复」请求，
+    # 两次真实链路分别被判成 explain_and_fix 和 write_code。误判为 write_code
+    # 后 write_step 做全量生成，一次改了 27 个文件（题面要求最小修改），
+    # 反而引入 422 / 缺表等 6 个新失败。
+    _FAILURE_CONTEXT_PATTERNS = (
+        r"pytest", r"traceback", r"测试失败", r"运行.{0,12}错误",
+        r"errors?\b", r"failed\b",
+    )
+    _REPAIR_INTENT_PATTERNS = (
+        r"定位根因", r"修复所有", r"逐一排查", r"修复.{0,12}错误",
+        r"修复.{0,12}问题", r"fix.{0,12}bug",
+    )
+    _GREENFIELD_PATTERNS = (
+        r"从零", r"新建项目", r"实现.{0,12}核心功能",
+        r"创建.{0,12}模块", r"请实现",
+    )
+
+    # ⭐ G10.23：枚举值级联替换确定性优先（LLM 不可用时的 Regex 兜底会误判 chat）
+    # 取证（2026-11-15 ShopFlow R9 / shopflow_v4_1）：分类模型 qwen-plus 免费额度
+    # 耗尽(403) → 分类器被锁死在单点模型 → 降级 Regex 没命中任何既有模式 →
+    # 判成 chat，执行链 analyze→workspace→plan→respond，零 FileOps、无授权记录，
+    # 却写回 outcome=success，质量+治理双红并连锁 R10。
+    # 这类题面有三个不可混淆的特征（代码实体 + 修改动词 + 跨文件级联范围），
+    # 据此确定性判 write_code，不依赖 LLM 是否可用。
+    _ENUM_CASCADE_ENTITY_PATTERNS = (
+        r"枚举", r"状态值", r"状态枚举", r"状态机", r"OrderStatus",
+    )
+    _ENUM_CASCADE_VERB_PATTERNS = (
+        r"修改", r"更新", r"替换", r"改为", r"同步更新",
+    )
+    _ENUM_CASCADE_SCOPE_PATTERNS = (
+        r"所有引用", r"找出所有", r"一次性全部", r"所有.{0,8}地方",
+        r"不得再出现", r"不要遗留", r"全部更新", r"同步更新",
+    )
+    # R5 架构题面同样有大量 `→`（状态流转、API 契约），箭头计数会误伤；
+    # 只有「带引号的旧值 → 带引号的新值」才是值替换的确定性特征。
+    _ENUM_CASCADE_MAPPING_PATTERN = (
+        r"[\"'][a-z_]+[\"']\s*(?:→|->)\s*[\"'][a-z_]+[\"']"
+    )
 
     # =========================================================
     # 分类方法 — 委托给 _classification 模块
@@ -190,6 +256,12 @@ class IntentRouter:
 
         chain = ["analyze"]  # 所有任务都从 analyze 开始
 
+        # 修复类任务只改已有代码：不做依赖装配、不产出文档/docstring。
+        # 取证（2026-11-14 ShopFlow R7）：explain_and_fix 默认 10 步链，
+        # 加上长 traceback Prompt，单轮超过 900s 轮询窗口 → R7–R10 连锁超时。
+        # setup 还可能凭 DEPENDS 块新建无关文件，与「最小修改」题面相冲突。
+        _is_repair_intent = intent in {"fix_code", "explain_and_fix"}
+
         # 工作区依赖
         if profile.workspace_dependency != "none":
             chain.append("workspace")
@@ -199,8 +271,8 @@ class IntentRouter:
             chain.append("plan")
 
         # setup — P2: DEPENDS 块处理、缺失文件 stub、清单文件自动创建
-        # 仅在代码/文档模式（有文件生成）时运行
-        if profile.output_mode in ("code", "document"):
+        # 仅在代码/文档模式（有文件生成）时运行；修复类任务跳过
+        if profile.output_mode in ("code", "document") and not _is_repair_intent:
             chain.append("setup")
 
         # write — 核心生成
@@ -218,12 +290,11 @@ class IntentRouter:
         if profile.output_mode == "code":
             chain.append("fix")
 
-        # doc — 代码/文档模式
-        if profile.output_mode in ("code", "document"):
+        # doc / docstring — 代码/文档模式；修复类任务不产出任何文档
+        if profile.output_mode in ("code", "document") and not _is_repair_intent:
             chain.append("doc")
 
-        # docstring — 代码模式
-        if profile.output_mode == "code":
+        if profile.output_mode == "code" and not _is_repair_intent:
             chain.append("docstring")
 
         # respond — generate_doc 需要 respond 步骤触发产物提取（Mermaid 架构图等）
@@ -276,16 +347,115 @@ class IntentRouter:
     def _is_project_test_request(cls, prompt: str) -> bool:
         if not cls._is_test_execution_request(prompt):
             return False
+        # G10.13（ShopFlow R8 实证）：题面里只要出现「pytest」就会命中
+        # _TEST_EXECUTION_PATTERNS（含裸 `pytest\b`），但增量/重构类题面
+        # 常常是在描述「否则 pytest 会报错」，并非要求跑测试。
+        # ① 结构化交付清单 = 必然写文件：编号/列表形式的代码路径、
+        #    「新增内容:」「变更内容:」等小节标题，一律不判 run_tests。
+        delivery_signals = (
+            r"(?:新增|变更|修改|交付|输出|需要|要求)\s*(?:内容|清单|文件)\s*[:：]",
+            r"(?m)^\s*(?:\d+[.、)]|[-*])\s*"
+            r"(?:backend|src|app|tests|frontend)/[\w/\-.]+\.py\b",
+        )
+        if any(re.search(p, prompt, re.IGNORECASE) for p in delivery_signals):
+            return False
+        # ② 显式修改信号：动词表补「增加/重构/提取…」、名词表补
+        #    「模型/路由/服务…」（R8 首句正是「增加…模块」，旧表漏了「增加」）。
         explicit_change_patterns = (
-            r"(?:新增|添加|创建|编写|生成|实现|开发|搭建|修改|更新|add|create|write|implement|develop|edit|modify|update)"
-            r".{0,24}(?:功能|模块|组件|接口|业务|代码|文件|测试用例|test case|spec)",
-            r"(?:功能|模块|组件|接口|业务|代码|文件|测试用例|test case|spec)"
-            r".{0,24}(?:新增|添加|创建|编写|生成|实现|开发|搭建|修改|更新|add|create|write|implement|develop|edit|modify|update)",
+            r"(?:新增|添加|增加|创建|编写|生成|实现|开发|搭建|修改|更新|重构|"
+            r"提取|拆分|迁移|新建|加入|补充|扩展|add|create|write|implement|"
+            r"develop|edit|modify|update|refactor)"
+            r".{0,24}(?:功能|模块|组件|接口|业务|代码|文件|模型|路由|服务|服务层|"
+            r"schema|字段|表|API|endpoint|逻辑|测试用例|test case|spec)",
+            r"(?:功能|模块|组件|接口|业务|代码|文件|模型|路由|服务|服务层|"
+            r"schema|字段|表|API|endpoint|逻辑|测试用例|test case|spec)"
+            r".{0,24}(?:新增|添加|增加|创建|编写|生成|实现|开发|搭建|修改|更新|重构|"
+            r"提取|拆分|迁移|新建|加入|补充|扩展|add|create|write|implement|"
+            r"develop|edit|modify|update|refactor)",
         )
         return not any(
             re.search(pattern, prompt, re.IGNORECASE)
             for pattern in explicit_change_patterns
         )
+
+    # ⭐ C: 依赖安装确定性优先 — 在 LLM 语义路由之前拦截
+    # "安装依赖/创建虚拟环境" 关键词特征明确, 不需要 LLM 猜测
+    @classmethod
+    def _is_dependency_install_request(cls, prompt: str) -> bool:
+        prompt_lower = prompt.lower().strip()
+        for pattern in cls.DEPENDENCY_INSTALL_PATTERNS:
+            if re.search(pattern, prompt_lower, re.IGNORECASE):
+                return True
+        return False
+
+    @classmethod
+    def _is_architecture_document_request(cls, prompt: str) -> bool:
+        """文档-only 架构设计请求的确定性识别（与 LLM 分类结果无关）。
+
+        必须同时满足：① 明确要架构/设计文档；② 明确禁止写实现代码 / 只输出文档。
+        只命中①的「请设计一个架构并给出实现」不会被拦截，避免误伤正常编码任务。
+        """
+        if not prompt or not prompt.strip():
+            return False
+        has_doc_request = any(
+            re.search(pattern, prompt, re.IGNORECASE)
+            for pattern in cls._ARCH_DOC_REQUEST_PATTERNS
+        )
+        if not has_doc_request:
+            return False
+        return any(
+            re.search(pattern, prompt, re.IGNORECASE)
+            for pattern in cls._NO_IMPLEMENTATION_PATTERNS
+        )
+
+    @classmethod
+    def _is_test_failure_repair_request(cls, prompt: str) -> bool:
+        """「运行报错 + 请定位并修复」的确定性识别。
+
+        必须同时有失败上下文与修复意图，且不能是「从零实现」类请求，
+        避免把 R6 建项目、R8 加模块误判成修复。
+        """
+        if not prompt or not prompt.strip():
+            return False
+        if any(re.search(p, prompt, re.IGNORECASE) for p in cls._GREENFIELD_PATTERNS):
+            return False
+        has_failure = any(
+            re.search(p, prompt, re.IGNORECASE) for p in cls._FAILURE_CONTEXT_PATTERNS
+        )
+        has_repair = any(
+            re.search(p, prompt, re.IGNORECASE) for p in cls._REPAIR_INTENT_PATTERNS
+        )
+        return has_failure and has_repair
+
+    @classmethod
+    def _is_enum_cascade_change_request(cls, prompt: str) -> bool:
+        """「枚举值跨文件级联替换」的确定性识别（早于 LLM，漂移免疫）。
+
+        必须同时具备：① 枚举 / 状态机代码实体；② 明确修改动词；
+        ③ 跨文件级联范围措辞 **或** 至少两组 `"A" → "B"` 值映射。
+        从零建项目类题面直接排除，避免误伤 R6 / R8。
+        任一条不满足就完全不拦截，交回原有 LLM / Regex 路由（FAIL-OPEN）。
+        """
+        if not prompt or not prompt.strip():
+            return False
+        # 架构文档题面里同样有 OrderStatus 枚举 + 大量 `→`，必须显式排除，
+        # 不能只依赖 detect_intent 里的调用顺序（顺序依赖太脆弱）。
+        if cls._is_architecture_document_request(prompt):
+            return False
+        if any(re.search(p, prompt, re.IGNORECASE)
+               for p in cls._GREENFIELD_PATTERNS):
+            return False
+        has_entity = any(re.search(p, prompt, re.IGNORECASE)
+                         for p in cls._ENUM_CASCADE_ENTITY_PATTERNS)
+        has_verb = any(re.search(p, prompt, re.IGNORECASE)
+                       for p in cls._ENUM_CASCADE_VERB_PATTERNS)
+        if not (has_entity and has_verb):
+            return False
+        has_scope = any(re.search(p, prompt, re.IGNORECASE)
+                        for p in cls._ENUM_CASCADE_SCOPE_PATTERNS)
+        has_mapping = len(re.findall(cls._ENUM_CASCADE_MAPPING_PATTERN,
+                                     prompt, re.IGNORECASE)) >= 2
+        return has_scope or has_mapping
 
     @classmethod
     def requests_test_failure_repair(cls, prompt: str) -> bool:
@@ -472,6 +642,80 @@ class IntentRouter:
                 language=language,
             )
             print("\n🧠 Intent Router（项目测试请求识别）:")
+            print(f"  意图: {intent}")
+            print(f"  人格: {persona}")
+            print(f"  执行链: {' → '.join(chain)}")
+            return intent, persona, chain
+
+        # ⭐ C: 依赖安装确定性优先 — 在 LLM 语义路由之前拦截, 防止误分类为 execute_operation 之外的意图
+        if cls._is_dependency_install_request(prompt):
+            intent = "execute_operation"
+            persona = cls.INTENT_TO_PERSONA[intent]
+            chain = cls._resolve_chain(
+                intent,
+                prompt,
+                worker=model_name,
+                matched_skill=matched_skill,
+                language=language,
+            )
+            print("\n🧠 Intent Router（依赖安装确定性识别）:")
+            print(f"  意图: {intent}")
+            print(f"  人格: {persona}")
+            print(f"  执行链: {' → '.join(chain)}")
+            return intent, persona, chain
+
+        # ⭐ 文档-only 架构设计确定性优先 — 必须早于 LLM 语义路由。
+        # 语义分类对该题型实测 40% 漂移（architecture ↔ write_code），
+        # 一旦误判，协作模式与文件策略守卫会整条走错。
+        if cls._is_architecture_document_request(prompt):
+            intent = "architecture"
+            persona = cls.INTENT_TO_PERSONA[intent]
+            chain = cls._resolve_chain(
+                intent,
+                prompt,
+                worker=model_name,
+                matched_skill=matched_skill,
+                language=language,
+            )
+            print("\n🧠 Intent Router（架构文档确定性识别 | LLM 漂移免疫）:")
+            print(f"  意图: {intent}")
+            print(f"  人格: {persona}")
+            print(f"  执行链: {' → '.join(chain)}")
+            return intent, persona, chain
+
+        # ⭐ 测试失败修复确定性优先 — 必须早于 LLM 语义路由。
+        # 「pytest 报错 + 请修复」若被判成 write_code，write_step 会做全量生成，
+        # 与题面「只允许最小行数变更」直接冲突（R7 曾一次改 27 个文件）。
+        if cls._is_test_failure_repair_request(prompt):
+            intent = "fix_code"
+            persona = cls.INTENT_TO_PERSONA[intent]
+            chain = cls._resolve_chain(
+                intent,
+                prompt,
+                worker=model_name,
+                matched_skill=matched_skill,
+                language=language,
+            )
+            print("\n🧠 Intent Router（测试失败修复确定性识别 | LLM 漂移免疫）:")
+            print(f"  意图: {intent}")
+            print(f"  人格: {persona}")
+            print(f"  执行链: {' → '.join(chain)}")
+            return intent, persona, chain
+
+        # ⭐ G10.23：枚举值级联修改确定性优先 — 必须早于 LLM 语义路由。
+        # LLM 分类服务不可用时，Regex 兜底会把这类题面判成 chat（零 FileOps），
+        # 即使分类模型恢复，语义漂移也会带来同类风险。
+        if cls._is_enum_cascade_change_request(prompt):
+            intent = "write_code"
+            persona = cls.INTENT_TO_PERSONA[intent]
+            chain = cls._resolve_chain(
+                intent,
+                prompt,
+                worker=model_name,
+                matched_skill=matched_skill,
+                language=language,
+            )
+            print("\n🧠 Intent Router（枚举级联修改确定性识别 | LLM 漂移免疫）:")
             print(f"  意图: {intent}")
             print(f"  人格: {persona}")
             print(f"  执行链: {' → '.join(chain)}")

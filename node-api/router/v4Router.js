@@ -2,6 +2,7 @@ const express = require('express');
 const { spawn } = require('child_process');
 
 const fileOpsHandler = require('../fileOpsHandler');
+const { logObject } = require('../logGovernance');
 const memoryService = require('../services/memoryService');
 const { resolveStatus } = require('../taskStateContract');
 
@@ -41,8 +42,7 @@ module.exports = function(io) {
         const { task_id } = req.params;
         const payload = req.body;
 
-        console.log(`\n[V4 Router] 收到 V4 notify: ${task_id}`);
-        console.log(JSON.stringify(payload, null, 2));
+        logObject(`[V4 Router] 收到 V4 notify: ${task_id}`, payload);
 
     // 更新 Memory（尽量降级容错）
     try {

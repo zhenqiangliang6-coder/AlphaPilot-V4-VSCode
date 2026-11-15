@@ -531,3 +531,19 @@ FORCE_EXECUTE_OPERATION_PATTERNS = [
     r"git\s+push",
     r"git\s+remote\s+add",
 ]
+
+# ⭐ C: 依赖安装确定性模式 — 优先于 LLM 模糊分类
+# 原则: 确定性规则 > LLM 概率。这类请求关键词特征明确, 无需 LLM 猜测。
+# 命中后硬覆盖为 execute_operation, 由 operate 步骤的 install_dependencies handler 真正执行 pip/npm install。
+DEPENDENCY_INSTALL_PATTERNS = [
+    r"(?:帮我|请|帮忙|执行|运行).{0,12}(?:安装|补装|配置).{0,16}(?:依赖|库|包|模块|requirements|fastapi|uvicorn|numpy|pytest|matplotlib|pandas)",
+    r"安装.{0,20}(?:项目|第三方|python)?(?:依赖|库|包)",
+    r"(?:需要|请|帮我|帮忙).{0,8}(?:补装|安装|配置).{0,8}(?:依赖|库|包)",
+    r"(?:pip|pip3)\s+install",
+    r"安装.{0,12}(?:fastapi|uvicorn|pytest|numpy|依赖|第三方库|requirements)",
+    r"(?:缺少|没有|缺失|缺).{0,10}(?:fastapi|uvicorn|pytest|依赖|库|包).{0,8}(?:安装|补装|装上|装一下)",
+    r"(?:补装|补上).{0,16}(?:依赖|库|包|fastapi|uvicorn|模块)",
+    r"install.{0,24}(?:project\s+)?dependenc",
+    r"创建.{0,20}虚拟环境",
+    r"(?:create|setup).{0,20}virtual[\s_-]*environment",
+]

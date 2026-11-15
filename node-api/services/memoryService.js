@@ -299,23 +299,90 @@ async function getUserTasks(userId, limit = 50) {
 // 执行链层操作 (Steps)
 // =======================
 
+// =======================
+// Worker 执行链 → Prisma 枚举归一化（写入层兜底，FAIL-SAFE）
+// =======================
+// 背景：IntentRouter 的执行链按意图动态生成，架构意图固定产出
+//   analyze → workspace → plan → setup → write → refine → doc
+// 其中 workspace / setup 不在 Prisma StepType 枚举内。旧实现直接透传，
+// 每个架构任务都会抛 PrismaClientValidationError，记忆库静默丢步骤记录，
+// 还把整段异常堆栈刷进 Node 日志。
+// 原则：DB 枚举是稳定的有限集合，不跟随 Worker 步骤名演化；
+//       写入层做白名单归一化，并把原始步骤名保留在 input 里可追溯。
+const PRISMA_STEP_TYPES = new Set([
+  'analyze', 'plan', 'write', 'refine', 'test', 'fix', 'doc', 'docstring', 'respond'
+]);
+
+// 语义等价映射：Worker 动态步骤名 → 最接近的 Prisma StepType
+const STEP_TYPE_ALIAS = {
+  workspace: 'analyze',
+  setup:     'plan',
+  scan:      'analyze',
+  inspect:   'analyze',
+  read:      'analyze',
+  review:    'refine',
+  verify:    'test',
+  validate:  'test',
+  debug:     'fix',
+  repair:    'fix',
+  implement: 'write',
+  generate:  'write',
+  document:  'doc',
+  docs:      'doc',
+  summary:   'respond',
+  answer:    'respond'
+};
+
+function _normalizeStepType(workerStepType, input) {
+  const raw = String(workerStepType == null ? '' : workerStepType).trim().toLowerCase();
+  const mapped = PRISMA_STEP_TYPES.has(raw) ? raw : (STEP_TYPE_ALIAS[raw] || 'analyze');
+  const safeInput = (input && typeof input === 'object' && !Array.isArray(input))
+    ? { ...input }
+    : {};
+  if (mapped !== raw) {
+    safeInput._original_step_type = raw || '(empty)';
+    console.warn(`[Memory] step_type "${raw || '(empty)'}" 归一化 -> "${mapped}"（原值已存入 input）`);
+  }
+  return { stepType: mapped, input: safeInput };
+}
+
+const PRISMA_FILE_OPS = new Set(['create', 'update', 'delete']);
+const FILE_OP_ALIAS = {
+  add: 'create', write: 'create', new: 'create',
+  edit: 'update', modify: 'update', change: 'update',
+  remove: 'delete', del: 'delete', rm: 'delete'
+};
+const PRISMA_FILE_ROLES = new Set(['main', 'test', 'doc', 'config', 'meta']);
+
+function _normalizeFileOp(op) {
+  const raw = String(op == null ? '' : op).trim().toLowerCase();
+  return PRISMA_FILE_OPS.has(raw) ? raw : (FILE_OP_ALIAS[raw] || 'create');
+}
+
+function _normalizeFileRole(role) {
+  if (role == null) return null;
+  const raw = String(role).trim().toLowerCase();
+  return PRISMA_FILE_ROLES.has(raw) ? raw : 'main';
+}
+
 /**
  * 创建任务步骤
  * @param {string} taskId - 任务ID
- * @param {string} stepType - 步骤类型 (analyze/plan/write/refine/test/fix/doc/docstring/respond)
+ * @param {string} stepType - Worker 步骤类型（自动归一化到 Prisma StepType）
  * @param {object} input - 步骤输入
  */
 async function createTaskStep(taskId, stepType, input = {}) {
   try {
+    const { stepType: prismaStepType, input: safeInput } = _normalizeStepType(stepType, input);
     const step = await prisma.taskStep.create({
       data: {
         task_id: taskId,
-        step_type: stepType,
+        step_type: prismaStepType,
         status: 'pending',
-        input: input
+        input: safeInput
       }
     });
-    console.log(`[Memory] 创建步骤: ${taskId} -> ${stepType}`);
+    console.log(`[Memory] 创建步骤: ${taskId} -> ${prismaStepType}`);
     return step;
   } catch (error) {
     console.error('[Memory] 创建步骤失败:', error);
@@ -336,14 +403,12 @@ const STEP_STATUS_TO_PRISMA = {
 };
 
 function _normalizeStepStatus(workerStatus) {
-  const mapped = STEP_STATUS_TO_PRISMA[workerStatus];
-  if (!mapped) {
-    throw new Error(
-      `Unknown step status "${workerStatus}"; ` +
-      `valid values: ${Object.keys(STEP_STATUS_TO_PRISMA).join(', ')}`
-    );
-  }
-  return mapped;
+  const raw = String(workerStatus == null ? '' : workerStatus).trim().toLowerCase();
+  const mapped = STEP_STATUS_TO_PRISMA[raw];
+  if (mapped) return mapped;
+  // 未知状态不该让整条记忆写入链路崩掉：按 pending 落库并留下可观测告警。
+  console.warn(`[Memory] 未知步骤状态 "${raw || '(empty)'}"，按 pending 落库`);
+  return 'pending';
 }
 
 /**
@@ -408,9 +473,9 @@ async function recordFileOp(taskId, stepId, op, path, role = null, reason = null
       data: {
         task_id: taskId,
         step_id: stepId,
-        op: op,
+        op: _normalizeFileOp(op),
         path: path,
-        role: role,
+        role: _normalizeFileRole(role),
         reason: reason,
         from_step: fromStep
       }
@@ -860,6 +925,13 @@ module.exports = {
 
   // ⭐ v3.5 新增：智能检索
   findSimilarTasks,
+
+  // 内部归一化函数（供回归契约直接验证，不作为业务 API）
+  _normalizeStepType,
+  _normalizeStepStatus,
+  _normalizeFileOp,
+  _normalizeFileRole,
+  PRISMA_STEP_TYPES,
 
   // Prisma 实例（用于高级查询）
   prisma

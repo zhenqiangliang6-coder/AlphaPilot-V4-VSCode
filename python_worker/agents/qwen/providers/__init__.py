@@ -12,10 +12,8 @@ from typing import Optional
 from ..step_executor.interfaces import LLMClient
 
 _PROVIDER_MAP = {
-    "qwen": "QwenClient",
-    "doubao": "DoubaoClient",
-    "gemini": "GeminiClient",
     "modelscope": "ModelScopeClient",
+    "qwen": "QwenClient",
     "deepseek": "DeepSeekClient",
     "openai": "OpenAICompatibleClient",
     "local": "OpenAICompatibleClient",
@@ -32,18 +30,12 @@ def get_llm_client(provider: str = None) -> LLMClient:
             f"不支持的 LLM Provider: '{provider}'，可选值: {list(_PROVIDER_MAP.keys())}"
         )
 
-    if client_name == "QwenClient":
-        from .qwen_client import QwenClient
-        return QwenClient()
-    elif client_name == "DoubaoClient":
-        from .doubao_client import DoubaoClient
-        return DoubaoClient()
-    elif client_name == "GeminiClient":
-        from .gemini_client import GeminiClient
-        return GeminiClient()
-    elif client_name == "ModelScopeClient":
+    if client_name == "ModelScopeClient":
         from .modelscope_client import ModelScopeClient
         return ModelScopeClient()
+    elif client_name == "QwenClient":
+        from .qwen_client import QwenClient
+        return QwenClient()
     elif client_name == "DeepSeekClient":
         from .deepseek_client import DeepSeekClient
         return DeepSeekClient()

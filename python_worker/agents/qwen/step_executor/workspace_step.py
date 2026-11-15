@@ -150,7 +150,7 @@ def run_workspace_step(step, context, events, task_id=None):
         "operations": operations,
     }
     context.setdefault("tool_outputs", []).append(tool_result)
-    events.append(create_event("tool_completed", tool_result))
+    events.append(create_event("tool_completed", tool_result, task_id=task_id, sequence=len(events) + 1))
     step["output"] = {
         "text": summary,
         "tool_result": tool_result,

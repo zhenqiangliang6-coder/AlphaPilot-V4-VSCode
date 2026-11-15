@@ -10,7 +10,7 @@
 import re
 import os
 from ..qwen_api import call_llm, call_qwen_stream, call_qwen_with_persona, call_llm_with_persona
-from .utils import extract_code
+from .utils import extract_code, is_upstream_failure_text
 from .prompts import write_prompt, creative_write_prompt, write_prompt_focused
 from ....worker_config import create_event, stream_chunk, stream_start, stream_end
 from ....file_ops import parse_fileops_v3, create_file_op, normalize_fileop_paths
@@ -492,11 +492,28 @@ def run_write_step(step, context, events, task_id=None):
         if task_id:
             stream_chunk(task_id, err, phase="write", channel="reasoning")
 
+    # ===== 3.5 G10.26: 上游失败文本 FAIL-CLOSED =====
+    # call_stream() 全链失败时 yield 的是错误提示而非抛异常。若不在这里
+    # 截断，下游会把提示文本当代码、走「单文件降级」生成 main.py，
+    # DeliveryGate 因「没改到既有文件」而 pytest 通过，EvidenceGate 放行，
+    # 任务最终写成功状态 —— 一次典型的上游抖动被伪装成成功交付。
+    _upstream_failure = is_upstream_failure_text(result)
+    if _upstream_failure:
+        context["upstream_failure"] = result.strip()[:500]
+        context.setdefault("meta", {})["upstream_failure"] = True
+        llm_success = False
+        print(
+            "[FAIL-CLOSED] write_step: 检测到上游模型失败文本，"
+            "拒绝提取代码 / 生成 FileOp，任务将标记为失败"
+        )
+
     # ===== 4. 提取代码（单文件降级用）=====
-    code = extract_code(result, fallback_strategies=True)
+    code = "" if _upstream_failure else extract_code(result, fallback_strategies=True)
 
     # ===== 5. 解析多文件协议（创意/对话类意图跳过 FileOps）=====
-    if intent in _creative_intents:
+    if _upstream_failure:
+        file_ops = []
+    elif intent in _creative_intents:
         print(f"[INFO] 创意/对话类意图 ({intent})，跳过 FileOps 解析，直接输出文本")
         file_ops = []
     else:
@@ -545,9 +562,11 @@ def run_write_step(step, context, events, task_id=None):
             # 此门控在写盘前拦截，标记为 _compile_error 供下游修复。
             _compile_errors = []
             for _op in context["final_file_ops"]:
-                _path = _op.get("path", "")
-                _content = _op.get("content", "")
-                if _path.endswith(".py") and _content and not _op.get("_internal"):
+                if _op.get("_internal"):
+                    continue
+                _path = _op.get("path") or ""
+                _content = _op.get("content") or ""
+                if _path.endswith(".py") and _content:
                     try:
                         compile(_content, _path, "exec")
                     except SyntaxError as _se:
@@ -589,7 +608,7 @@ def run_write_step(step, context, events, task_id=None):
         "text": result,
         "code": code,
         "file_ops": file_ops
-    }))
+    }, task_id=task_id, sequence=len(events) + 1))
 
     # ===== 9. 流式输出结束 =====
     if task_id:

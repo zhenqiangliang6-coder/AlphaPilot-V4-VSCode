@@ -90,4 +90,4 @@ def run_respond_step(step, context, events, task_id=None):
     context.setdefault("intermediate_results", []).append(
         {"type": "respond", "text": result}
     )
-    events.append(create_event("respond_output", {"text": result}))
+    events.append(create_event("respond_output", {"text": result}, task_id=task_id, sequence=len(events) + 1))

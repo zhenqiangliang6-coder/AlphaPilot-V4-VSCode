@@ -36,6 +36,10 @@ const {
 // =========================
 const { FileOpsHandler } = require('./fileOpsHandler');
 
+// 日志治理：全量 JSON.stringify 曾产生 50 万字符单行 / 11MB 日志，
+// 统一改走结构化摘要（完整数据仍在 Redis / HTTP 响应中，不丢失）。
+const { logObject, logLine } = require('./logGovernance');
+
 // =========================
 // ⭐ 2. Import Memory Service (v3.1 新增)
 // =========================
@@ -313,8 +317,7 @@ io.on('connection', (socket) => {
 // =========================
 app.post('/task/submit', async (req, res) => {
     try {
-        console.log("\n📥 收到前端提交任务：");
-        console.log(JSON.stringify(req.body, null, 2));
+        logObject("📥 收到前端提交任务：", req.body);
 
         const submission = normalizeTaskSubmission(req.body, uuidv4);
         let { type, payload, source, meta } = submission;
@@ -540,8 +543,7 @@ app.post('/task/submit', async (req, res) => {
             context: context || undefined  // ⭐ v3.5 新增：注入上下文记忆
         };
 
-        console.log("\n📤 推入 Redis 队列（v2 标准格式 + 模型无关）");
-        console.log(JSON.stringify(task, null, 2));
+        logObject("📤 推入 Redis 队列（v2 标准格式 + 模型无关）", task);
 
         // ⭐ 根据任务类型路由到专属队列（而非 model 字段）
         const queueName = getWorkerQueue(type);
@@ -566,8 +568,7 @@ app.post('/task/submit', async (req, res) => {
             message: "任务已提交到队列" 
         };
 
-        console.log("\n📨 返回给插件：");
-        console.log(JSON.stringify(response, null, 2));
+        logObject("📨 返回给插件：", response);
         console.log("\n----------------------------------------\n");
 
         res.json(response);
@@ -602,7 +603,7 @@ app.post('/task/notify/:task_id', async (req, res) => {
             }
         }
         
-        console.log(JSON.stringify(result, null, 2));
+        logObject("📬 收到 Worker 任务结果：", result);
 
         // ⭐ v3.1 新增：更新任务状态到 Memory Service
         try {

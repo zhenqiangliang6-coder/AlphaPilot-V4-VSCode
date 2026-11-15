@@ -10,6 +10,16 @@ def _detect_operation_type(user_request: str) -> str:
     """Classify the operation request into a specific operation type."""
     request_lower = (user_request or "").lower().strip()
 
+    # ⭐ C: 依赖安装优先识别（"检查并安装依赖"含"检查"，须在 env_check 之前判定）
+    if any(kw in request_lower for kw in ("pip install", "pip3 install", "npm install",
+                                          "yarn add", "pnpm install", "pnpm add")):
+        return "install_dependencies"
+    _install_kw = ("安装", "补装", "装依赖", "requirements", "install")
+    _dep_kw = ("依赖", "库", "包", "requirements", "模块",
+               "fastapi", "uvicorn", "pytest", "numpy", "dependenc", "pip")
+    if any(kw in request_lower for kw in _install_kw) and any(kw in request_lower for kw in _dep_kw):
+        return "install_dependencies"
+
     if any(kw in request_lower for kw in ("上传", "推送", "push", "github", "git")):
         if any(kw in request_lower for kw in ("代码行", "行数", "count", "line", "cloc")):
             return "code_counter"
@@ -169,6 +179,36 @@ def _execute_env_check(step, context, events, task_id, workspace_path):
     })
 
 
+def _execute_install_dependencies(step, context, events, task_id, workspace_path):
+    """Install project dependencies (pip install -r requirements.txt / npm install)."""
+    from ....capabilities.dependency_installer import install_dependencies, DependencyInstallResult
+
+    if not workspace_path or not os.path.isdir(workspace_path):
+        step["output"] = {"text": "安装失败：未找到有效的工作区路径。请先打开一个项目文件夹。"}
+        return
+
+    if task_id:
+        stream_start(task_id, "正在检测并安装项目依赖...", phase="operate")
+
+    result = install_dependencies(
+        workspace_path,
+        progress_callback=lambda msg: (
+            stream_chunk(task_id, msg, phase="operate", channel="tool")
+            if task_id else None
+        ),
+    )
+
+    if task_id:
+        stream_end(task_id)
+
+    step["output"] = {"text": result.format_for_user()}
+    context.setdefault("intermediate_results", []).append({
+        "type": "operate",
+        "operation": "install_dependencies",
+        "result": result.to_dict(),
+    })
+
+
 def _extract_command(user_request: str) -> str:
     """Extract the shell command from the user's natural language request."""
     import re
@@ -209,8 +249,14 @@ def run_operate_step(step, context, events, task_id=None):
         "code_counter": _execute_code_counter,
         "shell_command": _execute_shell_command,
         "env_check": _execute_env_check,
+        "install_dependencies": _execute_install_dependencies,
         "generic_operation": _execute_env_check,
     }
 
     handler = handlers.get(op_type, _execute_env_check)
     handler(step, context, events, task_id, workspace_path)
+
+    # ⭐ B: 统一补充 text 字段, 便于 respond 步骤消费 operate 输出
+    results = context.setdefault("intermediate_results", [])
+    if results and results[-1].get("type") == "operate" and "text" not in results[-1]:
+        results[-1]["text"] = step["output"].get("text", "")

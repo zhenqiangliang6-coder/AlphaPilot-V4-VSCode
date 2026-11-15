@@ -542,10 +542,10 @@ def main_loop():
             task_type = task.get("task_type") or task.get("type")
             task = validate_worker_task(task)
 
-            print("\n" + "=" * 60)
-            print("收到任务:")
-            print(TaskModel.pretty_print(task))
-            print("=" * 60 + "\n")
+            # 全量 pretty_print 曾产生 50 万字符单行 / 6.2MB 单轮日志，
+            # 统一走日志治理：默认结构化摘要，完整任务体仍在 Redis 队列里。
+            from ...log_governance import log_task
+            log_task("收到任务:", task)
 
             payload = task["payload"]
 
@@ -593,7 +593,8 @@ def main_loop():
                 memory_ctx = task_context.get("memory_context", {})
                 
                 print(f"   - 项目: {project_ctx.get('name', 'N/A')}")
-                print(f"   - 技术栈: {json.dumps(project_ctx.get('tech_stack', {}), ensure_ascii=False)}")
+                from ...log_governance import log_line
+                print(f"   - 技术栈: {log_line(json.dumps(project_ctx.get('tech_stack', {}), ensure_ascii=False))}")
                 print(f"   - 用户偏好: {len(memory_ctx.get('user_preferences', {}))} 项")
                 print(f"   - 项目记忆: {len(memory_ctx.get('project_memories', []))} 条")
                 print(f"   - 相似任务: {len(memory_ctx.get('similar_tasks', []))} 个")
@@ -722,6 +723,21 @@ def main_loop():
                 result_data["protocol_version"] = task["protocol_version"]
                 result_data["trace_id"] = task["trace_id"]
 
+            # ===== G10.26: 上游模型失败 → 结果状态必须诚实 =====
+            # write_step 已对错误文本 FAIL-CLOSED（不生成 FileOp）。若这里仍
+            # 发布 COMPLETED / WAITING_AUTHORIZATION，验收脚本会把「零产出」
+            # 判成执行成功，正是用户指出的「自检失败仍放行交付」。
+            # 抛异常走外层统一 FAILED 路径，状态机 / 事件流 / 契约校验一致。
+            _upstream_failure = (
+                context.get("upstream_failure")
+                or (context.get("meta") or {}).get("upstream_failure")
+            )
+            if _upstream_failure:
+                raise RuntimeError(
+                    "上游模型不可用，任务未生成有效代码（FAIL-CLOSED）: "
+                    + str(_upstream_failure)[:300]
+                )
+
             # G2.2 Inject 2: 注入 task_state 并验证转换合法性
             # ⭐ Phase E: 任务级证据校验（提交前最后一道门）
             # 必须在 COMPLETED 或 WAITING_AUTHORIZATION 之前执行，
@@ -814,10 +830,8 @@ def main_loop():
                 TaskModel.normalize_for_serialization(result_data)
             ))
 
-            print("\n" + "=" * 60)
-            print("任务完成，结果已写入 Redis:")
-            print(TaskModel.pretty_print(result_data))
-            print("=" * 60 + "\n")
+            from ...log_governance import log_task
+            log_task("任务完成，结果已写入 Redis:", result_data)
 
             # 通知 Node.js
             try:
@@ -835,7 +849,8 @@ def main_loop():
                     print("✅ Node.js 已成功接收通知，将推送给前端")
                 else:
                     print(f"⚠️ Node.js 返回错误状态码: {response.status_code}")
-                    print(f"响应内容: {response.text}")
+                    from ...log_governance import log_line
+                    print(f"响应内容: {log_line(response.text)}")
             except Exception as notify_error:
                 print(f"⚠️ 通知 Node.js 失败: {notify_error}")
                 print("   结果已保存在 Redis，但前端可能无法实时收到")
@@ -887,10 +902,8 @@ def main_loop():
                     context=safe_error_context,
                 )
 
-                print("\n" + "=" * 60)
-                print("任务失败，错误结果已写入 Redis:")
-                print(TaskModel.pretty_print(error_result))
-                print("=" * 60 + "\n")
+                from ...log_governance import log_task
+                log_task("任务失败，错误结果已写入 Redis:", error_result)
 
             # G2.2 Inject 3/4: 失败路径 → task_state → FAILED
             if not transition_is_legal(current_task_state, TASK_STATE_FAILED):
@@ -962,10 +975,8 @@ def main_loop():
 
                 redis.lpush(dlq_key, json.dumps(dlq_item))
 
-                print("\n" + "=" * 60)
-                print("任务已写入死信队列:")
-                print(TaskModel.pretty_print(dlq_item))
-                print("=" * 60 + "\n")
+                from ...log_governance import log_task
+                log_task("任务已写入死信队列:", dlq_item)
 
 
 if __name__ == "__main__":

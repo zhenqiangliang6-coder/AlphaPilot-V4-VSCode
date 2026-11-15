@@ -1,3 +1,11 @@
+// src/components/FileOpsConfirmCard.tsx
+// v4.0 Tech 动效包 — 玻璃拟态卡片 + 行 stagger 入场 + 按压微反馈 + 退场收起动画
+// 交互细节：
+//   - 文件行依次滑入（ap-rise + 递增 delay）
+//   - 应用/放弃时先播放收起动画（ap-exit 280ms）再真正执行回调
+//   - 按钮按压弹性反馈（ap-press / active:scale）
+//   - 行 hover 微移 + 徽章高亮
+
 import React, { useState } from 'react';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
@@ -15,24 +23,23 @@ export interface FileOp {
 
 interface FileOpsConfirmCardProps {
   fileOps: FileOp[];
-  taskId: string | null;
   onApplyAll: () => void;
   onRejectAll: () => void;
 }
 
 const FILE_ICONS: Record<string, string> = {
-  '.py': '\uD83D\uDC0D',
-  '.js': '\u26A1',
-  '.ts': '\uD83D\uDEE0\uFE0F',
-  '.tsx': '\u269B\uFE0F',
-  '.jsx': '\u269B\uFE0F',
-  '.json': '\uD83D\uDCCA',
-  '.yaml': '\uD83D\uDCCB',
-  '.yml': '\uD83D\uDCCB',
-  '.html': '\uD83C\uDF10',
-  '.css': '\uD83C\uDFA8',
-  '.scss': '\uD83C\uDFA8',
-  '.go': '\uD83D\uDC39',
+  '.py': '🐍',
+  '.js': '⚡',
+  '.ts': '🛠️',
+  '.tsx': '⚛️',
+  '.jsx': '⚛️',
+  '.json': '📊',
+  '.yaml': '📋',
+  '.yml': '📋',
+  '.html': '🌐',
+  '.css': '🎨',
+  '.scss': '🎨',
+  '.go': '🐹',
 };
 
 const LANG_MAP: Record<string, string> = {
@@ -49,24 +56,28 @@ function getLang(filename: string, fallback?: string): string {
 
 function getIcon(filename: string): string {
   const ext = '.' + filename.split('.').pop();
-  return FILE_ICONS[ext] || '\uD83D\uDCC4';
+  return FILE_ICONS[ext] || '📄';
 }
 
 const ACTION_STYLE: Record<string, string> = {
-  create: 'bg-green-500/15 text-green-400 border-green-500/30',
-  modify: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/30',
-  delete: 'bg-red-500/15 text-red-400 border-red-500/30',
+  create: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
+  modify: 'bg-amber-500/15 text-amber-400 border-amber-500/30',
+  delete: 'bg-rose-500/15 text-rose-400 border-rose-500/30',
 };
 
 const ACTION_LABEL: Record<string, string> = {
-  create: '\u2795 \u65B0\u5EFA',
-  modify: '\u270F\uFE0F \u4FEE\u6539',
-  delete: '\uD83D\uDDD1\uFE0F \u5220\u9664',
+  create: '➕ 新建',
+  modify: '✏️ 修改',
+  delete: '🗑️ 删除',
 };
 
-const FileOpRow: React.FC<{ op: FileOp; isExpanded: boolean; onToggle: () => void }> = ({
-  op, isExpanded, onToggle,
-}) => {
+/** 文件行 — stagger 入场 + hover 微移 + 展开预览 */
+const FileOpRow: React.FC<{
+  op: FileOp;
+  index: number;
+  isExpanded: boolean;
+  onToggle: () => void;
+}> = ({ op, index, isExpanded, onToggle }) => {
   const action = (op.op || op.action || 'create').toLowerCase();
   const type = op.file_type || op.type || 'file';
   const style = ACTION_STYLE[action] || ACTION_STYLE.create;
@@ -74,67 +85,87 @@ const FileOpRow: React.FC<{ op: FileOp; isExpanded: boolean; onToggle: () => voi
 
   if (type === 'folder') {
     return (
-      <div className="flex items-center gap-2.5 px-3 py-2">
-        <span className="text-base">\uD83D\uDCC2</span>
+      <div
+        className="flex items-center gap-2.5 px-3 py-2 ap-rise"
+        style={{ '--d': `${Math.min(index * 40, 480)}ms` } as React.CSSProperties}
+      >
+        <span className="text-base">📂</span>
         <code className="text-sm text-blue-400 font-mono flex-1 truncate">{op.path}/</code>
         <span className="px-2 py-0.5 rounded text-[10px] font-medium bg-blue-500/15 text-blue-400 border border-blue-500/30">
-          \uD83D\uDCC1 \u521B\u5EFA\u76EE\u5F55
+          📁 创建目录
         </span>
       </div>
     );
   }
 
   return (
-    <div>
+    <div
+      className="ap-rise"
+      style={{ '--d': `${Math.min(index * 40, 480)}ms` } as React.CSSProperties}
+    >
       <div
         onClick={onToggle}
-        className="flex items-center gap-2.5 px-3 py-2 hover:bg-white/[0.03] cursor-pointer transition-colors group"
+        className={`flex items-center gap-2.5 px-3 py-2 cursor-pointer transition-all duration-300 group ${
+          isExpanded
+            ? 'bg-indigo-500/10 ring-1 ring-inset ring-indigo-500/25'
+            : 'hover:bg-white/[0.04] hover:translate-x-0.5'
+        }`}
       >
-        <span className="text-sm transition-transform duration-150"
-          style={{ transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }}>
-          \u25B6
+        <span
+          className="text-sm transition-transform duration-300"
+          style={{ transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }}
+        >
+          ▶
         </span>
         <span className="text-base">{getIcon(op.path)}</span>
         <code className="text-sm text-blue-400 font-mono flex-1 truncate">{op.path}</code>
-        <span className={`px-2 py-0.5 rounded text-[10px] font-medium border ${style}`}>
+        <span
+          className={`px-2 py-0.5 rounded text-[10px] font-medium border transition-transform duration-300 group-hover:scale-105 ${style}`}
+        >
           {label}
         </span>
         {op.reason && (
           <span className="hidden group-hover:inline text-[11px] text-gray-500 truncate max-w-[200px]">
-            \uD83D\uDCA1 {op.reason}
+            💡 {op.reason}
           </span>
         )}
       </div>
-      {isExpanded && op.content && (
-        <div className="mx-3 mb-2 border border-white/[0.06] rounded-md overflow-hidden">
-          <SyntaxHighlighter
-            style={vscDarkPlus}
-            language={getLang(op.path, op.language)}
-            PreTag="div"
-            customStyle={{
-              margin: 0,
-              borderRadius: '0 0 6px 6px',
-              fontSize: '12px',
-              lineHeight: '1.5',
-              maxHeight: '240px',
-            }}
-          >
-            {op.content.length > 3000 ? op.content.substring(0, 3000) + '\n... (\u5185\u5BB9\u8FC7\u957F\uFF0C\u5DF2\u622A\u65AD)' : op.content}
-          </SyntaxHighlighter>
+
+      {/* 展开预览（高度自适应动画） */}
+      <div className={`ap-collapse-grid ${isExpanded && op.content ? 'open' : ''}`}>
+        <div className="ap-collapse-inner">
+          {op.content && (
+            <div className="mx-3 mb-2 border border-indigo-500/20 rounded-md overflow-hidden">
+              <SyntaxHighlighter
+                style={vscDarkPlus}
+                language={getLang(op.path, op.language)}
+                PreTag="div"
+                customStyle={{
+                  margin: 0,
+                  borderRadius: '0 0 6px 6px',
+                  fontSize: '12px',
+                  lineHeight: '1.5',
+                  maxHeight: '240px',
+                }}
+              >
+                {op.content.length > 3000 ? op.content.substring(0, 3000) + '\n... (内容过长，已截断)' : op.content}
+              </SyntaxHighlighter>
+            </div>
+          )}
         </div>
-      )}
+      </div>
     </div>
   );
 };
 
 export const FileOpsConfirmCard: React.FC<FileOpsConfirmCardProps> = ({
   fileOps,
-  taskId,
   onApplyAll,
   onRejectAll,
 }) => {
-  const [expanded, setExpanded] = useState(false);
   const [expandedFiles, setExpandedFiles] = useState<Set<number>>(new Set());
+  const [closing, setClosing] = useState(false);
+  const [applied, setApplied] = useState(false);
 
   if (!fileOps || fileOps.length === 0) return null;
 
@@ -142,12 +173,13 @@ export const FileOpsConfirmCard: React.FC<FileOpsConfirmCardProps> = ({
   const modifyCount = fileOps.filter((o) => (o.op || o.action || '').toLowerCase() === 'modify').length;
   const deleteCount = fileOps.filter((o) => (o.op || o.action || '').toLowerCase() === 'delete').length;
   const folderCount = fileOps.filter((o) => (o.file_type || o.type) === 'folder').length;
+  const fileCount = fileOps.length - folderCount;
 
   const parts: string[] = [];
-  if (folderCount > 0) parts.push(`${folderCount} \u4E2A\u76EE\u5F55`);
-  if (createCount > 0) parts.push(`${createCount} \u4E2A\u65B0\u5EFA`);
-  if (modifyCount > 0) parts.push(`${modifyCount} \u4E2A\u4FEE\u6539`);
-  if (deleteCount > 0) parts.push(`${deleteCount} \u4E2A\u5220\u9664`);
+  if (folderCount > 0) parts.push(`${folderCount} 个目录`);
+  if (createCount > 0) parts.push(`${createCount} 个新建`);
+  if (modifyCount > 0) parts.push(`${modifyCount} 个修改`);
+  if (deleteCount > 0) parts.push(`${deleteCount} 个删除`);
 
   const toggleFile = (idx: number) => {
     setExpandedFiles((prev) => {
@@ -158,61 +190,73 @@ export const FileOpsConfirmCard: React.FC<FileOpsConfirmCardProps> = ({
     });
   };
 
+  /** 退场编排：先播收起动画（ap-exit 280ms），再执行真正的回调 */
+  const closeWith = (isApply: boolean) => {
+    if (closing) return;
+    setClosing(true);
+    setApplied(isApply);
+    window.setTimeout(() => (isApply ? onApplyAll() : onRejectAll()), 280);
+  };
+
   return (
-    <div className="mx-3 mb-3 animate-slide-up">
-      <div className="border border-white/[0.08] rounded-xl bg-[#1e1e1e] overflow-hidden shadow-lg ring-1 ring-white/[0.03]">
-        <div
-          onClick={() => setExpanded(!expanded)}
-          className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-white/[0.02] transition-colors"
-        >
-          <span className="text-lg">\uD83D\uDCC1</span>
+    <div className={`mx-3 mb-3 ${closing ? 'ap-exit' : 'animate-slide-up'}`}>
+      <div className="ap-glass ap-hairline rounded-xl overflow-hidden shadow-xl shadow-indigo-500/[0.06]">
+        {/* 头部：玻璃拟态 + 渐变统计徽章 */}
+        <div className="flex items-center gap-3 px-4 py-3 bg-gradient-to-r from-indigo-500/[0.08] to-cyan-500/[0.04]">
+          <span className="text-lg">📁</span>
           <div className="flex-1 min-w-0">
             <div className="text-sm font-medium text-gray-200">
-              \u5F85\u5E94\u7528\u7684\u6587\u4EF6\u64CD\u4F5C
+              已生成 <span className="ap-tabular ap-gradient-text font-semibold">{fileCount}</span> 个文件，待确认应用
             </div>
             <div className="text-xs text-gray-500 mt-0.5">
-              {parts.join('\uFF0C')}
+              {parts.length > 0 ? parts.join('，') : `${fileOps.length} 项变更`}
             </div>
           </div>
-          <span className="text-gray-500 text-xs transition-transform duration-150"
-            style={{ transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)' }}>
-            \u25BC
+          <span className="ap-tabular px-2 py-0.5 rounded text-[11px] font-medium bg-indigo-500/15 text-indigo-300 border border-indigo-400/30 shrink-0">
+            {fileOps.length} 项变更
           </span>
         </div>
 
-        {expanded && (
-          <>
-            <div className="border-t border-white/[0.06] max-h-[400px] overflow-y-auto divide-y divide-white/[0.04]">
-              {fileOps.map((op, idx) => (
-                <FileOpRow
-                  key={idx}
-                  op={op}
-                  isExpanded={expandedFiles.has(idx)}
-                  onToggle={() => toggleFile(idx)}
-                />
-              ))}
-            </div>
+        {/* 文件列表：stagger 入场，点击预览内容 */}
+        <div className="border-t border-white/[0.06] max-h-[360px] overflow-y-auto divide-y divide-white/[0.04]">
+          {fileOps.map((op, idx) => (
+            <FileOpRow
+              key={idx}
+              op={op}
+              index={idx}
+              isExpanded={expandedFiles.has(idx)}
+              onToggle={() => toggleFile(idx)}
+            />
+          ))}
+        </div>
 
-            <div className="border-t border-white/[0.08] flex items-center gap-3 px-4 py-3 bg-white/[0.01]">
-              <div className="flex-1 text-xs text-gray-500">
-                \u26A0\uFE0F \u8BF7\u786E\u8BA4\u6587\u4EF6\u5185\u5BB9\u540E\u518D\u5E94\u7528
-              </div>
-              <button
-                onClick={(e) => { e.stopPropagation(); onRejectAll(); }}
-                className="px-4 py-2 text-xs text-gray-400 hover:text-gray-200 hover:bg-white/[0.05] rounded-lg transition-colors border border-white/[0.08]"
-              >
-                \uD83D\uDEAB \u653E\u5F03
-              </button>
-              <button
-                onClick={(e) => { e.stopPropagation(); onApplyAll(); }}
-                className="px-4 py-2 text-xs bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500 text-white rounded-lg font-medium transition-all shadow-md flex items-center gap-1.5"
-              >
-                <span>\u2705</span>
-                <span>\u5E94\u7528\u5168\u90E8 ({fileOps.length})</span>
-              </button>
-            </div>
-          </>
-        )}
+        {/* 底部按钮：按压微反馈 + 退场反馈 */}
+        <div className="border-t border-white/[0.08] flex items-center gap-3 px-4 py-3 bg-white/[0.01]">
+          <div className="flex-1 text-xs text-gray-500">
+            {closing ? (
+              <span className="ap-rise">
+                {applied ? '✅ 正在应用文件变更…' : '已放弃本次变更'}
+              </span>
+            ) : (
+              <>⚠️ 点击文件可预览内容，确认无误后应用</>
+            )}
+          </div>
+          <button
+            onClick={() => closeWith(false)}
+            disabled={closing}
+            className="ap-press px-4 py-2 text-xs text-gray-400 hover:text-gray-200 hover:bg-white/[0.05] rounded-lg transition-colors border border-white/[0.08] disabled:opacity-50"
+          >
+            🚫 放弃
+          </button>
+          <button
+            onClick={() => closeWith(true)}
+            disabled={closing}
+            className="ap-press px-4 py-2 text-xs bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-400 text-white rounded-lg font-medium shadow-md shadow-emerald-900/30 hover:shadow-emerald-500/25 flex items-center gap-1.5 disabled:opacity-60"
+          >
+            <span>✅</span>
+            <span>应用全部 ({fileOps.length})</span>
+          </button>
+        </div>
       </div>
     </div>
   );

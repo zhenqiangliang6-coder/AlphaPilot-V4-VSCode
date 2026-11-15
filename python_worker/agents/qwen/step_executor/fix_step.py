@@ -65,24 +65,68 @@ def _get_test_context(context):
     return error_info, test_code
 
 
+def _collect_workspace_test_files(meta):
+    """从 workspace 磁盘读取测试相关文件（conftest.py / test_*.py / *_test.py）。
+
+    v3.4：source_files 原先只包含 meta["source_files"]（仅有语法错误等问题的文件）
+    或当前轮次 file_ops 修改的文件，导致 conftest.py 等测试配置文件被遗漏，
+    自愈引擎无法扫描并修复「内存库缺表」等测试环境缺陷。此函数从磁盘补全它们。
+    """
+    workspace_dir = meta.get("workspace_dir") or meta.get("root") or ""
+    if not workspace_dir:
+        return {}
+    root = os.path.abspath(workspace_dir)
+    if not os.path.isdir(root):
+        return {}
+
+    result = {}
+    skip_dirs = {"__pycache__", ".venv", "venv", ".git", "node_modules", ".pytest_cache"}
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in skip_dirs]
+        for fn in filenames:
+            if not fn.endswith(".py"):
+                continue
+            if not (fn == "conftest.py" or fn.startswith("test_") or fn.endswith("_test.py")):
+                continue
+            fp = os.path.join(dirpath, fn)
+            rel = os.path.relpath(fp, root).replace(os.sep, "/")
+            try:
+                with open(fp, "r", encoding="utf-8") as fh:
+                    content = fh.read()
+            except (OSError, UnicodeError):
+                continue
+            if len(content) > 200_000:
+                continue
+            result.setdefault(rel, content)
+    return result
+
+
 def _get_source_files_from_context(context):
     ctx = context or {}
     meta = ctx.get("meta", {})
     source_files = meta.get("source_files", {})
-    if source_files:
-        return source_files
-    intent = meta.get("intent", "")
-    if intent in ("write_code", "refactor", "explain_and_fix"):
-        final_ops = ctx.get("final_file_ops") or ctx.get("file_ops", [])
-        result = {}
-        for op in final_ops:
-            path = op.get("path")
-            content = op.get("content")
-            if path and content:
-                result[path] = content
-        if result:
-            return result
-    return {}
+    if not source_files:
+        intent = meta.get("intent", "")
+        if intent in ("write_code", "refactor", "explain_and_fix"):
+            final_ops = ctx.get("final_file_ops") or ctx.get("file_ops", [])
+            result = {}
+            for op in final_ops:
+                path = op.get("path")
+                content = op.get("content")
+                if path and content:
+                    result[path] = content
+            if result:
+                source_files = result
+
+    # ⭐ v3.4: 补全 workspace 磁盘上的测试文件，确保自愈引擎可见 conftest.py。
+    #   注意：source_files（当前轮次 file_ops / meta）优先级更高，避免被旧磁盘内容覆盖。
+    workspace_tests = _collect_workspace_test_files(meta)
+    if workspace_tests:
+        merged = dict(workspace_tests)
+        merged.update(source_files)
+        source_files = merged
+
+    return source_files
 
 
 def run_fix_step(

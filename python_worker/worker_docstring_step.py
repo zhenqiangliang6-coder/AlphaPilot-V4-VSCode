@@ -71,4 +71,4 @@ def run_docstring_step(step, context, events, task_id=None):
     events.append(create_event("docstring_output", {
         "documented_files": list(documented),
         "failed_files": failures,
-    }))
+    }, task_id=task_id, sequence=len(events) + 1))

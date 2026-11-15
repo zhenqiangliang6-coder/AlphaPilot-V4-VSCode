@@ -81,7 +81,12 @@ class OpenAICompatibleClient(LLMClient):
                 choices = data.get("choices", [])
                 if choices:
                     msg = choices[0].get("message", {})
-                    content = msg.get("content", "") or msg.get("reasoning_content", "")
+                    # G10.27: 推理模型会先给 reasoning_content。旧实现用
+                    # `or` 回退，content 为空时把思维链当成交付正文返回，
+                    # write_step 会把整段思考文本当代码解析。这里只认
+                    # content；模型若只给推理内容则宁可返回空（上层
+                    # FAIL-CLOSED 判失败），绝不交付思维链。
+                    content = msg.get("content", "")
                     return content
                 raise ValueError(f"未知响应格式: {list(data.keys())}")
             except requests.exceptions.Timeout as e:
@@ -123,6 +128,8 @@ class OpenAICompatibleClient(LLMClient):
         try:
             with requests.post(self._url, headers=headers, json=body, timeout=self._timeout, stream=True) as r:
                 r.raise_for_status()
+                # SSE 无 charset 时 requests 默认 ISO-8859-1，中文会变 mojibake
+                r.encoding = "utf-8"
                 for line in r.iter_lines(decode_unicode=True):
                     if not line:
                         continue
@@ -135,7 +142,9 @@ class OpenAICompatibleClient(LLMClient):
                             choices = data.get("choices", [])
                             if choices:
                                 delta = choices[0].get("delta", {})
-                                content = delta.get("content", "") or delta.get("reasoning_content", "")
+                                # G10.27: 只输出 content，绝不把
+                                # reasoning_content（思维链）混进正文。
+                                content = delta.get("content", "")
                                 if content:
                                     yield content
                         except json.JSONDecodeError:

@@ -508,14 +508,54 @@ def probe_qwen_models(force: bool = False) -> Dict[str, List[str]]:
     return result
 
 
+# ── G10.18: 按步骤路由模型（代码生成用强模型，样板步骤用快模型）─────
+# 实测（shopflow_full_pass1）：qwen-plus 0.5s/非推理，但写出的代码违约
+# （POST 201 而非题面要求的 200、Enum 私有属性被当成成员导致 .get 崩溃、
+# 自带测试重定义 conftest 夹具），R6 质量维度直接判红；qwen3.6-plus 3.9s
+# /推理模型，生成质量达标但全程使用会把单轮拖到 800s 以上。
+# 解法：默认链保持强模型，只有「不产出业务代码」的步骤切到快模型，
+# 写码/重构/修复/交付闸门修复一律用强模型。零侵入 —— 统一在
+# execute_step 分发器设置 hint，所有调用路径共用同一个链解析入口。
+_STEP_MODEL_HINT = None
+_STEP_INTENT_HINT = ""
+
+_FAST_STEP_TYPES = {
+    "analyze", "plan", "workspace", "setup", "test", "respond",
+    "doc", "docstring", "changelog", "profile", "operate", "compile",
+    "vision_analysis",
+}
+
+# 架构文档轮（R5）只产出 Markdown，不产出业务代码；强模型把该轮从 160s
+# 拖到 435s，收益为零。按 intent 整体走快模型，写码轮不受影响。
+_FAST_INTENTS = {"architecture"}
+
+
+def set_step_model_hint(step_type, intent=None):
+    """由 execute_step 分发器设置，finally 中清空；Worker 单任务串行执行。"""
+    global _STEP_MODEL_HINT, _STEP_INTENT_HINT
+    _STEP_MODEL_HINT = step_type
+    _STEP_INTENT_HINT = intent or ""
+
+
+def get_step_model_hint():
+    return _STEP_MODEL_HINT
+
+
+def _use_fast_model() -> bool:
+    return (_STEP_INTENT_HINT in _FAST_INTENTS
+            or _STEP_MODEL_HINT in _FAST_STEP_TYPES)
+
+
 def get_text_fallback_chain() -> List[str]:
     """
     获取文本模型降级链。
 
     优先级：
       1. 环境变量 QWEN_MODEL / QWEN_FALLBACK_1 / QWEN_FALLBACK_2 / QWEN_FALLBACK_3
-      2. 运行时探测结果（已包含全量兜底）
-      3. 最终兜底：返回探测中 all_chat 的前几个模型名（即使未验证也尝试使用）
+      2. G10.18：样板步骤（hint 命中 _FAST_STEP_TYPES）优先 QWEN_FAST_MODEL，
+         其余步骤（含 write/refine/fix 与闸门修复）保持强模型链
+      3. 运行时探测结果（已包含全量兜底）
+      4. 最终兜底：返回探测中 all_chat 的前几个模型名（即使未验证也尝试使用）
     """
     chain = []
     env_models = [
@@ -528,7 +568,10 @@ def get_text_fallback_chain() -> List[str]:
         if m and m not in chain:
             chain.append(m)
     if chain:
-        return chain
+        fast = os.getenv("QWEN_FAST_MODEL")
+        if fast and _use_fast_model():
+            chain = [fast] + [m for m in chain if m != fast]
+        return chain[:4]
 
     probe = probe_qwen_models()
     if probe["text"]:

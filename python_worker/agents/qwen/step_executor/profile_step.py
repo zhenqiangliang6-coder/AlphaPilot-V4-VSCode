@@ -158,7 +158,7 @@ print(f"Execution time: {{end - start:.4f}} seconds")
     # 写入事件流
     try:
         from ....worker_config import create_event
-        events.append(create_event("profile_output", output))
+        events.append(create_event("profile_output", output, task_id=task_id, sequence=len(events) + 1))
     except Exception as e:
         print(f"[WARN] 创建事件失败: {e}")
     

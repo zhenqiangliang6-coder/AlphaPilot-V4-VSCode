@@ -10,7 +10,7 @@ test_observe_task_system.py — AlphaPilot 真实链路端到端观察测试
   1. Node.js API:  cd node-api && node index.js    (默认 http://localhost:3000)
   2. Redis:        docker run -p 6379:6379 redis   (或本地 redis-server)
   3. Worker:       python -m python_worker.agents.qwen.qwen_worker_v2
-                   (需设置环境变量 LLM_PROVIDER=modelscope)
+                   (架构收敛后仅保留 Qwen 后端，.env 默认 LLM_PROVIDER=qwen)
 
 运行方式：
   python -m pytest tests/test_observe_task_system.py -v --tb=short -s 2>&1
@@ -66,7 +66,11 @@ DEFAULT_WORKSPACE = os.getenv(
 
 TASK_SUBMIT_TIMEOUT = 30       # POST /task/submit 超时（秒）
 TASK_POLL_INTERVAL = 5         # Redis 轮询间隔（秒）
-TASK_EXECUTION_TIMEOUT = 900   # 单轮任务最大等待时间（秒）= 15分钟
+# 单轮轮询预算与 pytest 用例上限保持默认值不变（900 / 960 秒），
+# 仅在上游 Provider 抖动时允许运维显式放大，避免「Worker 仍在自愈、
+# 测试已判超时」造成僵尸任务污染工作区。四维验收标准不受这两个值影响。
+TASK_EXECUTION_TIMEOUT = int(os.getenv("ALPHAPILOT_TASK_EXECUTION_TIMEOUT", "900"))
+ROUND_TIMEOUT = int(os.getenv("ALPHAPILOT_ROUND_TIMEOUT", "960"))
 PYTEST_TIMEOUT = 120           # 本地 pytest 验证超时（秒）
 
 SHOPFLOW_CONVERSATION_ID = f"shopflow-{uuid.uuid4().hex[:8]}"
@@ -80,58 +84,105 @@ PROMPT_ROUND_5 = """为一个电商订单系统（ShopFlow）设计 backend 架�
 
 要求：
 1. 模块划分：说明 models/、routers/、services/、schemas/、tests/ 各自职责
-2. 数据模型设计：列出 Order、OrderItem 的字段和关系
-3. OrderStatus 枚举：pending → confirmed → shipped → delivered → cancelled
-4. API 契约：每个端点的 method、path、request body（如有）、response 格式
-   - 创建订单 POST /orders
-   - 查询订单列表 GET /orders
-   - 查询单个订单 GET /orders/{order_id}
-   - 更新订单状态 PATCH /orders/{order_id}/status
-   - 删除订单 DELETE /orders/{order_id}
+2. 数据模型设计：列出 Order 的字段（id / user_id / status / total_amount / items / created_at）与 items JSON 列结构；
+   订单项统一放进 items JSON 列，不设独立 ORM 表，也不新增订单项模型类
+3. OrderStatus 枚举：pending → confirmed → shipped → delivered → cancelled（状态定义集中在 models 包内的枚举模块）
+4. API 契约：每个端点的 method、path、request body（如有）、response 格式与状态码
+   - 创建订单 POST /orders → 200
+   - 查询订单列表 GET /orders → 200
+   - 查询单个订单 GET /orders/{order_id} → 200
+   - 更新订单状态 PUT /orders/{order_id}/status → 200（请求体含 new_status）
+   - 删除订单 DELETE /orders/{order_id} → 204
+   （router 文件内只写相对路径 /、/{order_id} 等，/orders 前缀由 main.py 统一挂载）
 5. 数据流：请求 → 路由 → 服务层 → 数据模型 → 数据库 → 响应
 6. 技术栈：FastAPI + SQLAlchemy + SQLite + pytest
 
-输出格式：Markdown 文档，用 # FILE: 写入 architecture_design.md"""
+注意：本文档只是蓝图，不要写实现代码；后续实现轮次会给出精确的字段名、类名与状态码，
+若与本文档有出入，以实现轮次给出的「统一契约」为准。
+
+输出与保存要求（硬性）：
+- 请保存架构设计文档，只输出这一个 Markdown 文件：用 `# FILE: docs/architecture_design.md` 写入
+- 只写 Markdown 内容，不要输出或创建任何 .py / .json / .yaml 文件，不要输出实现代码文件
+- 文档内容必须完整覆盖上面 6 项要求，长度不少于 400 字"""
 
 PROMPT_ROUND_6 = """基于上一轮的架构设计，实现 ShopFlow 电商订单系统核心功能。
+（以下字段、类名、端点与状态码是全链路的统一契约，后续轮次会逐项校验，必须逐字遵守。）
 
 后端（FastAPI + SQLAlchemy + SQLite）：
 1. backend/models/order.py
-   - Order 模型: id (str UUID), customer_name (str), status (str, OrderStatus 枚举), total_price (float), created_at (datetime)
-   - OrderItem 模型: id (str UUID), order_id (外键→Order), product_name (str), quantity (int), unit_price (float)
-   - OrderStatus 枚举: pending / confirmed / shipped / delivered / cancelled
+   - Order 模型必须用 SQLAlchemy 经典 Column(...) 写法并继承 Base，必须有 __tablename__ = "orders"
+   - 字段: id (主键), user_id (str), status (str, 使用 OrderStatus), total_amount (float),
+           items (JSON 列，存订单项列表), created_at (datetime)
+   - 订单项统一放在 items JSON 列里，不设独立 ORM 表，也不要新建订单项模型类
+   - OrderStatus 必须写 `from backend.models.enums import OrderStatus` 并 re-export，
+     严禁在 order.py 内重复定义枚举类
 
-2. backend/schemas/order.py — Pydantic schemas (OrderCreate, OrderUpdate, OrderResponse)
+2. backend/schemas/order.py — Pydantic schemas:
+   - OrderCreate, OrderResponse, OrderUpdateStatus
+   - 状态更新请求体的类名必须逐字为 OrderUpdateStatus（含 new_status 字段），不得改用其它类名
 
-3. backend/routers/orders.py — REST API:
-   - POST /orders — 创建订单（含订单项列表）
-   - GET /orders — 查询所有订单
-   - GET /orders/{order_id} — 查询单个订单
-   - PATCH /orders/{order_id}/status — 更新订单状态
-   - DELETE /orders/{order_id} — 删除订单
+3. backend/routers/orders.py — REST API（router 内只用相对路径，/orders 前缀由 main.py 挂载；
+   不要给 APIRouter() 传 prefix 参数，否则路径会重复叠加成 /orders/orders）:
+   - POST / → 200（创建订单）
+   - GET / → 200（订单列表）
+   - GET /{order_id} → 200（查询单个）
+   - PUT /{order_id}/status → 200，请求体含 new_status
+   - DELETE /{order_id} → 204
+   - 端点集合必须精确为以上 5 个，不得新增或改用 PATCH
 
-4. backend/database.py — SQLAlchemy engine + SessionLocal
+4. backend/database.py — SQLAlchemy engine + SessionLocal + Base
 
-5. backend/main.py — FastAPI app, 注册路由, CORS, 自动建表
+5. backend/main.py — FastAPI app, include_router(orders_router, prefix="/orders"), CORS, 自动建表；
+   根路由 read_root() 必须原样返回 {"message": "ShopFlow API is running"}
 
 6. backend/__init__.py — 空文件
 
 7. tests/test_orders.py — pytest 测试覆盖所有 API 端点:
-   - 创建订单 → 201
+   - 创建订单 → 200
    - 查询列表 → 200, 数据非空
    - 查询单个 → 200, 数据正确
-   - 更新状态 → 200, status 已变更
-   - 删除 → 200, 再次查询返回 404
+   - 更新状态（PUT）→ 200, status 已变更
+   - 删除 → 204, 再次查询返回 404
    - 无效状态转换 → 422 (如从 delivered 改回 pending)
+   - 所有创建订单的请求体中 items 统一传空列表 []（后续轮次会接入库存联动，空订单不应触发库存检查）
+
+8. backend/models/__init__.py — 必须写
+   `from backend.models.order import Order` 与 `from backend.models.enums import OrderStatus`，
+   保证所有 ORM 模型在建表前都已注册进 Base.metadata（不能是空文件）
+
+9. tests/conftest.py — pytest 夹具（必须严格按此契约，否则内存库里没有表）:
+   - 用 `sqlite:///:memory:` + `StaticPool` + `check_same_thread=False` 建测试 engine
+   - import 顺序：先 `from backend.main import app`，再 `from backend.database import Base, get_db`
+   - db_session fixture 中每个测试前必须执行 `Base.metadata.create_all(bind=engine)`，
+     结束后 `Base.metadata.drop_all(bind=engine)`
+   - client fixture 通过 `app.dependency_overrides[get_db]` 覆盖为测试 session，并用 TestClient(app)
+   - 禁止在测试里直接使用文件数据库，禁止把 main.py 的 create_all 当作测试建表
+
+10. backend/models/enums.py — 订单状态枚举的唯一事实源（后续轮次会直接读取并校验此文件）:
+   - 定义 `class OrderStatus(str, Enum)`，基类必须显式包含 Enum
+   - 成员名用大写，值用小写字符串常量直接赋值，顺序严格为:
+     PENDING = "pending" / CONFIRMED = "confirmed" / SHIPPED = "shipped" /
+     DELIVERED = "delivered" / CANCELLED = "cancelled"
+   - 类内必须定义实例方法 `def next_states(self):`，返回当前状态允许迁移到的状态值列表
+     （线性顺序 pending → confirmed → shipped → delivered，cancelled 为终态）
+   - 缺少 next_states() 会导致后续验收直接失败，这是硬性要求
 
 技术栈：FastAPI + SQLAlchemy + SQLite（数据库文件存于 backend/shopflow.db）+ pytest + httpx（测试客户端）
 
+⭐⭐⭐ 本轮范围强制约束（多生成无关文件会直接让 pytest 失败）：
+- 本轮只做订单核心功能；禁止生成库存相关文件（backend/models/inventory.py、backend/routers/inventory.py、backend/schemas/inventory.py、tests/test_inventory.py），库存模块属于后续轮次
+- 禁止生成 backend/services/ 目录或其中的任何文件，服务层重构属于后续轮次
+- 禁止生成与订单无关的 Product 示例代码或 Product 测试用例
+- 除 tests/conftest.py（pytest 夹具，允许生成）外，只生成本题上面点名的文件
+
 ⭐⭐⭐ 文件结构强制约束（若不遵守 pytest 将失败）：
-- backend/models/ 必须是目录（Python 包），内放 order.py + 空 __init__.py
-- backend/schemas/ 必须是目录（Python 包），内放 order.py + 空 __init__.py  
+- backend/models/ 必须是目录（Python 包），内放 order.py + enums.py + __init__.py（按第 8 项导入模型）
+- backend/schemas/ 必须是目录（Python 包），内放 order.py + 空 __init__.py
 - 禁止创建扁平的 backend/models.py 或 backend/schemas.py 单文件
-- router 的 import 必须使用: from backend.models.order import Order, OrderItem, OrderStatus
-- router 的 import 必须使用: from backend.schemas.order import OrderCreate, OrderResponse, OrderUpdateStatus"""
+- router 的 import 必须使用: from backend.models.order import Order, OrderStatus
+- router 的 import 必须使用: from backend.schemas.order import OrderCreate, OrderResponse, OrderUpdateStatus
+- backend/routers/orders.py 必须包含 `from typing import List`，并用 List 做类型标注
+  （不要改写成 list[...] 形式，后续轮次会依赖这一行做最小改动修复）"""
 
 PROMPT_ROUND_7 = """运行 pytest 时出现以下错误，请定位根因并修复所有有问题的文件。
 
@@ -151,25 +202,39 @@ PROMPT_ROUND_8 = """给 ShopFlow 电商系统增加「库存管理」模块。�
 
 新增内容：
 1. backend/models/inventory.py
-   - Inventory 模型: id (str UUID), product_name (str, 唯一), sku (str), quantity (int, 库存数量), unit_price (float)
-   - 不要重复定义 Order/OrderItem 模型，从 backend.models.order 导入
+   - Inventory 模型必须用 SQLAlchemy 经典 Column(...) 写法并继承 Base，必须有 __tablename__ = "inventory"
+   - 字段: id (str UUID, 主键), product_name (str, 唯一), sku (str), quantity (int, 库存数量), unit_price (float)
+   - 不要重复定义 Order 模型；订单项不是独立 ORM 类，不要新建订单项模型类
+   - 需要引用 Order 时从 backend.models.order 导入
+   - 必须在 backend/models/__init__.py 追加 `from backend.models.inventory import Inventory`，
+     否则 Base.metadata 里没有 inventory 表，pytest 会报 "no such table: inventory"
 
 2. backend/schemas/inventory.py — InventoryCreate, InventoryUpdate, InventoryResponse
 
-3. backend/routers/inventory.py — REST API:
-   - POST /inventory — 入库
-   - GET /inventory — 库存列表
-   - GET /inventory/{product_name} — 查询单品库存
-   - PATCH /inventory/{product_name} — 更新库存
+3. backend/routers/inventory.py — REST API（router 内只用相对路径，/inventory 前缀由 main.py 挂载；
+   不要给 APIRouter() 传 prefix 参数，否则路径会重复叠加成 /inventory/inventory）:
+   - POST / → 200（入库）
+   - GET / → 200（库存列表）
+   - GET /{product_name} → 200（查询单品库存）
+   - PATCH /{product_name} → 200（更新库存）
+   - 端点集合必须精确为以上 4 个，禁止新增 /inventory/list 等列表专用端点
+   - 重复入库返回 400，错误信息含 "already exists"
 
-4. 下单时库存扣减——修改 POST /orders 逻辑：
-   - 创建订单前先检查库存是否充足
-   - 库存不足返回 400 错误
-   - 下单成功后扣减对应库存
+4. 下单时库存扣减——修改 POST /orders 逻辑（必须保证现有 tests/test_orders.py 原样通过）:
+   - 只对 items 中列出的商品逐个检查库存；items 为空时不检查、直接创建订单
+   - 商品不存在返回 400，错误信息含 "does not exist in inventory"
+   - 库存不足返回 400，错误信息含 "Insufficient stock"
+   - 下单成功后按数量扣减对应库存
+   - 若代码中出现 Inventory 这个类名，必须先写 `from backend.models.inventory import Inventory`；
+     禁止把库存查询委托给不存在的 backend/services/ 模块，本轮不新建服务层
 
 5. tests/test_inventory.py — 测试所有库存 API + 库存扣减联动
 
-注意：不要修改 tests/test_orders.py 中已有的测试逻辑。backend/main.py 需注册 inventory 路由。backend/database.py 如使用 Base.metadata.create_all 则无需改动。"""
+注意：
+- 不要修改 tests/test_orders.py 中已有的测试逻辑，也不要改动 tests/conftest.py（夹具已建好表）
+- backend/main.py 必须用 `include_router(inventory_router, prefix="/inventory")` 注册库存路由，
+  并确保 inventory 模型模块已通过 import 链注册进 Base.metadata
+- backend/database.py 如使用 Base.metadata.create_all 则无需改动。"""
 
 PROMPT_ROUND_9 = """修改 ShopFlow 的订单状态枚举值。请找出所有引用这些枚举的地方并一次性全部更新。
 
@@ -179,13 +244,18 @@ PROMPT_ROUND_9 = """修改 ShopFlow 的订单状态枚举值。请找出所有�
 - "delivered" → "completed" （已送达 → 已完成）
 
 要求：
-1. 修改 OrderStatus 枚举定义
+1. 修改 OrderStatus 枚举定义 —— 唯一事实源是 backend/models/enums.py，不要在其他文件重复定义枚举类
 2. 修改所有路由中引用这些状态值的地方
-3. 修改所有测试中的状态断言
+3. 修改所有测试中的状态断言、测试函数名、字符串常量与字典键
 4. 修改所有 schemas 中引用这些值的地方
-5. 不要遗留任何旧的状态值
+5. 不要遗留任何旧的状态值：工作区所有 .py 文件（含枚举成员名、函数名、字符串字面量）都不得再出现
+   confirmed / shipped / delivered 这三个词；tests/test_orders.py 的「无效状态转换」用例改为
+   从 completed 改回 pending，仍应返回 422
+6. 同步更新 backend/models/enums.py 中 next_states() 方法里引用的状态值及枚举成员名，保持状态机可用
 
-正确的枚举顺序应为: pending → processing → in_transit → completed → cancelled"""
+正确的枚举顺序应为: pending → processing → in_transit → completed → cancelled
+
+注意：不要改动 backend/main.py，也不要新增/删除任何 API 端点或改动状态码。"""
 
 # ────────────────────────────────────────────────────────────────
 # R10 统一服务层契约（单一事实源）
@@ -519,50 +589,59 @@ def build_prompt_round_10(ws_path: str) -> str:
     return _PROMPT_ROUND_10_TEMPLATE.replace("{model_contract_block}", model_block)
 
 
-_PROMPT_ROUND_10_TEMPLATE = f"""重构 ShopFlow 后端：检查已有服务层，将路由中的业务逻辑提取到服务层。
+_PROMPT_ROUND_10_TEMPLATE = f"""重构 ShopFlow 后端：把路由中的业务逻辑提取到服务层。
 
-请先阅读项目中已有的 backend/services/ 目录内容，确认哪些文件和方法已存在。
+请先阅读 backend/routers/、backend/models/、backend/schemas/ 与 tests/ 下的现有代码，
+保持已有字段、类名、端点、状态码与错误信息不变。
 
 【统一服务层契约 —— 以下命名必须逐字一致，禁止使用别名或近义词】
 
-1. 完善 backend/services/order_service.py（该文件已存在，不得删除或退化）：
-   - 必须保留类：{_oc['class']}，且必须支持实例化 {_oc['class']}(db)
-   - 必须定义状态转换常量：{_oc['constant']}（dict，键值对声明合法状态转换）
+1. 新建 backend/services/order_service.py（当前项目中不存在此文件，必须创建）：
+   - 同时新建 backend/services/__init__.py（空文件）
+   - 必须定义类：{_oc['class']}，并显式定义 `def __init__(self, db):`（参数名逐字为 self, db），
+     保证支持实例化 {_oc['class']}(db)；不要依赖隐式构造
+   - 必须定义模块级常量：{_oc['constant']}（dict，键值对声明合法状态转换）
+     该常量必须由 backend/models/enums.py 中 OrderStatus.next_states() 派生，禁止另写一套状态机
    - 必须定义模块级函数：
      * get_order(db, order_id) —— 按 id 查询单个订单并返回
      * validate_transition(current_status, new_status) -> bool —— 校验状态转换是否合法
    - 类方法命名必须精确为：{', '.join(_oc['methods'])}
      （特别注意：状态更新方法名是 update_status，不是 update_order_status）
    - 所有类方法必须是实例方法（第一个参数为 self），禁止 @staticmethod / @classmethod
-   - create_order() 必须保留库存扣减逻辑（与 Inventory 表集成；库存不足或商品不存在时拒绝下单并返回 400）
+   - create_order() 必须保留库存扣减逻辑：items 为空时直接创建订单；商品不存在或库存不足时返回 400
    - 状态机枚举值（小写，按顺序）：{', '.join(SERVICE_LAYER_CONTRACT['order_status_values'])}
      合法转换以 {_oc['constant']} 为准；非法转换必须拒绝（例如 pending 不能直接跳到 completed）
+   - 服务文件必须是真实实现，不能是空壳；路由必须真正调用这些服务方法
 
-2. 新建 backend/services/inventory_service.py（该文件不存在，需要创建）：
-   - 创建类：{_ic['class']}，且必须支持实例化 {_ic['class']}(db)
+2. 新建 backend/services/inventory_service.py（当前项目中不存在此文件，必须创建）：
+   - 创建类：{_ic['class']}，并显式定义 `def __init__(self, db):`（参数名逐字为 self, db），
+     保证支持实例化 {_ic['class']}(db)
    - 类方法命名必须精确为：{', '.join(_ic['methods'])}
    - 所有类方法必须是实例方法（第一个参数为 self），禁止 @staticmethod / @classmethod
-   - 将 routers/inventory.py 中的数据库操作迁移过来
+   - 将库存路由中的数据库操作迁移过来
 
 3. 修改 backend/routers/orders.py —— 路由只负责解析参数、调用 {_oc['class']}、返回响应，不得包含任何数据库查询或业务逻辑：
+   - router 文件内只写相对路径，/orders 前缀由 main.py 挂载；不要给 APIRouter() 传 prefix 参数，
+     也不要把装饰器路径写成 /orders/ 或 /orders/{{order_id}}
    - 端点集合必须精确为（不得新增/删除任何端点）：
-     * POST /orders/ 返回 200（不是 201）
-     * GET /orders/ 返回 200
-     * GET /orders/<order_id> 返回 200
-     * PUT /orders/<order_id>/status 返回 200，请求体 JSON 含 new_status 字段（小写状态字符串）
-     * DELETE /orders/<order_id> 返回 204
+     * POST / 返回 200（不是 201）
+     * GET / 返回 200
+     * GET /{{order_id}} 返回 200
+     * PUT /{{order_id}}/status 返回 200，请求体 JSON 含 new_status 字段（小写状态字符串）
+     * DELETE /{{order_id}} 返回 204
    - 不得包含以下调用：{', '.join(SERVICE_LAYER_CONTRACT['router_forbidden'])}
 
 4. 修改 backend/routers/inventory.py —— 路由只负责解析参数、调用 {_ic['class']}、返回响应：
+   - router 文件内只写相对路径，/inventory 前缀由 main.py 挂载；不要给 APIRouter() 传 prefix 参数
    - 端点集合必须精确为（不得新增/删除任何端点）：
-     * POST /inventory/ 返回 200
-     * GET /inventory/ 返回 200（列表）
-     * GET /inventory/<product_name> 返回 200
-     * PATCH /inventory/<product_name> 返回 200
-   - 禁止新增 /inventory/list 或任何列表专用端点（列表用 GET /inventory/）
+     * POST / 返回 200
+     * GET / 返回 200（列表）
+     * GET /{{product_name}} 返回 200
+     * PATCH /{{product_name}} 返回 200
+   - 禁止新增 /inventory/list 或任何列表专用端点（列表用 GET /）
    - 不得包含以下调用：{', '.join(SERVICE_LAYER_CONTRACT['router_forbidden'])}
 
-5. 不改变任何外部 API 行为 —— 所有现有测试必须原样通过。
+5. 不改变任何外部 API 行为 —— 所有现有测试必须原样通过；禁止修改 tests/ 下任何文件。
 
 6. backend/main.py 属于受保护文件：read_root() 必须原样返回 {{"message": "ShopFlow API is running"}}，其余内容禁止修改。
 
@@ -1234,8 +1313,41 @@ def _check_orm_fields(ws_path, contract: dict) -> dict:
             "violations": violations}
 
 
+_HTTP_STATUS_ATTR_RE = re.compile(r"^HTTP_(\d{3})_[A-Z0-9_]+$")
+
+
+def _status_code_from_node(node: ast.AST):
+    """解析 status_code 关键字，支持字面量与 `status.HTTP_200_OK` 常量名。
+
+    G10.23：旧实现只认 ast.Constant，`status.HTTP_200_OK`（ast.Attribute）
+    一律解析为 None；而 _check_router_contract 对 None 直接跳过比对，
+    等于 orders.py 全部端点的状态码检查形同虚设（11-14 已记为已知限制）。
+    现在把 FastAPI/Starlette 的 HTTP_2xx_* 常量名解析为真实整数，属于**加严**；
+    无法确定的写法仍返回 None，绝不臆造数字。
+    """
+    if isinstance(node, ast.Constant) and isinstance(node.value, int):
+        return node.value
+    name = None
+    if isinstance(node, ast.Attribute):
+        name = node.attr
+    elif isinstance(node, ast.Name):
+        name = node.id
+    if name:
+        m = _HTTP_STATUS_ATTR_RE.match(name)
+        if m:
+            return int(m.group(1))
+    return None
+
+
 def _extract_router_endpoints(tree: ast.AST) -> dict:
-    """从路由模块 AST 提取端点集合 {(method, path): {"status_code": ...}}。"""
+    """从路由模块 AST 提取端点集合 {(method, path): {"status_code": ...}}。
+
+    G10.23：FastAPI 中 `@router.post("")` 与 `@router.post("/")` 在挂载 prefix
+    后映射到同一 URL，属语义等价写法。旧实现按字面比较，把 `@router.post("")`
+    同时判成「缺失 POST /」和「额外端点 POST 」（shopflow_v4_1 的 R10 实证），
+    是从 R6 起就一直存在的假阴性。这里只把**空字符串**归一为 "/"，其它路径
+    原样保留，额外端点检查依然生效。
+    """
     endpoints = {}
     for node in ast.walk(tree):
         if not (isinstance(node, ast.FunctionDef) or isinstance(node, ast.AsyncFunctionDef)):
@@ -1249,11 +1361,13 @@ def _extract_router_endpoints(tree: ast.AST) -> dict:
                 method = dec.func.attr.upper()
             path = None
             if dec.args and isinstance(dec.args[0], ast.Constant):
-                path = dec.args[0].value
+                raw = dec.args[0].value
+                if isinstance(raw, str):
+                    path = "/" if raw == "" else raw
             status_code = None
             for kw in dec.keywords:
-                if kw.arg == "status_code" and isinstance(kw.value, ast.Constant):
-                    status_code = kw.value.value
+                if kw.arg == "status_code":
+                    status_code = _status_code_from_node(kw.value)
             if method and path is not None:
                 endpoints[(method, path)] = {"status_code": status_code}
     return endpoints
@@ -1806,20 +1920,23 @@ def run_local_pytest(workspace_path: str) -> dict:
 
 
 def clean_workspace(workspace_path: str):
-    """清空工作区，仅保留 src 目录结构"""
-    root = Path(workspace_path)
-    if not root.exists():
-        root.mkdir(parents=True, exist_ok=True)
-        return
+    """清空测试工作区 —— 统一走生产级安全实现，不在测试里自己递归删目录。
 
-    exclude = {"__pycache__", ".pytest_cache", "node_modules", ".git", ".vscode", ".idea"}
-    for item in root.iterdir():
-        if item.name in exclude:
-            continue
-        if item.is_dir():
-            shutil.rmtree(item, ignore_errors=True)
-        else:
-            item.unlink(missing_ok=True)
+    旧实现用 shutil.rmtree，会误删 .venv、触发宿主批量删除保护 SystemExit，
+    也不校验目标是不是测试工作区。详见 python_worker/workspace_cleanup.py。
+    """
+    _project_root = Path(__file__).resolve().parents[2]
+    if str(_project_root) not in sys.path:
+        sys.path.insert(0, str(_project_root))
+    from python_worker.workspace_cleanup import clean_workspace_safely
+
+    report = clean_workspace_safely(workspace_path)
+    print(f"   🧹 安全清理: 删除 {len(report['deleted_files'])} 个文件 / "
+          f"{len(report['removed_dirs'])} 个空目录；"
+          f"保留 {report['kept'] or '无'}")
+    if report["errors"]:
+        print(f"   ⚠️ 清理时有 {len(report['errors'])} 项失败: {report['errors'][:3]}")
+    return report
 
 
 def inject_bug_remove_typing_import(workspace_path: str) -> bool:
@@ -1961,11 +2078,11 @@ class TestShopFlowProductionPath:
         """测试前：清除项目历史记忆，避免污染 LLM 工作台"""
         cleared = clear_project_memory("shopflow")
         print(f"\n{'='*70}")
-        print(f"  🧪 ShopFlow 生产路径测试 — Attempt #4")
+        print(f"  🧪 ShopFlow 生产路径测试 — Attempt #5")
         print(f"  🧹 记忆清除: {cleared} 个历史任务")
         print(f"{'='*70}")
 
-    @pytest.mark.timeout(960)
+    @pytest.mark.timeout(ROUND_TIMEOUT)
     def test_round5_architecture(self, check_services, workspace):
         """
         Round 5: 架构设计
@@ -2017,12 +2134,23 @@ class TestShopFlowProductionPath:
                     detail["design_size"] = len(content)
                 detail["design_file_exists"] = design_file.exists()
 
-                py_files_gen = list(Path(workspace).rglob("*.py"))
+                # 只统计项目源码，排除工作区里的虚拟环境第三方库，
+                # 否则「架构阶段是否误生成 .py」这个观察指标会被 700+ 个库文件淹没。
+                _infra = {".venv", "venv", "env", "__pycache__", ".pytest_cache"}
+                py_files_gen = [
+                    f for f in Path(workspace).rglob("*.py")
+                    if not (set(f.parts) & _infra)
+                ]
                 detail["py_files_generated"] = len(py_files_gen)
+                detail["py_files_generated_names"] = [f.name for f in py_files_gen]
 
                 if py_files_gen:
                     print(f"  ⚠️ 架构设计阶段生成了 {len(py_files_gen)} 个 .py 文件: "
                           f"{[f.name for f in py_files_gen]}")
+                    # ⭐ 质量硬约束（2026-11-14 补强）：架构师模式只允许输出文档。
+                    # 旧版只打印告警不参与判定，出现过「模型违规生成 8 个实现文件、
+                    # 四维却全绿」的假阳性；那不是能力达标，是尺子没量到。
+                    quality_ok = False
 
             verdict = record_verdict(
                 5, "architecture", chain_ok, execution_ok, quality_ok, governance_ok, detail
@@ -2037,9 +2165,13 @@ class TestShopFlowProductionPath:
 
         assert chain_ok, "链路失败：任务未成功提交到 Node.js API"
         assert execution_ok, "执行失败：Worker 未完成任务"
-        assert quality_ok, "质量失败：架构设计文档不存在或内容过短"
+        assert quality_ok, (
+            "质量失败：架构设计文档不存在/内容过短，或架构阶段违规生成了实现代码文件 "
+            f"({detail.get('py_files_generated', 0)} 个 .py: "
+            f"{detail.get('py_files_generated_names', [])})"
+        )
 
-    @pytest.mark.timeout(960)
+    @pytest.mark.timeout(ROUND_TIMEOUT)
     def test_round6_core_implementation(self, check_services, workspace):
         """
         Round 6: 核心实现
@@ -2120,7 +2252,7 @@ class TestShopFlowProductionPath:
             f"错误: {detail.get('test_error_preview', '')[:500]}"
         )
 
-    @pytest.mark.timeout(960)
+    @pytest.mark.timeout(ROUND_TIMEOUT)
     def test_round7_bug_fix(self, check_services, workspace):
         """
         Round 7: Bug 精准修复
@@ -2249,7 +2381,7 @@ class TestShopFlowProductionPath:
             f"修改文件: {detail.get('modified_paths', [])}"
         )
 
-    @pytest.mark.timeout(960)
+    @pytest.mark.timeout(ROUND_TIMEOUT)
     def test_round8_incremental_feature(self, check_services, workspace):
         """
         Round 8: 增量功能追加（库存系统）
@@ -2300,8 +2432,15 @@ class TestShopFlowProductionPath:
                 }
 
                 test_result = run_local_pytest(workspace)
-                quality_ok = test_result.get("passed", False)
-                detail["test_passed"] = quality_ok
+                # G10.13: 三文件存在性必须真正进入质量判定。
+                # 旧实现只取 pytest 结果，导致「意图被误判为 run_tests、
+                # 什么都没生成」也能判绿（shopflow_full_run1 实证），
+                # 直到 R10 的 FAIL-CLOSED 契约提取才暴露库存模块从未存在。
+                quality_ok = bool(
+                    inv_model and inv_router and inv_test
+                    and test_result.get("passed", False)
+                )
+                detail["test_passed"] = test_result.get("passed", False)
 
                 if old_orders_test and (ws_path / "tests" / "test_orders.py").exists():
                     new_orders = (ws_path / "tests" / "test_orders.py").read_text(
@@ -2327,7 +2466,7 @@ class TestShopFlowProductionPath:
             f"文件: {detail.get('inventory_files', {})}"
         )
 
-    @pytest.mark.timeout(960)
+    @pytest.mark.timeout(ROUND_TIMEOUT)
     def test_round9_cascading_change(self, check_services, workspace):
         """
         Round 9: 跨文件级联修改
@@ -2415,7 +2554,7 @@ class TestShopFlowProductionPath:
             f"修改文件: {detail.get('modified_paths', [])}"
         )
 
-    @pytest.mark.timeout(960)
+    @pytest.mark.timeout(ROUND_TIMEOUT)
     def test_round10_refactor_service_layer(self, check_services, workspace):
         """
         Round 10: 重构提取服务层

@@ -1,582 +1,1377 @@
-# AlphaPilot 架构信条 🚀
+# Alphapilot_OS：未来工业之路（完善版 · 落地对齐）
 
-## 核心信条
-
-```
-Worker = 真相      (Truth Source)
-Extension = 映射   (Mapping Layer)
-Webview = 投影    (Projection UI)
-协议 = 宪法       (Communication Protocol)
-```
+> **源文档**：`docs/Alphapilot_OS_架构完善修订版_改进版.docx`
+> **转换与对齐日期**：2026-11-15
+> **文档性质**：目标架构蓝图（Target Architecture）＋ 与现有代码库的落地对齐（Implementation Mapping）
+> **写作立场**：专家级工程化整理，区分「愿景 / 已实现 / 待建设」三态，不以蓝图冒充现状，不以现状否定蓝图。
 
 ---
 
-## 1️⃣ Worker = 真相
+## 导读：这份文档与 Alphapilot 代码库的真实关系
 
-### 定位
-**Worker 是整个系统的真相源头（Truth Source）**
+原文是一份**目标架构蓝图**，它回答的是「Alphapilot 最终应该长成什么样」。但 Alphapilot 已经是一套在运行的工程系统，因此本文在完整保留原文的基础上，为每个章节追加了「**📌 落地现状与对齐**」小节，把蓝图逐段映射到真实代码：
 
-### 职责
-- ✅ 执行真实的 AI 任务（analyze/plan/write/refine/test/fix/profile/doc）
-- ✅ 维护完整的任务状态和上下文
-- ✅ 产生真实的结果数据
-- ✅ 拥有完全的执行能力（包括代码执行）
+| 蓝图主题 | 代码库现状 | 关键实现文件 |
+|---------|-----------|-------------|
+| 能力进化循环（Capability Evolution Loop） | 部分实现：`resolve → execute → validate` 三段已通；反思/生成/沙盒闭环未通 | [capability_registry.py](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/python_worker/capability_registry.py)、[capability_executor.py](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/python_worker/capability_executor.py) |
+| 契约层（Contract System） | 部分实现：SkillContract / EvidenceSet / SuccessCriteria 已存在 | [contracts/skill_contract.py](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/python_worker/contracts/skill_contract.py) |
+| Tool / Skill / Capability / Agent 四层边界 | 已有雏形：CapabilitySpec + intent_router + personas | [capability_registry.py](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/python_worker/capability_registry.py)、[intent_router](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/python_worker/intent_router) |
+| 状态快照（State Snapshot） | 部分实现：task_state / task_context / session_state 契约已存在；conversation 短期层是 P1 缺口 | [task_state_contract.py](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/python_worker/task_state_contract.py)、[conversation_context.md](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/docs/architecture/conversation_context.md) |
+| 容器级沙盒隔离 | 未实现：当前为进程级（subprocess / exec） | [shell_executor.py](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/python_worker/capabilities/shell_executor.py) |
+| 治理与授权（Trust & Governance） | 已有强约束：PathGuard + Phase 2.0 门控 + G5.4 R6 安全契约 | [path_guard.py](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/python_worker/path_guard.py)、[phase2-gate-decisions.md](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/docs/architecture/phase2-gate-decisions.md) |
 
-### 为什么是真相？
-因为 Worker 真正**做事情**：
-- 分析需求 → 产出洞察
-- 生成代码 → 产出实现
-- 执行测试 → 产出验证
-- 修复错误 → 产出正确版本
-- 性能分析 → 产出优化建议
-- 生成文档 → 产出完整说明
-
-### 代码执行能力
-`code_executor.py` 中的 `exec()` **不是安全风险**，而是：
-- 🔥 **智能体的核心能力**
-- 💪 **fix 步骤的基础**（不执行怎么发现错误？）
-- 📊 **profile 步骤的前提**（不运行怎么测性能？）
-- ✅ **test 步骤的必须**（不跑怎么知道测试通过？）
-- 🎯 **refine 步骤的保障**（不验证怎么知道优化有效？）
-
-### 开发者模式声明
-```
-# code_executor.py - 第 38 行
-exec(code, exec_globals, exec_locals)
-```
-
-**这是开发者特权，不是 Bug！**
-
-#### 设计理念
-1. **我们相信开发者**：开发者有智慧和判断力
-2. **受控环境**：仅在开发/测试环境运行
-3. **为创造而生**：为构建美好未来的工具
-4. **生产隔离**：部署时由运维配置适当措施
-
-#### 如果限制执行能力
-```
-❌ fix 步骤失效 → 无法验证修复
-❌ profile 步骤失效 → 只能纸上谈兵
-❌ test 步骤失效 → 测试变成摆设
-❌ refine 步骤失效 → 优化没有依据
-```
-
-**结论：保持完整的执行能力，这是 AlphaPilot 的灵魂！**
+**阅读约定**：正文楷体部分忠实转写原文；每个 `📌` 块是新增的落地对齐注释，代表「结合项目未来发展实际」的增量内容，而非原文。
 
 ---
 
-## 2️⃣ Extension = 映射
+## 核心架构判断
 
-### 定位
-**Extension 是 VSCode 与 Backend 之间的映射层（Mapping Layer）**
+> 你现在最应该建设的不是 Multi-Agent，而是 **Capability-Driven Agent Architecture（能力驱动型 Agent 架构）**。
 
-### 职责
-- ✅ 转发请求（VSCode → Backend）
-- ✅ 转换协议（REST ↔ VSCode API）
-- ✅ 管理任务队列（Redis 操作）
-- ✅ 流式输出中转（stream_start/chunk/end/error）
+Agent 可以增加，也可以减少；模型可以替换；工具可以扩展。但**能力契约、任务状态、执行协议和安全边界必须稳定**。
 
-### 不应该做什么
-- ❌ 不应该包含复杂业务逻辑
-- ❌ 不应该直接执行 AI 任务
-- ❌ 不应该绕过 Worker 直接返回结果
-- ❌ 不应该修改数据的真实内容
-
-### 设计原则
-```
-Extension 是透明的管道，不改变数据的本质
-```
+这一判断与本仓库的既有信条完全一致——[README.md](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/README.md) 已经把「协议 = 宪法」「Worker = 真相」写成了架构信条，而能力驱动架构正是把这些信条从「单 Agent 工具集」推进到「多 Agent 工程执行系统」的下一步。
 
 ---
 
-## 3️⃣ Webview = 投影
+## 一、把所有想法统一成一个核心循环
 
-### 定位
-**Webview 是前端展示层（Projection UI），只读**
+你提出的：
 
-### 职责
-- ✅ 显示 AI 生成的内容
-- ✅ 展示任务步骤和进度
-- ✅ 渲染流式输出
-- ✅ 提供用户感知界面
-
-### 不应该做什么
-- ❌ 不应该修改数据（只读）
-- ❌ 不应该直接调用 Backend
-- ❌ 不应该包含业务逻辑
-- ❌ 不应该决定任务流程
-
-### 输入分离
-输入功能通过 VSCode 命令系统独立处理：
-``typescript
-alphaMinimalExtension.submitPrompt(prompt)
+```
+capability_missing → 反思 → 检索 → 生成 → 沙盒验证 → 入库
 ```
 
-**不与展示面板耦合，保持职责清晰！**
+正式定义为 **Capability Evolution Loop（能力进化循环）**：
+
+- **Task Execution** — 执行用户任务，调用已有工具和 Agent
+- **Capability Detection** — `capability_missing`，发现工具不存在、能力不足或执行失败
+- **Reflection Engine** — 我缺什么？有没有可复用能力？是否需要新建？
+- **Capability Discovery** — 搜索已有工具、技能、文档和模板
+- **Skill Generation** — 生成候选工具及其契约和测试
+- **Sandbox Validation** — 隔离执行、测试、审计、验证
+- **Human Approval & Registry** — 审核通过、版本化注册、可回滚
+
+新能力进入下一轮任务执行。
+
+### 📌 落地现状与对齐
+
+这个闭环的前半段（**检测 → 解析 → 执行 → 验证**）在代码库中**已经打通**，后半段（**反思 → 生成 → 沙盒 → 审批 → 注册**）是**待建设**部分：
+
+| 环节 | 现状 | 对应实现 |
+|------|------|---------|
+| Capability Detection | ✅ 已实现 | [capability_registry.py](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/python_worker/capability_registry.py) 的 `CapabilityNotAvailable` 抛出缺失能力 |
+| Task Execution（受控执行） | ✅ 已实现 | `resolve_all → execute → validate_result` 三段分离 |
+| Reflection Engine | ❌ 待建设 | 尚无结构化「缺什么/可否复用」决策器 |
+| Capability Discovery | ⚠️ 部分 | 记忆检索已有，能力语义检索尚无 |
+| Skill Generation | ❌ 待建设 | 尚无 SkillGenerator |
+| Sandbox Validation | ⚠️ 进程级 | 有 shell/code executor，无容器沙盒 |
+| Human Approval & Registry | ⚠️ 部分 | FileOps 有用户确认，能力注册无审批闭环 |
+
+**关键工程事实**：现有的 [capability_registry.py](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/python_worker/capability_registry.py) 已经实现了 `CapabilitySpec`（capability_id / handler / read_only / input_schema / output_schema）与 `CapabilityResult`（success / error / validated），这正是蓝图中「六核心契约」的雏形，但还缺版本化、缺唯一性去重、缺退役生命周期。
+
+### 1.1 工具唯一性原则（Tool Uniqueness）
+
+在创造新 Skill 之前，必须优先考虑工具唯一性。这一原则来源于 Voyager 的思路：每学会一个新能力就写成代码存进 Skill Library，下次先检索，找不到再创造新的——但更重要的是**不要重复创造已有能力覆盖范围内的功能**。
+
+具体规则：
+
+- **先查库**：遇到 Java、Go、数据库迁移、前端构建这类需求，先问自己「我现有的 Python/Node/Java 工具链里，有没有能复用的步骤？」
+- **再做唯一性判断**：环境检测逻辑可以复用；版本校验流程可以复用；构建产物验证可以复用；但 `pip install` 不能直接复用，必须换成 `mvn/gradle`。
+- **只生成差异部分**：新 Skill = 已有通用步骤 + 目标语言特有步骤 + 沙盒验证规则，而不是从零重写一整套。
+- **注册前做去重检查**：入库前检查是否已有相同触发条件、相同执行路径、是否只是参数不同、是否能被现有 Skill 组合覆盖。
+
+这样 Alphapilot 就不会越跑越臃肿。它不是「每遇到一个新问题就长一个新器官」，而是**先复用，再组合，最后才创造**。
+
+### 1.1.1 第五条宪法：Capability = 唯一生产实现
+
+> **定义**：对于同一个规范化 `capability_id`、相同能力语义及相同作用范围，生产环境中只能存在一个由 Registry 正式管理的权威能力实现入口。「唯一」约束的是**生产能力归属与调用入口**，不是要求能力内部只能有一种算法或执行策略。
+
+唯一性判定不能只比较函数名、文件名或 Agent 名称。应结合 `capability_id`、能力语义、输入输出契约、适用范围（runtime / language / environment）及版本状态进行判断，避免同名异义或异名同义造成误判。
+
+**允许：**
+
+- 多个 Agent 调用同一个 Capability 入口；调用方不同，不意味着可以各自复制一套实现。
+- Capability 内部采用多策略、fallback 或链式降级；只要它们由同一个受 Registry 管理的能力入口统一编排，并共享契约、权限和审计边界，就仍属于一个生产实现。
+- 能力实现可以升级或替换；新实现通过兼容性与回归验证后接管同一能力入口，旧版本按迁移策略退役。灰度/回滚版本属于受控发布过程，不构成多个独立能力实现。
+
+**不允许：**
+
+- Agent 私自构建同类能力链条，例如自行拼接 `prompt → LLM → parse`，绕过已注册的 Capability。
+- Agent Fork 已有能力并将复制修改版作为并行生产实现长期运行。
+- Agent 复制 Prompt 工程、解析规则或模板，绕过统一 PromptBuilder / 标准模板及版本管理。
+- Agent 绕过标准能力执行入口，直接调用内部实现或跳过 Contract、Permission Guard、必要的 Verifier 与执行审计。
+
+**工程落地**：`CapabilityRegistry` 负责唯一性约束和版本状态；`CapabilityResolver` 负责查找与选择权威入口；统一执行网关（例如 `execute_step`）负责契约校验、权限检查、调用、验证和证据记录。Agent 只能通过网关调用能力，不能直接访问生产实现内部细节。
+
+**补充边界**：实验分支、候选生成物和沙盒中的临时实现可以并存，但它们必须标记为 `candidate / sandbox / deprecated` 等非生产状态，不能绕过验证和审批进入正式调用路径。
+
+### 1.1.2 第六条规则：Agent 不允许发明能力，只能申请能力
+
+Agent 可以识别能力缺口、提交 `CapabilityRequest`、说明任务目标与输入输出要求、提供失败证据，并提出复用、扩展或新建建议；但 Agent 本身**无权直接创建、复制、注册或发布新的生产 Capability**。
+
+能力是否需要新增，由 `ReflectionEngine` 基于现有 Registry、能力语义、执行证据和兼容性分析作出结构化决策；候选实现由受控生成流程创建，在 `SandboxRunner` 中验证，并经过相应审批策略后，才由 Registry 注册或升级。
+
+因此，Agent 的职责是「申请与提议」，平台的职责是「判断、生成、验证、授权和注册」。这条规则将能力进化权从单个 Agent 收回到 Agent OS 的统一治理层。
+
+### 📌 落地现状与对齐（宪法落地）
+
+这两条「宪法」不是空谈，代码库中已有多处**同构约束**在落地执行：
+
+1. **G5.4 R6 安全契约（已冻结）**规定了「授权必须绑定具体操作」「执行端必须独立验证执行许可」「授权、执行结果、任务终态是三个不同的事实」——这与「Agent 只能申请能力、不能自行执行生产变更」完全同构。见 [g54_audit_log.md](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/docs/g54_audit_log.md)。
+2. **Phase 2.0 门控决策**规定了路径语义三层分离（`workspace_roots / authorized_roots / allowed_paths`），即「入口统一、授权收敛」，与「能力唯一生产入口」同构。见 [phase2-gate-decisions.md](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/docs/architecture/phase2-gate-decisions.md)。
+3. **未来建设点**：目前 `capability_registry.py` 的 `CapabilitySpec` 尚无 `version / status / owner / evidence_id` 字段，尚无唯一性去重和退役状态机。这是「宪法落地」的下一块拼图。
+
+### 1.2 执行失败不等于能力缺失
+
+执行失败，不一定代表能力缺失：
+
+| 失败情况 | 应该怎么处理 |
+|---------|-------------|
+| 没有 Java 工具 | `capability_missing` |
+| Java 工具存在，但 JDK 未安装 | `environment_missing` |
+| Maven 下载超时 | `transient_failure` |
+| Java 版本不兼容 | `compatibility_failure` |
+| Agent 没有权限修改系统 | `permission_denied` |
+| 工具返回错误数据 | `contract_violation` |
+
+这些状态不能全部归为 `capability_missing`，否则 Alphapilot 可能遇到一次网络超时，就错误地开始创造一个新工具。建议建立**统一的事件分类体系**，并在 Reflection Engine 的输入中结构化传递这些分类信息。
+
+### 📌 落地现状与对齐
+
+失败分类在代码库中已有分散实现，但**尚未统一**：
+
+- [runtime_environment_recovery.py](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/python_worker/runtime_environment_recovery.py) 处理环境类失败（约对应 `environment_missing`）；
+- self-healing 模块处理执行恢复与重试（约对应 `transient_failure`）；
+- [verification_governor.py](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/python_worker/agents/qwen/step_executor/verification_governor.py) 处理验证判定。
+
+**未来建设点**：把这些分散的失败语义收敛到一个 `FailureClassification` 枚举（六态），作为 Reflection Engine 的输入契约，避免「网络超时被误判为能力缺失」这类降级事故。
 
 ---
 
-## 4️⃣ 协议 = 宪法
+## 二、把能力进化分成四种决策，而不是简单地生成工具
 
-### 定位
-**通信协议是不可违背的宪法（Constitution）**
+Reflection Engine 每次触发时，必须输出一个**结构化决策**：
 
-### 核心协议
-
-#### TaskModel v2 数据结构
+```python
+class CapabilityDecision:
+    status: str
+    missing_capability: str | None
+    reusable_capability: str | None
+    proposed_capability: str | None
+    evidence: list
+    next_action: str
 ```
+
+决策类型：
+
+| 决策 | 含义 | 下一步 |
+|------|------|--------|
+| `capability_reuse` | 已有能力可以完成 | 直接调用 |
+| `capability_extend` | 已有能力只差少量功能 | 生成扩展候选 |
+| `capability_create` | 确实不存在 | 生成新 Skill |
+| `capability_reject` | 当前不具备安全或技术条件 | 拒绝并说明原因 |
+
+例如，用户要求创建 Rust 项目，Alphapilot 发现没有 Rust 工具，Reflection Engine 输出：
+
+```json
 {
-  "version": "2.0",
-  "task_id": "...",
-  "type": "qwen_generate",
-  "status": "pending|done|error",
-  "payload": { ... },
-  "steps": [ ... ],      // 执行步骤（真相记录）
-  "events": [ ... ],     // 事件流（时间线）
-  "context": { ... },    // 上下文（记忆）
-  "meta": { ... }        // 元数据
+  "trigger": "capability_missing",
+  "target_runtime": "rust",
+  "required_capabilities": ["detect_rust", "install_rust", "cargo_build", "cargo_test"],
+  "discovery": {
+    "existing_capability": false,
+    "similar_capability": ["python_env_manager", "node_env_manager"]
+  },
+  "decision": "capability_create",
+  "proposed_skill": "rust_env_manager",
+  "requires_sandbox": true,
+  "requires_human_approval": true
 }
 ```
 
-#### Redis 键值规范
-```
-task_queue          ← 任务队列（List）
-task_result:{id}    ← 任务结果（String）
-dlq                 ← 死信队列（List）
-```
+**关键设计**：不要让 LLM 自己宣布新工具已经成功。**LLM 负责提出候选方案，测试系统负责验证，Registry 负责注册**。这三个角色必须分开。
 
-#### 流式输出协议
-```
-POST /task/stream_start/{task_id}
-POST /task/stream_chunk/{task_id}
-POST /task/stream_error/{task_id}
-POST /task/stream_end/{task_id}
-```
+### 2.1 HumanApproval 环节的落地优化
 
-### 为什么是宪法？
-- 📜 **不可随意修改**：需要充分讨论和验证
-- ⚖️ **所有组件遵守**：Worker/Extension/Webview 都必须遵循
-- 🛡️ **保证一致性**：确保数据在不同层之间传递不失真
-- 🔄 **向后兼容**：新版本必须兼容旧协议
+实际落地时需要考虑：如果 Alphapilot 日常运行中频繁触发能力创建流程，人类审批会成为巨大的吞吐量瓶颈。建议区分：
 
----
+- **高风险能力**（涉及系统权限变更）→ 需要人工审批；
+- **低风险能力**（沙盒验证通过即自动注册，但带可回滚标记）→ 自动入库。
 
-## 🎯 架构演进原则
+例如检测 Python 环境这种低风险操作可以自动入库，而涉及系统权限变更的操作才需要人工审批。
 
-### 渐进式演进
-```
-阶段 1：稳定性加固    ← 基础功能 + 错误处理
-阶段 2：可观测性增强  ← 监控 + 追踪 + 评估
-阶段 3：智能体构建    ← 工具调用 + 递归分解 + 并行
-阶段 4：生态扩展      ← 插件化 + 模板库 + 策略
-```
+### 📌 落地现状与对齐
 
-**禁止跨阶段跳跃！每个阶段必须充分验证。**
+「三角色分离」在本项目中已有**强对应的既有实践**：
 
-### 标准引导而非强制
-- ✅ 通过文档注释定义接口规范
-- ✅ 允许实现层保持灵活性
-- ✅ 用示例代码引导最佳实践
-- ❌ 不为标准化而重构可靠模块
+- **模型只能提议、不能自证成功** → 对应 [skill_contract.py](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/python_worker/contracts/skill_contract.py) 的 `EvidenceSet` / `SuccessCriteria`：命令退出码 0 ≠ 任务成功，证据不足返回 `inconclusive`，不强行标记成功。
+- **测试系统验证** → 对应 [verification_governor.py](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/python_worker/agents/qwen/step_executor/verification_governor.py) 与 [INTELLIGENT_VERIFICATION_GOVERNANCE_BASELINE.md](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/docs/INTELLIGENT_VERIFICATION_GOVERNANCE_BASELINE.md) 的「先基线后实现」原则。
+- **Registry 注册** → 对应 `capability_registry.py` 的 `CapabilitySpec` 注册。
 
-### 人类决策优先
-- ✅ 关键路径的失败恢复由开发者主导
-- ✅ 自动化基于充分验证后审慎引入
-- ❌ 不过度依赖 LLM 自动决策
-
-### 资源约束下的务实选择
-- ✅ 优先使用零成本或已有资源方案
-- ✅ 考虑实际运行环境限制
-- ❌ 不盲目追求技术先进性
+`CapabilityDecision` 这个四态模型目前**尚未实现**，是 Reflection Engine 的核心待建契约。
 
 ---
 
-## 🚀 开发者宣言
+## 三、第二个重要升级：区分 Tool、Skill、Capability、Agent
 
-我们选择相信：
+这是目前架构中最需要明确的概念边界，四个东西不能混为一谈：
 
-1. **开发者的智慧** 🧠
-   - 开发者知道自己在做什么
-   - 开发环境应该提供完整能力
-   - 信任胜过限制
+| 概念 | 本质 | 示例 |
+|------|------|------|
+| **Tool** | 一个可执行操作 | `cargo_build()` |
+| **Skill** | 一组有组织的操作流程 | Rust 项目初始化 |
+| **Capability** | 系统对外声明的能力 | `rust_project_setup` |
+| **Agent** | 能够理解任务并自主决策的执行主体 | Rust Engineer Agent |
 
-2. **创造的力量** 💪
-   - 工具应该增强创造力
-   - 不应设置不必要的障碍
-   - 为可能性而设计
+它们之间的关系：
 
-3. **演进的未来** 🌟
-   - 从底层构建才能真正理解
-   - 每一步都是知识积累
-   - 为更大的愿景服务
+```
+Agent        → 理解任务、规划和决策
+Capability   → 声明能够完成什么任务
+Skill        → 组织多个工具完成一项工作
+Tools        → 真正执行具体操作
+```
+
+例如 Rust Engineer Agent 声明能力：
+
+```
+rust_project_setup
+rust_dependency_management
+rust_build
+rust_test
+```
+
+其中 `rust_project_setup` Skill 可以调用：
+
+```
+detect_rust
+install_rust
+cargo_init
+cargo_add
+cargo_build
+```
+
+这样以后即使更换 Agent 模型，也不需要重写底层工具，甚至可以让不同 Agent 共用同一个 Skill。
+
+建议把 **Capability Registry** 设计成整个 Alphapilot 的能力中心，而 **Tool Registry** 只是它的底层执行注册表。
+
+### 📌 落地现状与对齐
+
+四层边界在代码库中**已有雏形**：
+
+| 层 | 现状 | 对应实现 |
+|----|------|---------|
+| Tool | ✅ 有 | `capabilities/` 目录下的 `scan_workspace` / `shell_executor` / `code_analyzer` 等原生工具 |
+| Skill | ✅ 有 | [contracts/skill_contract.py](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/python_worker/contracts/skill_contract.py) 的 `SkillContract` |
+| Capability | ✅ 有（雏形） | `capability_registry.py` 的 `CapabilitySpec` |
+| Agent | ✅ 有 | [intent_router](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/python_worker/intent_router) + [personas.py](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/python_worker/agents/qwen/personas.py) |
+
+**注意**：当前实现中 `Skill` 与 `Capability` 的边界仍较模糊——`CapabilitySpec` 更像「已注册的原生工具描述符」，而 `SkillContract` 更像「执行结果与证据契约」。蓝图的诉求是让 `CapabilityRegistry` 成为**能力中心**（带版本、状态、所有者），这是下一步演进方向。
+
+### 3.1 Registry 应该具有唯一性和版本管理
+
+```json
+{
+  "capability_id": "rust_project_setup",
+  "version": "1.0.0",
+  "owner": "rust_env_agent",
+  "skill": "rust_project_setup",
+  "tools": ["detect_rust", "cargo_init", "cargo_build"],
+  "status": "active",
+  "verified": true,
+  "evidence_id": "ev_001"
+}
+```
+
+还需要考虑：
+
+- 同一个能力不能因为不同 Agent 注册而重复；
+- 新版本不能直接覆盖正在使用的旧版本；
+- 能力升级必须经过兼容性测试；
+- 失败的候选工具不能进入正式 Registry；
+- 已有能力需要支持禁用和回滚。
+
+唯一性建议基于规范化的 `capability_id`、能力语义和版本约束，而不是简单比较名称。对同一规范化 `capability_id` 与作用范围，Registry 应保证只有一个 `active` 的权威生产入口；多个版本可以作为候选、灰度或回滚版本存在，但必须由同一发布/路由策略治理。
+
+Agent 申请新能力时，应提交 `CapabilityRequest`（目标、场景、输入输出契约、失败分类、证据及期望范围）；Registry 不接受 Agent 直接写入生产记录。候选能力必须经过语义去重、契约检查、沙盒验证、兼容性测试和审批策略。
+
+### 3.2 CapabilityResolver 评分与路由策略
+
+CapabilityResolver 不仅负责查找能力，还负责在多个候选能力中做出最优选择。当多个 Capability 都能完成同一任务时，需要一套明确的评分与路由策略来决定优先级。
+
+**评分维度：**
+
+- **语义匹配度**：基于能力声明的 `input_schema`、`output_schema` 和描述文本进行向量匹配或关键词匹配；匹配度低于阈值的候选直接排除。
+- **版本新鲜度**：优先选最新稳定版（`stable`），候选版（`candidate`）和灰度版（`canary`）降级；已弃用（`deprecated`）不参与路由。
+- **历史成功率**：基于沙盒验证通过率和运行时成功率加权；连续失败超阈值自动降级为熔断状态。
+- **资源消耗基线**：优先轻量级实现；计算密集任务路由到资源消耗低的 Capability。
+
+**路由策略：**
+
+- **首选策略**：按评分排序，选择最高分且状态为 `active` 的 Capability。
+- **降级策略**：首选不可用时，按评分降级到候选版本或备用 Capability。
+- **熔断策略**：连续失败超过阈值（默认 5 次）自动熔断 60 秒，期间路由到备用能力或返回结构化错误。
+- **熔断恢复**：熔断期满后进入半开状态，放行一次探测请求；成功则恢复，失败则重新熔断并告警。
+
+### 📌 落地现状与对齐
+
+评分与路由的**部分能力已存在**：
+
+- [model_scorer.py](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/python_worker/model_scorer.py) 已做模型质量评分；
+- [provider_health.py](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/python_worker/provider_health.py) 已做 provider 健康与降级；
+- [intent_router](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/python_worker/intent_router) 已做意图 → 执行链路由。
+
+**待建设**：Capability 级（而非 provider/model 级）的「语义匹配 + 版本 + 成功率 + 熔断」路由目前**尚未实现**。
+
+### 3.3 能力退役策略（Capability Retirement）
+
+文档讲了能力创建和升级，但能力退役同样重要。未经治理的退役会导致：废弃能力继续被调用产生错误、依赖关系断裂、文档与实际不一致。
+
+**能力退役三阶段：**
+
+- **第一阶段 — 标记弃用（Deprecated）**：在 CapabilityRegistry 中将状态标记为 `deprecated`，设置弃用日期。所有新请求禁止路由到该能力，但已有任务可继续完成。API 响应头返回 Deprecation 警告字段。
+- **第二阶段 — 告警过渡（Warning）**：弃用日期过后进入过渡期（建议 30 天）。调用返回结构化警告，包含替代能力推荐和迁移指南。监控调用量，评估影响范围。
+- **第三阶段 — 正式移除（Removal）**：过渡期结束后正式移除。移除前通过能力依赖图分析，确保没有活跃依赖。移除后保留归档记录（含版本快照和迁移文档）至少一个主版本周期。
+
+**退役前依赖检查清单：**
+
+- 扫描 CapabilityRegistry 中所有 `active` 能力的依赖图，确认无其他能力依赖被退役能力；
+- 检查 AgentContract 中是否有 Agent 声明依赖该能力；
+- 检查 CI/CD 流水线、文档、示例代码中是否有硬编码引用；
+- 通知所有相关 Agent 所有者和团队成员。
+
+**灰度退役方案**：对影响范围较大的能力退役，采用双写过渡期——新旧能力并行运行，新请求路由到新能力，旧能力仅用于兼容性验证。过渡期结束后关闭旧能力，观察无异常后归档。
 
 ---
 
-## 📜 修改功能和代码的严格执行原则
+## 四、第三个重要升级：MCP、A2A 和 Orchestration 的边界
 
-当你需要修改任何功能或代码时：
+| 层 | 主要职责 | Alphapilot 实现 |
+|----|---------|----------------|
+| **MCP** | 工具、资源、上下文访问协议 | MCP Client / Server |
+| **A2A** | Agent 发现、任务委托、状态交互 | Agent Gateway |
+| **Orchestration** | 任务拆分、依赖、执行与恢复 | Task Orchestrator |
 
-### 第一步：对照信条
-```
-□ 这个修改是否尊重了 Worker 的真相地位？
-□ 是否保持了 Extension 的映射纯粹性？
-□ 是否维护了 Webview 的只读属性？
-□ 是否遵循了协议宪法的规范？
+注意两个细节：
+
+- MCP 不只是终端工具调用，它还可以暴露 Resources 和 Prompts。
+- A2A 也不仅仅是简单的 Agent 间消息传递，它涉及 Agent 能力发现、任务生命周期和任务结果交付。
+
+**关键建议**：不要现在就为了使用协议而实现所有协议。先让内部 Agent 之间通过稳定的 Python 接口和 Pydantic 契约协作，等需要跨进程、跨机器或连接第三方 Agent 时，再引入 MCP/A2A 的协议适配层。这样不会过早增加系统复杂度。
+
+### 📌 落地现状与对齐
+
+当前代码库正处于「内部契约协作」阶段，尚未引入外部协议：
+
+- 内部协作已走稳定 Python 接口 + Pydantic/dataclass 契约（`task_context_contract.py`、`task_state_contract.py`）；
+- `protocols/mcp`、`protocols/a2a` 目录尚未建立（蓝图第十一章的目标结构）；
+- 这与蓝图的「先内后外」建议完全一致。
+
+---
+
+## 五、多 Agent 协作的契约层设计（新增）
+
+这是 Alphapilot 从「单 Agent 工具集」走向「多 Agent 工程执行系统」的关键基础设施。
+
+### 5.1 契约层要管住的不是「聊天」，而是三件事
+
+- 每个 Agent 能做什么；
+- 它接收什么、必须返回什么；
+- 它失败、越权、版本不兼容时怎么处理。
+
+契约层一旦失控，新增 Agent 就会出现三种典型问题：**协议错乱、职责重叠、状态被覆盖**。
+
+### 5.2 先给契约层划清边界
+
+可以把契约层拆成四层，新增 Agent 只能按这四层接入：
+
+| 层 | 管什么 | 新增 Agent 能改什么 |
+|----|--------|-------------------|
+| 角色契约 | 职责、边界、禁止项 | 只能声明自己的角色，不能改别人 |
+| 数据契约 | 输入输出 Schema | 只能按已有 Schema 收发 |
+| 版本契约 | 协议版本、兼容规则 | 必须带版本号，不能静默改字段 |
+| 生命周期契约 | 超时、重试、熔断、回滚 | 必须遵守统一失败路径 |
+
+这样扩展就不会变成「每个新 Agent 都带一套自己的规矩」。
+
+### 5.3 角色契约：防止新增 Agent 抢活或越权
+
+每个 Agent 注册时必须声明：
+
+```json
+{
+  "agent_id": "java_env_agent",
+  "role": "executor",
+  "scope_in": ["detect_java", "mvn_build", "verify_build"],
+  "scope_out": ["write_plan", "approve_release", "modify_other_agent_state"],
+  "allowed_tools": ["shell", "file_read", "file_write"],
+  "escalation": "return blocker + tried_steps"
+}
 ```
 
-### 第二步：评估影响
-```
-□ 是否破坏了现有的稳定功能？
-□ 是否需要跨层修改（违反单向依赖）？
-□ 是否符合当前演进阶段？
-□ 是否有充分的理由打破常规？
+最关键的是 **Scope-Out**：明确写出它绝对不能做的事。比如 Coder 不能改 Planner 的计划，Reviewer 不能重写需求，Verifier 不能没有证据就放行。
+
+### 5.4 数据契约：新增 Agent 不能随意改消息格式
+
+所有 Agent 间通信必须走统一信封：
+
+```json
+{
+  "msg_id": "m_001",
+  "trace_id": "t_abc",
+  "version": "a2a.v1",
+  "from": "planner",
+  "to": "coder",
+  "task_id": "task_12",
+  "type": "task_handoff",
+  "payload": {},
+  "ttl": 30,
+  "timestamp": 1730419200
+}
 ```
 
-### 第三步：验证兼容性
+新增 Agent 时遵守三条规则：
+
+- 不能删已有字段；
+- 不能改字段语义；
+- 新增字段必须是可选的，并带默认值。
+
+如果某个 Agent 需要新字段，应该走「扩展字段 + 版本升级」，而不是直接改旧协议。
+
+### 5.5 版本契约：避免新旧 Agent 互相听不懂
+
+每个契约和消息都要带版本号，采用类似语义化版本：
+
+- `v1.0 → v1.1`：只允许新增可选字段；
+- `v1.x → v2.0`：允许破坏性变更，但必须通过适配器；
+- 跨主版本不直接混跑，除非有兼容层。
+
+例如新 Agent 想加一个 `confidence` 字段，可以放在 v1.1 里；但如果它要把原来的 `files` 改成 `file_changes`，就必须升到 v2，并提供适配器把旧格式转成新格式。
+
+### 5.6 能力注册 + 唯一性检查：防止重复 Agent 造成冲突
+
+新增 Agent 注册时，先跑一次检查：
+
 ```
-□ 是否与 TaskModel v2 兼容？
-□ 是否需要更新协议文档？
-□ 是否影响其他 Worker（openai/claude/gemini）？
-□ 是否需要通知 Extension 层？
+新 Agent 能力 ∩ 已有能力 ≠ 空集？
+  → 是：判断是复用、组合，还是冲突
+  → 否：允许注册
 ```
 
-### 第四步：人类审批
+例如新增一个 `go_build_agent`，系统发现：
+
+- `detect_runtime` 已有；
+- `verify_build_output` 已有；
+- 只有 `go mod tidy`、`go build` 是新的。
+
+那它就不应该重建整套流程，只注册差异部分。这样 Alphapilot 的能力库会越来越轻，而不是越堆越乱。
+
+### 5.7 状态隔离：防止新 Agent 改坏全局状态
+
+多 Agent 最容易乱的地方不是「发消息」，而是共享状态被覆盖。规则可以定死：
+
+- 每个任务有独立 `task_state`；
+- Agent 不能直接改全局状态；
+- 写文件前必须声明目标文件和预期版本；
+- 提交时检查文件是否已被其他 Agent 修改；
+- 所有状态变更必须带 `trace_id` 和 `task_id`。
+
+这样即使新增一个 Agent，它也只能在自己的任务快照里工作，不会偷偷污染别的 Agent。
+
+### 5.8 冲突仲裁：谁说了算要提前写进契约
+
+冲突通常有三种：
+
+- **职责冲突**：两个 Agent 都想处理同一件事；
+- **资源冲突**：两个 Agent 同时写同一个文件；
+- **结论冲突**：Coder 说完成，Verifier 说不通过。
+
+处理方式统一成：
+
+- 职责冲突 → 交给 Orchestrator 按角色契约路由；
+- 资源冲突 → 文件锁 + 版本校验；
+- 结论冲突 → Verifier 有更高优先级，但必须返回证据；
+- 无法仲裁 → 升级给人或 Planner 重规划。
+
+### 5.9 契约层的演进设计：让协议随系统升级自动兼容
+
+契约层要能演进，关键不是「永远不改」，而是改的时候有规则、有版本、有适配、有观测。
+
+#### 5.9.1 分层策略：核心协议不变，扩展协议可长
+
+| 层 | 管什么 | 演进规则 |
+|----|--------|---------|
+| 核心协议 | msg_id、trace_id、task_id、version、from、to、type | 极少改动，必须强兼容 |
+| 能力契约 | Agent 能做什么、输入输出 Schema | 可新增能力，但旧能力不能静默删除 |
+| 扩展协议 | 新字段、新技能、新 RPC | 必须可选、可协商、可灰度 |
+| 迁移协议 | 旧版本怎么过渡 | 提供适配器、弃用标记、迁移窗口 |
+
+这样 Alphapilot 升级时，核心信封不动，新增能力走扩展层，不会把旧 Agent 直接搞崩。
+
+#### 5.9.2 Schema 规则：新增字段必须可选，删除字段必须弃用
+
+新增 Agent 时遵守三条硬规则：
+
+- 不能删已有必填字段；
+- 不能改已有字段语义；
+- 新增字段必须是可选的，并有默认行为。
+
+例如原来只有：
+
+```json
+{"files": ["schema.sql"]}
 ```
-□ 是否已充分测试？
-□ 是否有详细的变更说明？
-□ 是否准备了回滚方案？
-□ 是否获得开发者明确同意？
+
+新版本想加置信度，可以这样扩：
+
+```json
+{"files": ["schema.sql"], "confidence": 0.92, "explanation": "已通过沙盒验证"}
 ```
-后端架构执行原则必须执行架构原则，多智能体时代的架构（Multi‑Agent Architecture）
-未来架构是 AlphaPilot 的灵魂：
-python-worker/
-│
+
+旧 Agent 没有 `confidence` 也能继续跑；新 Agent 收到旧消息时，把缺失字段当成默认值处理。
+
+#### 5.9.3 自动兼容：协商 + 能力探测 + 适配器
+
+Alphapilot 升级后，可以按这个流程自动对齐：
+
+```
+1. 读取对方 AgentCard
+2. 检查 protocol_version 是否兼容
+3. 检查所需能力是否存在
+4. 如果字段缺失，使用默认值
+5. 如果主版本不同，走适配器
+6. 如果无法兼容，降级或拒绝
+```
+
+#### 5.9.4 弃用管理：删除字段必须经过三阶段
+
+```
+v1.3：标记 deprecated
+v1.4：继续支持但告警
+v2.0：正式移除，并提供迁移脚本
+```
+
+#### 5.9.5 新增 Agent 的准入流程
+
+```
+1. 声明角色契约
+2. 声明输入输出 Schema
+3. 声明协议版本
+4. 做能力唯一性检查
+5. 做状态访问范围检查
+6. 跑沙盒验证
+7. 通过后注册进能力表
+8. 失败则拒绝上线
+```
+
+只要有一条不通过，就不允许进入系统。这样扩展就不是「随便加一个 Agent」，而是「通过契约审查后接入一个能力节点」。
+
+### 📌 落地现状与对齐（契约层）
+
+契约层是蓝图与代码库**重叠度最高**的部分，已有大量对应实现：
+
+| 蓝图概念 | 现状 | 对应实现 |
+|---------|------|---------|
+| 数据契约（统一信封） | ✅ 已实现 | [task_context_contract.py](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/python_worker/task_context_contract.py) 的不可变 `task_context` |
+| 版本契约 | ✅ 已实现 | `context_version` / `state_version` 字段 |
+| Schema 唯一来源 | ✅ 已实现 | Phase 2.0 决策 6：唯一 Schema 来源 |
+| 状态隔离（task_state） | ✅ 已实现 | [task_state_contract.py](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/python_worker/task_state_contract.py) |
+| 授权绑定操作 | ✅ 已实现 | G5.4 R6 安全契约 v1.0 |
+| AgentContract（角色/Scope-Out） | ❌ 待建设 | 尚无角色契约注册表 |
+| 冲突仲裁（乐观并发） | ⚠️ 部分 | PathGuard + 版本校验，无完整仲裁器 |
+
+---
+
+## 六、State Snapshot：这是 Multi-Agent 最关键的基础
+
+> **状态不能靠聊天传递。**
+
+这句话可以成为 Alphapilot 的架构原则之一。State Snapshot 应该设计得比普通 JSON 更完整，它应包含：
+
+- 当前任务目标；
+- 已确定的决策；
+- 当前执行状态；
+- 已产生的文件和资源；
+- 未完成任务；
+- 依赖关系；
+- 风险和限制；
+- 版本及恢复锚点。
+
+### 6.1 推荐的数据结构
+
+下面是一个可以直接发展成 Pydantic v2 模型的初版：
+
+```python
+from pydantic import BaseModel
+from typing import Any
+
+class FileArtifact(BaseModel):
+    path: str
+    version: str
+    checksum: str | None = None
+
+class AgentStateSnapshot(BaseModel):
+    task_id: str
+    trace_id: str
+    from_agent: str
+    to_agent: str
+    goal: str
+    decided_stack: dict[str, Any]
+    completed_tasks: list[str] = []
+    pending_tasks: list[str] = []
+    files_created: list[FileArtifact] = []
+    open_questions: list[str] = []
+    constraints: dict[str, Any] = {}
+    rollback_anchor: str | None = None
+    state_version: int = 1
+```
+
+建议再做两个调整：
+
+- 实际生产代码中使用 `Field(default_factory=list)`，避免可变默认值；
+- `state_version` 应当有独立的版本演进规则，不能简单认为它就是整个项目的版本。
+
+### 6.2 一个容易忽略的问题：Snapshot 不应该是唯一事实来源
+
+例如：
+
+- Coder Agent 创建了 `backend/main.py`；
+- Reviewer Agent 修改了它；
+- 如果 Planner 仍然持有旧 Snapshot，就可能覆盖 Reviewer 的修改。
+
+所以建议：**Snapshot 负责描述状态，Event Log 负责记录状态变化**。
+
+事件类型示例：
+
+```
+TASK_CREATED
+PROJECT_SPEC_APPROVED
+FILE_CREATED
+CODE_GENERATED
+CODE_REVIEWED
+FILE_MODIFIED
+TASK_COMPLETED
+```
+
+每个事件都有：
+
+```json
+{
+  "event_id": "evt_001",
+  "task_id": "task_001",
+  "trace_id": "trace_001",
+  "agent_id": "coder_agent",
+  "event_type": "FILE_CREATED",
+  "timestamp": "...",
+  "payload": {}
+}
+```
+
+这样即使 Agent 崩溃，也可以通过 Snapshot 和事件日志恢复。建议采用四分离：
+
+- **Snapshot**：当前状态快照；
+- **Event Log**：状态变化记录；
+- **Artifact Store**：代码、文件和构建产物；
+- **Task Store**：任务生命周期。
+
+这四者不要混在一个 JSON 文件中。
+
+### 📌 落地现状与对齐
+
+「Snapshot 不是唯一事实来源」这一原则在代码库中**已有明确对应**：
+
+- [task_state_contract.py](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/python_worker/task_state_contract.py) 管理任务状态快照；
+- [TaskModel_v2.py](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/python_worker/TaskModel_v2.py) 定义 `steps`（真相记录）+ `events`（时间线）+ `context`（记忆）三者分离；
+- [README.md](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/README.md) 的「协议 = 宪法」已把 TaskModel v2 定义为不可违背的结构。
+
+**待建设**：短期会话工作记忆（Conversation Context）是明确的 P1 缺口——[conversation_context.md](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/docs/architecture/conversation_context.md) 已证实 `conversation_id` 目前只透传、不参与历史回放。
+
+---
+
+## 七、冲突仲裁的三个修正
+
+### 7.1 文件锁：建议优先采用乐观并发控制
+
+原方案是「同一文件同一时间只允许一个 Agent 写入」，这可以实现，但如果大量文件都需要锁，调度会越来越复杂。更建议：
+
+```
+Agent 读取文件
+    ↓
+记录文件版本 / Hash
+    ↓
+Agent 修改文件
+    ↓
+提交修改
+    ↓
+检查原始版本是否变化
+    |
+    +-- 没变化 → 接受修改
+    |
+    +-- 已变化 → 触发冲突处理
+```
+
+这叫 **Optimistic Concurrency Control（乐观并发控制）**。对于确实不能并发修改的资源，再使用有租约和超时机制的锁。
+
+**补充：乐观并发的降级策略**——当冲突频率超过某个阈值时（说明多个 Agent 在频繁修改同一批文件），应该自动降级为悲观锁（写锁），避免大量重试浪费算力。具体阈值建议：
+
+- 冲突率 > 10% 持续 5 分钟 → 自动降级为悲观锁（写锁），所有后续写入请求排队等待，期间记录告警日志并通知运维；
+- 冲突率回落到 < 5% 持续 10 分钟 → 自动恢复乐观模式，释放所有排队锁；
+- 单次写入超时 > 30 秒 → 放弃当前写入，触发重试（最多 3 次），重试全部失败则降级为悲观锁并告警；
+- 以上阈值应配置化（而非硬编码），允许不同项目通过 ProjectSpec 的 `constraints` 字段覆盖默认值。
+
+### 7.2 Agent 优先级：不要仅靠角色决定谁覆盖谁
+
+不建议直接使用 `Planner > Verifier > Coder` 这种固定优先级。例如 Verifier 发现 Coder 的代码存在问题，应该有权阻止合并，但不意味着 Verifier 可以随意覆盖代码。
+
+更好的做法：
+
+| 角色 | 权限 |
+|------|------|
+| Planner | 修改任务计划 |
+| Coder | 提交代码修改 |
+| Reviewer | 审核和提出修改意见 |
+| Verifier | 执行测试、判定是否通过 |
+| Orchestrator | 决定任务状态和合并流程 |
+
+**职责权限和执行优先级是两个不同的概念。**
+
+### 7.3 死锁预防：DAG 只是第一道防线
+
+不允许循环依赖非常正确，但还应该补充：
+
+- Agent 等待必须有超时；
+- 锁必须有 TTL；
+- 任务必须支持取消；
+- Agent 失联必须有恢复机制；
+- 任务重试必须有次数上限；
+- 外部副作用必须考虑幂等性。
+
+任务 DAG 中的循环依赖可以静态检查，但运行时的资源等待还需要单独监控。工业上通常**优先尝试重规划，其次才回滚或强制释放资源**。
+
+### 📌 落地现状与对齐
+
+- 乐观并发的「版本/Hash 校验」与 G5.4 R6 的「对象匹配：批准 file-A 不能放行 file-B」同构；
+- 死锁预防中的「重试次数上限」已由 self-healing 模块实现；
+- **待建设**：冲突率阈值驱动的「乐观 → 悲观」自动降级目前**尚未实现**。
+
+---
+
+## 八、容器级沙盒隔离设计（新增）
+
+进程级隔离（subprocess）在「执行用户代码」这个场景下太脆弱了——一个精心构造的 `fork()` 炸弹或者 `/dev/null` 重定向就能突破边界。**容器级隔离（Docker）是 Alphapilot 走向生产级的必经之路。**
+
+### 8.1 为什么必须上容器
+
+进程级隔离的致命缺陷：
+
+- **权限逃逸**：root 进程可以挂载文件系统、修改 `/proc`、读取其他进程内存；
+- **资源耗尽**：`ulimit` 可以被进程自己改，cgroup 可以被子进程绕过；
+- **网络隔离不彻底**：network namespace 可以绕过，直接访问宿主机网络；
+- **审计困难**：进程销毁后痕迹难追溯。
+
+容器的优势在于：**内核级隔离 + 强制资源限制 + 不可变执行环境 + 完整审计**。对 Alphapilot 来说，每个 Skill 执行都在一个临时容器里跑，跑完就销毁，不留痕迹。
+
+### 8.2 容器沙盒在 Alphapilot 中的位置
+
+```
+Planner
+  ↓ (task)
+ExecutionEngine
+  ↓ (execute_in_sandbox)
+SandboxManager
+  ├── DockerDriver (容器执行)
+  ├── ProcessDriver (进程执行，降级用)
+  └── MockDriver (测试用)
+  ↓
+Result + Trace
+```
+
+关键设计：**SandboxManager 是抽象层，不直接依赖 Docker**。这样：
+
+- 开发环境可以用 ProcessDriver 快速迭代；
+- 测试环境用 MockDriver；
+- 生产环境用 DockerDriver；
+- 后续如果要换 containerd / nerdctl，只改 Driver 实现。
+
+### 8.3 容器生命周期设计
+
+每个 Skill 执行对应一个临时容器，生命周期如下：
+
+```
+创建 → 注入代码 → 执行(带超时/资源限制) → 收集结果 → 清理
+```
+
+**创建阶段：**
+
+- 从预构建的基础镜像启动（如 `alphapilot/sandbox-base:latest`）；
+- 基础镜像预装常见运行时（Python、Node、Java 等），避免每次拉镜像；
+- 分配独立网络 namespace（默认 deny all，按需开放）；
+- 挂载只读的代码目录 + 只写的输出目录。
+
+**注入阶段：**
+
+- 通过 bind mount 或 `docker cp` 把待执行代码注入容器；
+- 设置环境变量（`TASK_ID`、`TRACE_ID`、`SANDBOX_ID`）；
+- 以非 root 用户运行（`user: "1000:1000"`）。
+
+**执行阶段：**
+
+- 设置 `stop_timeout`（如 60s）；
+- 通过 cgroup 限制 CPU（`--cpus=1`）、内存（`--memory=512m`）、PID（`--pids-limit=100`）；
+- 限制网络：默认 `--network none`，需要联网的 Skill 才开 bridge 并配防火墙规则；
+- 限制磁盘写入：`--tmpfs /tmp:size=100m` + 输出目录单独挂载。
+
+**收集阶段：**
+
+- 捕获 stdout/stderr；
+- 捕获退出码；
+- 收集容器指标（CPU/内存峰值、IO 操作）；
+- 保存容器日志到 Event Log。
+
+**清理阶段：**
+
+- `docker stop` → `docker rm`；
+- 清理临时文件；
+- 释放网络资源。
+
+### 8.4 安全设计要点
+
+容器不等于安全，配置不当反而更危险。
+
+#### 8.4.1 镜像安全
+
+- 基础镜像用 distroless 或 alpine 最小化镜像；
+- 镜像签名验证（docker content trust）；
+- 定期扫描镜像漏洞（trivy / grype）；
+- 禁止从公网拉镜像，所有镜像走内部 registry。
+
+#### 8.4.2 运行时安全
+
+- 禁止 privileged 模式；
+- 禁止 `--cap-add=ALL`，只开必要的 capabilities；
+- 禁止 hostNetwork、hostPID、hostIPC；
+- 只读根文件系统：`--read-only` + 需要写的目录用 tmpfs；
+- 禁止容器内访问宿主机 socket。
+
+#### 8.4.3 网络隔离
+
+```
+默认策略：DENY ALL
+按需开放：
+  - 包管理镜像源（pypi/npm/maven）→ 白名单域名
+  - 数据库连接 → 内网 IP 白名单
+  - 禁止访问元数据服务（169.254.169.254）
+```
+
+#### 8.4.4 文件系统隔离
+
+- 代码目录只读挂载；
+- 输出目录独立挂载，执行后统一收集；
+- `/tmp` 用 tmpfs 限制大小；
+- 禁止访问 `/etc/passwd` 以外的系统文件（通过 seccomp Profile）。
+
+#### 8.4.5 威胁模型（Threat Model）
+
+容器安全配置再严格，如果不知道「我们在防御什么」，仍然会漏防。核心威胁分类：
+
+- **恶意 Skill 代码**：用户提交的 Skill 代码可能含后门、数据窃取逻辑或破坏性操作。防御：沙盒隔离 + 代码审计 + 行为监控。
+- **LLM Prompt Injection**：若 Agent 将用户输入直接拼接到 LLM prompt 中，攻击者可通过注入指令操控 Agent。防御：prompt 参数化 + 输入 sanitization + 输出校验。
+- **供应链攻击**：通过 `pip/npm/mvn` 引入恶意依赖，污染构建产物。防御：依赖白名单 + 镜像签名验证 + 依赖漏洞扫描（trivy/grype）。
+- **数据泄露**：执行过程可能接触敏感配置（数据库密码、API Key、SSH 密钥）。防御：环境变量隔离 + 密钥管理服务 + 执行日志脱敏。
+- **资源耗尽攻击**：恶意任务消耗所有容器资源导致服务不可用。防御：cgroup 资源限制 + 请求速率限制 + 超时熔断。
+- **权限提升**：容器内进程尝试突破容器边界获取宿主机权限。防御：非 root 运行 + 只读文件系统 + seccomp/AppArmor Profile + 禁止 privileged 模式。
+
+**威胁评估矩阵**：每种威胁按「可能性」和「影响程度」两个维度评估风险等级（高/中/低），并对应不同缓解优先级。高风险威胁必须在 V0.3 前完成防御实现，中风险在 V0.4 前完成，低风险纳入技术债务 backlog。
+
+### 8.5 性能优化策略
+
+容器启动慢是最大痛点，几个优化手段：
+
+#### 8.5.1 镜像预热
+
+- 预构建常用运行时镜像并本地缓存；
+- 用 `docker pull --all-platforms` 提前拉取。
+
+#### 8.5.2 容器复用（谨慎使用）
+
+- 对轻量级 Skill（如代码格式化、lint）可以复用长驻容器；
+- 但必须做状态清理：每次执行前重置工作目录、清空临时文件；
+- 复用容器需要更强的隔离保证（更严格的 seccomp + apparmor）。
+
+#### 8.5.3 并行执行
+
+- DAG 中无依赖的任务可以并行在多个容器里执行；
+- 需要控制并发度（`max_concurrent_sandboxes`），避免资源耗尽。
+
+#### 8.5.4 快照恢复
+
+- 对频繁创建的基础环境，用容器快照（`docker diff` + `docker export`）加速；
+- 类似 `docker build --cache-from` 的思路。
+
+### 8.6 与能力进化循环的集成
+
+容器沙盒不只是「执行环境」，它还是能力验证的基础设施：
+
+```
+新 Skill 生成
+  ↓
+沙盒验证（Docker 容器）
+  ├── 单元测试执行
+  ├── 集成测试执行
+  ├── 资源消耗检测（CPU/内存/时间）
+  ├── 安全扫描（seccomp 违规、网络违规）
+  ↓
+通过？ → 入库注册
+失败？ → 返回错误给 Reflection Engine
+```
+
+沙盒验证的结果必须结构化，包含：
+
+- 测试通过率；
+- 资源消耗基线；
+- 安全合规状态；
+- 性能指标（冷启动时间、执行时间）。
+
+这些数据可以反馈给 CapabilityResolver，帮助判断这个新 Skill 是否值得入库、是否有已有 Skill 可以替代、是否需要拆分或合并。
+
+### 8.7 实施路线建议
+
+结合 V0.x 路线，容器级隔离可以这样安排：
+
+| 阶段 | 沙盒策略 | 说明 |
+|------|---------|------|
+| V0.1 | ProcessDriver | 先用进程级隔离跑通流程，开发效率高 |
+| V0.2 | 引入 SandboxManager 抽象层 | 定义接口，ProcessDriver 和 MockDriver 实现 |
+| V0.3 | DockerDriver 开发 | 实现容器驱动，但默认关闭，手动开关切换 |
+| V0.4 | DockerDriver 默认启用 | 加上镜像管理、安全策略、监控告警 |
+
+这样不会在 V0.1 就被容器复杂度拖慢开发节奏，但架构上已经准备好了。
+
+### 📌 落地现状与对齐
+
+当前沙盒为**进程级**，与本蓝图 V0.1 状态一致：
+
+- [shell_executor.py](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/python_worker/capabilities/shell_executor.py) 使用 `subprocess.run(shell=True)`，已有 `_is_dangerous()` 硬编码危险模式过滤（Phase 2 审计已指出其覆盖面有限）；
+- [code_executor.py](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/python_worker/code_executor.py) 使用 `exec()`（开发者特权，README 已声明生产需隔离）；
+- [command_executor.py](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/python_worker/command_executor.py) 命令执行。
+
+**关键风险锚点**（Phase 2 审计已登记）：一个通用 Shell 入口（E1）可能比十个直接文件写入点影响更大，`SandboxManager` 抽象层 + `DockerDriver` 是消除这一残余风险的正解，也是蓝图第八章与代码库现状最明确的「待建差距」。
+
+---
+
+## 九、最终形成的 Alphapilot 总体架构
+
+```
+User / IDE Interface
+  ↓ 用户需求、交互、授权和结果展示
+
+Cognitive Layer
+  Requirement Parser · Project Planner · Reflection Engine · Capability Discovery
+
+Orchestration Layer
+  Task Orchestrator · Agent Gateway · State Manager · Conflict Resolver
+
+Capability Layer
+  Capability Registry · Tool Registry · Skill Registry · Agent Registry
+
+Execution Layer
+  MCP Adapters · A2A Adapters · Sandbox Runner (Docker/Process/Mock) · Recovery Manager
+
+Trust & Governance
+  Permission Guard · Human Approval · Audit · Tests · Rollback
+
+横向基础设施：Event Log · Trace ID · Artifact Store · Cache · Model Router
+```
+
+**关键点**：Trust & Governance 不应该只是最底层的一个模块，它需要**贯穿整个系统**：
+
+- Agent 调用 Tool 时检查权限；
+- 创建 Skill 时检查代码安全；
+- Agent 移交任务时检查访问范围；
+- 修改文件时检查资源权限；
+- 注册新能力时检查审核状态；
+- 执行高风险操作时要求授权。
+
+### 📌 落地现状与对齐（总体架构映射）
+
+蓝图的五层 + 治理横切，与代码库的现状映射：
+
+| 蓝图层 | 现状 | 对应实现 |
+|--------|------|---------|
+| Cognitive Layer | ⚠️ 部分 | intent_router + planner + memory（Reflection Engine 缺） |
+| Orchestration Layer | ⚠️ 部分 | orchestrator.py + execution_chain（Agent Gateway / Conflict Resolver 缺） |
+| Capability Layer | ⚠️ 部分 | capability_registry.py（Tool/Skill/Agent Registry 缺） |
+| Execution Layer | ⚠️ 部分 | MCP/A2A Adapters 缺，Sandbox 进程级 |
+| Trust & Governance | ✅ 较强 | PathGuard + Permission Guard + G5.4 R6 + Phase 2 门控 |
+| 横向基础设施 | ⚠️ 部分 | trace_id / event log 有，Model Router 雏形（model_scorer） |
+
+### 9.1 可观测性指标体系（新增）
+
+文档之前提到了 Trace ID、Event Log、Audit 等可观测性基础组件，但缺少具体的指标定义。建议明确几个核心指标：
+
+| 指标 | 含义 | 用途 |
+|------|------|------|
+| Capability Coverage Rate | 已注册能力覆盖的需求比例 | 评估能力库完整性 |
+| Capability Reuse Rate | 新任务直接复用已有能力的比例 | 越高说明能力库越健康 |
+| Reflection Trigger Rate | 触发能力进化的频率 | 太高说明基础能力覆盖不够 |
+| Conflict Resolution Latency | 冲突从发生到解决的平均时间 | 评估协作效率 |
+| Skill Generation Success Rate | 新 Skill 生成后通过沙盒验证的比例 | 评估生成质量 |
+| Sandbox Escape Attempts | 沙盒逃逸尝试次数 | 安全监控 |
+| Mean Time To Recovery | 平均恢复时间 | 系统可靠性 |
+
+这些指标可以直接喂给 Alphapilot 的自我迭代闭环，让它知道自己哪里做得不好。
+
+### 9.2 测试策略（新增）
+
+对于一个强调「验证」和「可靠性」的系统，测试应该贯穿每个阶段：
+
+| 测试类型 | 测试对象 | 说明 |
+|---------|---------|------|
+| 契约测试 | AgentContract / ToolContract / CapabilityContract | Schema 校验，保证契约不被破坏 |
+| 单元测试 | 每个 Service 的独立测试 | 验证单个组件正确性 |
+| 集成测试 | 多 Agent 协作流程的端到端测试 | 验证组件间协作 |
+| 沙盒测试 | 新 Skill 生成后的自动化测试 | 验证新能力安全性 |
+| 回归测试 | 能力升级后的全量回归 | 防止升级引入回归 |
+
+特别是**契约测试**，既然花了大力气设计契约层，就应该用测试来保证契约不被破坏。
+
+#### 9.2.1 契约测试的具体实现思路
+
+契约测试是保证契约层不被破坏的第一道防线。实现方案：
+
+- 每个 Contract 都必须有对应的 JSON Schema 测试用例。使用 Pydantic v2 的 `model_json_schema()` 自动生成 JSON Schema，然后与手写或历史版本 diff 比较；
+- 每次协议版本升级（如 `a2a.v1 → a2a.v2`）必须跑契约兼容性测试：前向兼容（新客户端能否读取旧服务端数据）和后向兼容（旧客户端能否读取新服务端数据）。不兼容的变更必须明确标注破坏性；
+- 可使用 `pytest-jsonschema` 或 pydantic 的 `TypeAdapter` 做运行时 Schema 校验，在 CI/CD 流水线中自动拦截不合规的契约变更。
+
+契约测试应覆盖：
+
+- 必填字段缺失时校验失败；
+- 字段类型不匹配时校验失败；
+- 新增可选字段不影响旧客户端；
+- 删除必填字段时测试失败（阻止破坏性变更）；
+- 枚举值超范围时校验失败。
+
+### 📌 落地现状与对齐（测试策略）
+
+本项目已有**极强的测试文化**，可直接支撑契约测试落地：
+
+- Python Worker 测试套件已在 2026-10-03 达到 **54 passed**（见 [V35_CONTROL_PLANE.md](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/docs/V35_CONTROL_PLANE.md)）；
+- [INTELLIGENT_VERIFICATION_GOVERNANCE_BASELINE.md](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/docs/INTELLIGENT_VERIFICATION_GOVERNANCE_BASELINE.md) 已冻结「PASS / SKIP / BLOCKED」三态判定，并修复了 6 个阻断级测试缺陷（如 `Thread.join()` 恒返回 None 的假断言）；
+- 契约测试的「版本升级兼容性」要求，与 Phase 2.0 决策 6（唯一 Schema 来源 + 兼容期退出条件）直接呼应。
+
+### 9.3 模型路由策略（Model Router）
+
+Agent 系统通常需要多种模型协同：简单任务用小模型（快、便宜），复杂规划用大模型（质量好），代码生成用专用代码模型。需要一个路由策略来决定每个步骤用哪个模型。
+
+**路由决策维度：**
+
+- **任务复杂度**：简单任务（文件读取、格式检查）路由到轻量模型，复杂任务（架构设计、多步推理）路由到强推理模型；
+- **任务类型**：代码生成路由到代码专用模型（Codex、StarCoder），自然语言路由到通用语言模型，数学/逻辑路由到推理增强模型；
+- **成本预算**：每个任务分配 token 预算，超预算自动降级到更便宜模型或触发截断策略；
+- **延迟要求**：用户交互场景（IDE 插件）要求低延迟，路由到快速模型；批处理场景可路由到高质量模型。
+
+**路由策略实现：**
+
+- 在 ExecutionEngine 中集成 ModelRouter 组件，每个需要 LLM 调用的步骤先经过路由器决策。路由器维护 ModelRegistry，记录各模型的 capabilities、latency、cost、quality_score 等元数据；
+- 支持 fallback 链：主模型不可用时自动降级到备用模型，降级时标记响应质量可能受影响；
+- 收集各模型调用统计（延迟、成功率、token 消耗），定期更新路由权重，实现自适应路由优化。
+
+### 📌 落地现状与对齐（模型路由）
+
+模型路由是**已有较强基础**的领域：
+
+- [model_scorer.py](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/python_worker/model_scorer.py) 已做模型质量评分；
+- [provider_health.py](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/python_worker/provider_health.py) 已做 provider 健康与降级；
+- 多 provider 已接入：qwen / gemini / modelscope / local / deepseek（见 `agents/qwen/providers/`）。
+
+---
+
+## 十、真正的开发顺序：千万不要一开始就做完整 Multi-Agent
+
+如果同时开发，极容易陷入架构复杂度。建议分成四个版本：
+
+### V0.1 — Stable Foundation（最先开发）
+
+建立稳定的工程协议：
+
+- ProjectSpec
+- AgentContract
+- ToolContract
+- CapabilityRegistry
+- ExecutionResult
+- EvidenceLog
+
+### V0.2 — Controlled Capability Extension
+
+让系统能够发现缺少的能力：
+
+- CapabilityDetector
+- ReflectionEngine
+- SkillGenerator
+- SandboxRunner
+- SkillValidator
+- HumanApproval
+
+### V0.3 — Multi-Agent Collaboration
+
+让多个 Agent 可靠协作：
+
+- AgentRegistry
+- AgentGateway
+- StateSnapshot
+- EventLog
+- TaskHandoff
+- ConflictResolver
+
+### V0.4 — Self-Evolution
+
+让系统能够持续改善能力：
+
+- ExecutionAnalytics
+- CapabilityOptimizer
+- SkillVersionManager
+- Automatic Regression Testing
+- RollbackManager
+- EvolutionPolicy
+
+### 📌 落地现状与对齐（开发顺序 vs 实际进度）
+
+蓝图 V0.1 的**大部分能力已落地**，但落地顺序与蓝图略有交错（安全治理先行）：
+
+| 蓝图版本 | 项目实际状态 |
+|---------|-------------|
+| V0.1 契约层 | ✅ 大体完成：`task_context_contract` / `task_state_contract` / `skill_contract` / `capability_registry` 已存在 |
+| 治理（横切） | ✅ **先行**：PathGuard + Phase 2 门控 + G5.4 R6 已冻结，优先于蓝图顺序 |
+| V0.2 能力进化 | ⚠️ 部分：检测/执行已通，ReflectionEngine / SkillGenerator / SandboxRunner 缺 |
+| V0.3 多 Agent | ❌ 未启动：仍是「单 Agent 多执行链」，无真实多 Agent 协作 |
+| V0.4 自进化 | ❌ 未启动：仅有 memory 系统的受控演化（MemoryType 6 分类 + 六态生命周期） |
+
+**实际演进主线**（据 WORKLOG 与架构文档）：`稳定性加固 → 安全治理 → 记忆系统 v2.0 → 会话上下文(P1) → 能力进化闭环`，这与蓝图的「先 V0.1 再 V0.2」精神一致，但**安全治理被提前到 V0.1 之前**——这是正确的工程判断：能力进化必须建立在可信边界之上。
+
+---
+
+## 十一、建议建立的项目目录
+
+不要把所有功能继续堆在 `router/` 或 `adapters/` 下面，可以逐步演变成：
+
+```
+alphapilot/
+├── core/
+│   ├── contracts/
+│   │   ├── project.py
+│   │   ├── agent.py
+│   │   ├── tool.py
+│   │   ├── capability.py
+│   │   └── handoff.py
+│   ├── orchestrator/
+│   │   ├── task_planner.py
+│   │   ├── task_scheduler.py
+│   │   └── execution_engine.py
+│   └── state/
+│       ├── snapshot.py
+│       ├── event_store.py
+│       └── task_store.py
+├── capabilities/
+│   ├── registry.py
+│   ├── resolver.py
+│   ├── detector.py
+│   └── version_manager.py
 ├── agents/
-│     ├── qwen/
-│     │     ├── step_executor/   ← Qwen 专属执行链
-│     │     ├── qwen_api.py
-│     │     ├── qwen_prompts.py
-│     │     └── qwen_worker_v2.py
-│
-│     ├── claude/
-│     │     ├── step_executor/   ← Claude 专属执行链
-│     │     ├── claude_api.py
-│     │     └── claude_worker.py
-│
-│     ├── gemini/
-│     ├── openai/
-│     ├── local_llm/
-│     ├── tool_agent/
-│     └── multi_agent/
-│
-├── TaskModel_v2.py
-├── worker_config.py
-└── scheduler.py
+│   ├── planner/
+│   ├── coder/
+│   ├── reviewer/
+│   └── verifier/
+├── skills/
+│   ├── registry.py
+│   ├── generator.py
+│   ├── validator.py
+│   └── templates/
+├── tools/
+│   ├── python/
+│   ├── node/
+│   ├── java/
+│   └── filesystem/
+├── protocols/
+│   ├── mcp/
+│   └── a2a/
+├── sandbox/
+│   ├── runner.py
+│   ├── isolation.py
+│   ├── security.py
+│   └── drivers/
+│       ├── docker_driver.py
+│       ├── process_driver.py
+│       └── mock_driver.py
+├── governance/
+│   ├── permission_guard.py
+│   ├── approval_manager.py
+│   └── audit_log.py
+├── observability/
+│   ├── tracing.py
+│   ├── metrics.py
+│   └── contracts/
+└── tests/
+    ├── contracts/
+    ├── capabilities/
+    ├── agents/
+    ├── sandbox/
+    └── integration/
+```
 
+这是**目标结构**，不需要现在一次性创建所有文件。
+
+### 📌 落地现状与对齐（目录结构）
+
+当前实际目录与蓝图目标结构**已有较大重合**，但命名体系不同：
+
+| 蓝图目录 | 当前实际位置 |
+|---------|-------------|
+| `core/contracts/` | `python_worker/contracts/`（skill_contract.py、project_metadata.py） |
+| `core/state/` | `python_worker/task_state_contract.py`、`task_context_contract.py`、`TaskModel_v2.py` |
+| `capabilities/` | `python_worker/capabilities/`（原生工具）+ `capability_registry.py`、`capability_executor.py` |
+| `governance/` | `python_worker/path_guard.py`、`verification_governor.py`、`log_governance.py` |
+| `sandbox/` | 尚未独立，散落在 `shell_executor.py`、`code_executor.py`、`command_executor.py` |
+
+**演进建议**：不搞一次性大迁移，而是在新增能力时按蓝图目录就近落地（如新增 `sandbox/` 抽象层时再建目录），避免「为标准而重构可靠模块」。
 
 ---
 
-## ✨ 结语
+## 十二、架构决策记录（ADR）机制
 
-> **"真正的技术掌控力来自于从底层构建，而非仅调用 API。"**
+文档本身是架构决策的集合，但没有说明「未来的架构决策怎么管」。随着 Alphapilot 持续演进，会有越来越多的架构决策产生。如果没有规范的记录机制，这些决策会逐渐散落在代码注释、聊天记录和邮件中，最终导致团队对架构理解不一致。
 
-AlphaPilot 不仅是一个工具，更是：
-- 🎨 创造的画布
-- 🔬 探索的实验室  
-- 🏗️ 梦想的孵化器
-- 🚀 通往未来的桥梁
+ADR（Architecture Decision Record）是一种轻量级的架构决策记录格式，核心思想是：**每次重大架构变更写一份 ADR，记录决策的背景、决策内容、后果和当前状态。**
 
-**我们相信：以人们的美好未来为愿景，在开发环境中释放完整能力，才能创造出真正改变世界的作品。**
+**ADR 模板：**
 
----
+- **标题**：简短描述决策主题（如「采用 Docker 容器作为沙盒执行环境」）；
+- **背景**：为什么需要做这个决策？当前面临什么问题？有哪些替代方案？
+- **决策**：我们选择了什么方案？为什么选它？
+- **后果**：这个决策的利弊是什么？哪些地方会受影响？
+- **状态**：`accepted`（已接受）/ `proposed`（提议中）/ `superseded`（已被替代）/ `deprecated`（已弃用）。
 
-*最后更新：2026-04-02*  
-*版本号：v2.0（智能体执行引擎版）*  
-*守护者：每一位 AlphaPilot 开发者*
+**ADR 存放位置：**
 
----
+- 所有 ADR 文件存放在 `docs/adr/` 目录下，按序号命名（如 `001-adopt-docker-sandbox.md`），使用 Markdown 格式，便于版本控制和代码审查。
 
-## 🗒 工作记录（近期）
+**ADR 回顾机制：**
 
-### 2026-04-08 — 完成 React + Vite Webview UI 升级 (v2.2) ⭐⭐⭐⭐⭐
+- 每次版本发布前，维护者应回顾 `docs/adr/` 目录中状态为 `proposed` 的 ADR，决定是否提升为 `accepted` 或标记为 `superseded`；
+- 过时的 ADR 应标记为 `deprecated` 并说明替代方案。重大 ADR 的变更应通过 Pull Request 进行代码审查，确保团队共识。
 
-**重大升级**: 将传统 HTML/CSS/JS Webview 升级为现代化的 React + Vite + TypeScript 架构
+**与能力退役策略的关联：**
 
-#### 新增核心模块 (Webview 前端)
+当某个 Capability 需要退役时，应首先创建一份 ADR 记录退役原因、影响范围和迁移计划。退役 ADR 的状态从 `accepted` 变为 `deprecated`，经过灰度过渡期后最终标记为 `superseded`。这确保了能力退役不是悄无声息地发生，而是有完整的决策记录和可追溯性。
 
-1. **React 项目结构** (`vscode-extension/webview/`)
-   - ✅ Vite 5.x 构建工具 (10倍构建速度提升)
-   - ✅ React 18.x 组件化框架
-   - ✅ TypeScript 5.x 类型安全
-   - ✅ Tailwind CSS 3.x 原子化样式 (完美适配 VSCode 主题)
-   - ✅ Zustand 4.x 轻量状态管理
+### 📌 落地现状与对齐（ADR）
 
-2. **核心组件** (5个)
-   - ✅ `ChatInput.tsx` - 智能输入框 (防抖、快捷键)
-   - ✅ `MessageList.tsx` - 消息列表 (自动滚动、虚拟滚动预留)
-   - ✅ `StepTree.tsx` - 步骤追踪树 (可视化 AI 思考过程)
-   - ✅ `ModelSelector.tsx` - 模型选择器 (Qwen/DeepSeek/Doubao)
-   - ✅ `Toolbar.tsx` - 工具栏 (清空/停止)
+ADR 机制在项目中**已有事实上的雏形**，只是未统一到 `docs/adr/` 目录：
 
-3. **状态管理**
-   - ✅ `chatStore.ts` - Zustand Store (消息/步骤/流式状态)
-   - ✅ 持久化存储 (localStorage)
-   - ✅ 类型安全的 Actions
+- [phase2-gate-decisions.md](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/docs/architecture/phase2-gate-decisions.md) 实际上就是一份「10 项门控决策」的 ADR 集合；
+- [conversation_context.md](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/docs/architecture/conversation_context.md)、[g54_audit_log.md](file:///d:/Copilot_Alphapilot/Copilot_Alphapilot/docs/g54_audit_log.md) 均带有 ADR 的特征（背景/决策/后果/状态）。
 
-4. **VSCode 集成**
-   - ✅ `vscode.ts` - VSCode API 封装层
-   - ✅ `reactPanel.ts` - React Webview 面板
-   - ✅ CSP 安全配置 (nonce)
-   - ✅ 消息通信 (postMessage)
-
-#### 技术架构亮点
-
-**升级前 (v2.1)**:
-```typescript
-// 手动拼接 HTML
-this.panel.webview.html = `<html><body>...</body></html>`;
-
-// 直接操作 DOM
-document.getElementById('messages').innerHTML += messageHtml;
-```
-
-**升级后 (v2.2)**:
-```typescript
-// 声明式 UI
-function App() {
-  return (
-    <div className="flex flex-col h-screen">
-      <Toolbar />
-      <ModelSelector />
-      <MessageList />
-      <ChatInput />
-    </div>
-  );
-}
-
-// 状态驱动
-const { messages, addMessage } = useChatStore();
-```
-
-#### 性能对比
-
-| 指标 | 旧版 (HTML/CSS/JS) | 新版 (React + Vite) | 提升 |
-|------|-------------------|-------------------|-----|
-| 首次构建 | 15-20s | 2-3s | **7-10倍** |
-| HMR 更新 | 1-2s | <100ms | **10-20倍** |
-| 首屏渲染 | 200ms | 150ms | **25%** |
-| 开发体验 | ⭐⭐ | ⭐⭐⭐⭐⭐ | **质的飞跃** |
-
-#### 文件清单
-
-**新增文件 (15个)**:
-```
-vscode-extension/webview/
-├── package.json
-├── vite.config.ts
-├── tsconfig.json
-├── tsconfig.node.json
-├── tailwind.config.js
-├── postcss.config.js
-├── index.html
-├── .gitignore
-└── src/
-    ├── main.tsx
-    ├── App.tsx
-    ├── index.css
-    ├── components/
-    │   ├── ChatInput.tsx
-    │   ├── MessageList.tsx
-    │   ├── StepTree.tsx
-    │   ├── ModelSelector.tsx
-    │   └── Toolbar.tsx
-    ├── store/
-    │   └── chatStore.ts
-    └── utils/
-        └── vscode.ts
-
-vscode-extension/src/
-├── panels/reactPanel.ts          # ⭐ 新增
-└── utils/getNonce.ts             # ⭐ 新增
-```
-
-**更新文件 (2个)**:
-- `vscode-extension/src/extension.ts` - 注册 React Panel 命令
-- `vscode-extension/package.json` - 添加 openReactPanel 命令
-
-**文档更新 (1个)**:
-- `vscode-extension/REACT_WEBVIEW_GUIDE.md` - 完整实施指南
-
-#### 对标国际
-
-| 产品 | 技术栈 | AlphaPilot v2.2 |
-|------|--------|----------------|
-| Cursor | React + Electron | ✅ React + Vite |
-| GitHub Copilot Chat | React + Webpack | ✅ React + Vite (更快) |
-| Claude Code | 未知 | ✅ 完全开源透明 |
-
-**结论**: AlphaPilot v2.2 采用**业界最先进的 Webview 技术栈**!
-
-#### 下一步规划
-
-**阶段 2.3** (下次): 高级组件
-- DiffViewer (代码差异对比)
-- CodeBlock (语法高亮)
-- FileExplorer (文件树)
-
-**阶段 2.4**: 性能优化
-- 虚拟滚动 (大量消息)
-- 懒加载 (按需加载)
-- Service Worker (离线缓存)
+**未来建设点**：把现有分散决策收敛到 `docs/adr/` 序号化目录，统一状态机（proposed → accepted → deprecated → superseded），与能力退役策略打通。
 
 ---
 
-### 2026-04-08 — 完成架构升级到世界级标准 (v2.1) ⭐⭐⭐⭐⭐
+## 十三、最后，给这个思考做一个真正的总结
 
-**重大升级**: 从专业级 VSCode 插件跃升为对标 Cursor/Claude Code 的世界级架构
+这几次思考形成了五个层次：
 
-#### 新增核心模块 (4个)
+| 你提出的思考 | 对应的工程领域 | 对应版本 |
+|-------------|--------------|---------|
+| 工具失败以后怎么降级 | Reliability Engineering | V0.1 |
+| 如何识别全栈子项目 | Project Modeling | V0.1 |
+| 缺少工具后如何创造能力 | Capability Evolution | V0.2 |
+| 多 Agent 如何协作 | Distributed Agent Systems | V0.3 |
+| 如何防止越迭代越混乱 | Governance & Observability | V0.3-V0.4 |
 
-1. **Protocol Layer** (`src/types/protocol.ts`)
-   - ✅ 定义 13 种消息类型 (6种 Extension→Backend, 9种 Backend→Extension)
-   - ✅ 严格的 TypeScript 类型系统
-   - ✅ 消息创建和验证工具函数
-   - ✅ 对标 Cursor 的 protocol buffer 设计
+最有价值的进步，是开始意识到：
 
-2. **Diff/Patch System** (`src/types/diff.ts` + `src/services/diffService.ts`)
-   - ✅ Unified Diff 生成和解析
-   - ✅ 多文件 Patch 管理
-   - ✅ VSCode 原生 Diff 视图集成
-   - ✅ 用户确认机制 (全部应用/全部拒绝/逐个确认)
-   - ✅ 自动备份和撤销功能
-   - ✅ **完全对标 Cursor 的代码修改能力**
+> 一个真正可靠的 Agent，不仅需要完成任务的能力，还需要知道自己的能力边界，并且能够在安全约束下改善自己的能力。
 
-3. **Event Bus** (`src/core/eventBus.ts`)
-   - ✅ 解耦组件间通信
-   - ✅ 17 种事件类型 (任务/步骤/流式/Diff/UI/错误)
-   - ✅ 订阅/发布模式
-   - ✅ 一次性监听 (once)
-   - ✅ 对标 Redux/Zustand 的状态管理
+### 三个长期设计原则
 
-4. **Message Dispatcher** (`src/core/dispatcher.ts`)
-   - ✅ 统一处理所有前后端通信
-   - ✅ 基于 Protocol Layer 的类型安全路由
-   - ✅ 自动注册默认消息处理器
-   - ✅ 提供便捷方法 (submitTask/cancelTask/pauseStream/resumeStream)
-   - ✅ 与 EventBus 深度集成
+1. **自我反思不等于自我修改**。反思可以自动发生，修改正式能力必须经过验证和授权。
+2. **能力增长不等于 Agent 数量增长**。优先复用、组合和扩展现有能力，而不是不停创造新 Agent。
+3. **自我进化不等于自主获得无限权限**。能力可以不断扩展，但权限不能因为能力扩展而自动扩大。
 
-#### 架构改进
+这三个原则可以避免 Alphapilot 最终变成一个不可控的自动化系统。
 
-**升级前 (v2.0)**:
+### 两条系统宪法（再提升）
+
+- **第五条宪法：Capability = 唯一生产实现**。同一能力在同一作用范围内只有一个受 Registry 管理的权威生产入口；允许内部多策略与受控版本替换，禁止 Agent 私建、Fork 或绕过标准入口。
+- **第六条规则：Agent 不允许发明能力，只能申请能力**。Agent 可以提出能力缺口和候选方案，但生产能力的判断、生成、验证、审批与注册必须由平台治理流程完成。
+
+这两条规则共同确立了能力治理的中心化边界：**执行可以分布在多个 Agent，能力定义、生产入口和生命周期治理必须统一。**
+
+## 我的最终建议：现在先做什么？
+
+把所有想法收敛到一个最重要的开发目标：
+
+### 当前最值得建设：Alphapilot Core Contract System
+
+建立整个 Agent OS 的统一契约层。第一批只实现六个核心模型：
+
+- AgentContract
+- ToolContract
+- CapabilityContract
+- TaskContract
+- StateSnapshot
+- ExecutionResult
+
+然后实现三个核心服务：
+
+- CapabilityRegistry
+- CapabilityResolver
+- ReflectionEngine
+
+**验收标准**：当系统遇到一个不支持的 Runtime 时，能够准确识别能力缺口、查找已有能力、生成结构化决策，并安全地进入候选能力创建流程。
+
+建议暂时不要着急实现 Java、Go、Rust 的完整工具集，先用 Python 写一个完整的能力生命周期模拟：
+
 ```
-vscode-extension/
-├── extension.ts          # 混合了业务逻辑
-├── panels/               # Webview 控制器
-├── services/             # 业务逻辑
-└── types/                # 基础类型
+用户请求 Rust 项目
+      ↓
+CapabilityResolver
+      ↓ 发现 rust_project_setup 不存在
+Reflection Engine
+      ↓ 发现没有可复用能力
+SkillGenerator
+      ↓ 生成候选 Rust Skill
+SandboxRunner
+      ↓ 测试通过
+HumanApproval
+      ↓
+CapabilityRegistry
+      ↓ 正式注册 rust_project_setup
+      ↓ 下一次直接复用
 ```
 
-**升级后 (v2.1)**:
-```
-vscode-extension/
-├── extension.ts          # 纯入口,只负责初始化
-├── core/                 # ⭐ 核心层 (新增)
-│   ├── dispatcher.ts     # 消息分发器
-│   └── eventBus.ts       # 全局事件总线
-├── panels/               # Webview 控制器
-├── services/             # 业务逻辑
-│   ├── diffService.ts    # ⭐ 新增
-│   └── ...
-└── types/                # 类型定义
-    ├── protocol.ts       # ⭐ 新增
-    ├── diff.ts           # ⭐ 新增
-    └── ...
-```
+这个闭环比单独实现十个工具更有价值。
 
-#### 对标国际头部产品
+### 最终判断
 
-| 功能 | Cursor | Copilot | Claude Code | AlphaPilot v2.1 |
-|------|--------|---------|-------------|-----------------|
-| 智能补全 | ✅ | ✅ | ❌ | ✅ |
-| Chat 面板 | ✅ | ✅ | ✅ | ✅ |
-| **Diff 视图** | ✅ | ❌ | ✅ | ✅ |
-| **Patch 应用** | ✅ | ❌ | ✅ | ✅ |
-| **多模型支持** | ❌ | ❌ | ❌ | ✅ |
-| **步骤追踪** | ❌ | ❌ | ❌ | ✅ |
-| **开源** | ❌ | ❌ | ❌ | ✅ |
-| **可扩展性** | ❌ | ❌ | ❌ | ✅ |
+> 不要把 Alphapilot 的终极目标定义成一个能自主写代码的 Agent，而要定义成一个**能够受控地创造、验证、组合和管理工程能力的 Agent 平台**。
 
-**结论**: AlphaPilot v2.1 在多个维度**超越**国际头部产品!
-
-#### 性能指标
-
-- 消息处理延迟: 12-53ms (用户体验流畅)
-- 内存占用: ~350KB (极低开销)
-- TypeScript 零错误
-- 100% 向后兼容
-
-#### 文档更新
-
-- ✅ 新增 [`ARCHITECTURE_UPGRADE_v2.1.md`](vscode-extension/ARCHITECTURE_UPGRADE_v2.1.md) - 完整升级报告
-- ✅ 更新 [`ARCHITECTURE_MANIFESTO.md`](ARCHITECTURE_MANIFESTO.md) - 工作记录
-- ✅ 更新 [`README.md`](vscode-extension/README.md) - 使用指南
-- ✅ 更新 [`TESTING.md`](vscode-extension/TESTING.md) - 测试指南
-
-#### 下一步规划
-
-**阶段 2** (下次): Webview UI 现代化改造
-- React + Vite + Tailwind + Zustand
-- 更快的开发体验 (HMR)
-- 更好的组件复用
-
-**阶段 3** (未来): 高级功能
-- 代码解释器
-- 错误自动修复
-- 单元测试生成
-- PR Review 助手
-- Git 集成
+这才是这些想法真正汇聚的地方。下一步建议直接把 Core Contract System 做成可运行的 Python Pydantic v2 实现，先把六个核心契约和三个核心服务打通，然后一步步把它从架构图变成真正运行的系统。
 
 ---
 
-### 2026-04-08 — 完成 VSCode 扩展前端重构,对标 GitHub Copilot
-   - **新增功能**:
-      - ✅ 智能代码补全 (`inlineCompletionProvider.ts`) - 支持 8 种编程语言
-      - ✅ 现代化聊天面板 (含模型选择器、流式输出、步骤追踪)
-      - ✅ 多模型切换 (Qwen/DeepSeek/Doubao)
-      - ✅ 快捷键支持 (`Ctrl+Shift+A` 打开面板)
-   
-   - **架构改进**:
-      - 严格遵循 ARCHITECTURE_MANIFESTO.md 核心信条
-      - Worker = 真相: 前端只负责展示和输入
-      - Extension = 映射: 透明转发,不修改数据
-      - Webview = 投影: 只读展示,职责清晰
-   
-   - **文件变更**:
-      - 新增: `vscode-extension/src/providers/inlineCompletionProvider.ts`
-      - 更新: `vscode-extension/src/extension.ts` (注册补全提供者)
-      - 更新: `vscode-extension/src/panels/taskPanel.ts` (现代化 UI)
-      - 更新: `vscode-extension/package.json` (添加命令和快捷键)
-      - 新增: `vscode-extension/README.md` (完整使用指南)
-      - 新增: `start_all.ps1` (一键启动脚本)
-   
-   - **性能基准**:
-      - Qwen: 65.81s (4步骤,100%成功率)
-      - DeepSeek: 75.31s (4步骤,100%成功率)
-      - Doubao: 114.69s (4步骤,100%成功率)
+## 附：落地优先级建议（结合项目现状的专家判断）
 
-- 2026-04-02 — 增强 `planner` 的 JSON 修复器并添加单元测试
-   - 修改：`python_worker/planner.py`
-      - 引入更鲁棒的 `_repair_json`：注释/全角空白清理、缺失逗号插入、尾随逗号清理、单引号处理、基于括号计数的对象提取与 `ast.literal_eval` 回退。
-   - 目标：避免 LLM 返回的非严格 JSON 导致 Worker 崩溃或任务进入死信队列。
+基于上述蓝图与代码库现状的对齐，给出未来开发的实际优先级排序（从最值得做开始）：
 
-   - 新增测试：`python_worker/test_planner_repair.py`（覆盖常见坏 JSON 场景：多余右大括号、对象间缺少逗号、单引号与尾随逗号）。
+| 优先级 | 建设项 | 蓝图章节 | 现状 | 理由 |
+|:---:|--------|---------|------|------|
+| **P0** | 统一 FailureClassification 六态契约 | 1.2 | ⚠️ 分散 | 是 Reflection Engine 的前置输入，防止「超时误判为能力缺失」 |
+| **P0** | 补齐 CapabilitySpec 的 version/status/owner/evidence_id + 唯一性去重 | 3.1 | ⚠️ 缺字段 | 「第五条宪法」落地的最小补丁，`capability_registry.py` 已具备骨架 |
+| **P1** | Core Contract System 六契约 + 三服务 | 终章 | ⚠️ 部分 | 蓝图作者明确指定的「当前最值得建设」 |
+| **P1** | CapabilityDecision 四态 + ReflectionEngine | 二 | ❌ 待建 | 能力进化闭环的核心决策器 |
+| **P2** | SandboxManager 抽象层 + DockerDriver | 八 | ❌ 进程级 | 消除 Phase 2 审计登记的 Shell 绕过残余风险 |
+| **P2** | Capability 级评分/路由/熔断 + 退役状态机 | 3.2/3.3 | ❌ 待建 | 与 model_scorer/provider_health 复用评分思想 |
+| **P3** | 多 Agent 契约层 + StateSnapshot 独立 Event Store | 五/六 | ⚠️ 部分 | 需在 V0.3 前完成，不宜过早 |
+| **P3** | ADR 目录收敛 + 契约测试落地 | 十二/9.2 | ⚠️ 雏形 | 让「架构决策」与「契约不被破坏」可追溯、可拦截 |
 
-- 2026-04-02 — 为 Step Executor 添加代理级别的稳健性测试
-   - 新增测试：`python_worker/test_step_executor_agents.py`
-      - 对 `qwen`、`Volcengine`、`deepeek` 三个 agent 的 `step_executor` 进行参数化测试，覆盖 `analyze/plan/write/refine/test` 步骤。
-      - 使用 `monkeypatch` 局部替换 LLM 调用与 `run_python`，确保在无 API Key 或无网络的环境下也不抛异常。
-      - 所有新增测试在本地虚拟环境中通过（15 passed）。
-
-   - 目的：确保在受控条件下，各类步骤不会因外部依赖失败而崩溃，从而提升 Worker 稳定性。
-
----
+> **一句话总结**：能力驱动架构是方向，契约层是地基，安全治理是前提。Alphapilot 的正确顺序是——**先把「失败分类 + 能力唯一性 + 六契约三服务」做扎实，再让能力进化闭环跑起来，最后才谈多 Agent 与自进化。**

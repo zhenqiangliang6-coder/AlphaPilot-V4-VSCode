@@ -267,3 +267,192 @@ body {
 .step-panel:hover {
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 }
+
+/* ============================================================
+   ⚡ AlphaPilot Tech 设计系统（零依赖 / Gen-Z 科技感）
+   基底：VSCode 主题变量 | 叠加：渐变光效 + 玻璃拟态 + spring 动效
+   ============================================================ */
+:root {
+  /* Accent 渐变三色 */
+  --ap-cyan: #22d3ee;
+  --ap-indigo: #818cf8;
+  --ap-fuchsia: #e879f9;
+  --ap-glow: rgba(129, 140, 248, 0.35);
+
+  /* 统一过渡曲线 */
+  --ap-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ap-ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ap-dur-fast: 180ms;
+  --ap-dur: 320ms;
+}
+
+/* ---- 玻璃拟态面板 ---- */
+.ap-glass {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.015));
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+}
+
+/* 顶部微光描边（科技感线条） */
+.ap-hairline {
+  position: relative;
+}
+.ap-hairline::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 12%;
+  right: 12%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--ap-cyan), var(--ap-indigo), var(--ap-fuchsia), transparent);
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+/* ---- 流光渐变文字（标题用）---- */
+.ap-gradient-text {
+  background: linear-gradient(90deg, var(--ap-cyan), var(--ap-indigo), var(--ap-fuchsia));
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* ---- 流光进度条 ---- */
+@keyframes ap-flow {
+  0% { background-position: 0% 50%; }
+  100% { background-position: 200% 50%; }
+}
+.ap-progress-fill {
+  background-image: linear-gradient(90deg, var(--ap-cyan), var(--ap-indigo), var(--ap-fuchsia), var(--ap-indigo), var(--ap-cyan));
+  background-size: 200% 100%;
+  animation: ap-flow 2.4s linear infinite;
+  transition: width var(--ap-dur) var(--ap-ease-out);
+}
+
+/* ---- 运行中呼吸光 ---- */
+@keyframes ap-breathe {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(129, 140, 248, 0); }
+  50% { box-shadow: 0 0 18px 2px var(--ap-glow); }
+}
+.ap-breathe {
+  animation: ap-breathe 2s var(--ap-ease-out) infinite;
+}
+
+/* ---- 状态点脉冲（running 指示）---- */
+@keyframes ap-dot-pulse {
+  0% { transform: scale(1); opacity: 0.9; }
+  100% { transform: scale(2.4); opacity: 0; }
+}
+.ap-dot {
+  position: relative;
+}
+.ap-dot::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  background: inherit;
+  animation: ap-dot-pulse 1.4s var(--ap-ease-out) infinite;
+}
+
+/* ---- Shimmer 骨架屏 ---- */
+@keyframes ap-shimmer {
+  0% { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+.ap-shimmer {
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.05) 25%, rgba(255, 255, 255, 0.13) 37%, rgba(255, 255, 255, 0.05) 63%);
+  background-size: 800px 100%;
+  animation: ap-shimmer 1.4s linear infinite;
+  border-radius: 6px;
+}
+
+/* ---- 流式光标（terminal 风格 steps 闪烁 + 渐变微光）---- */
+@keyframes ap-caret {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+.ap-cursor {
+  display: inline-block;
+  width: 8px;
+  height: 1.05em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  border-radius: 2px;
+  background: linear-gradient(180deg, var(--ap-cyan), var(--ap-indigo));
+  box-shadow: 0 0 8px var(--ap-glow);
+  animation: ap-caret 1s steps(1) infinite;
+}
+
+/* ---- stagger 入场（延迟由 inline --d 控制）---- */
+@keyframes ap-rise {
+  from { opacity: 0; transform: translateY(10px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.ap-rise {
+  animation: ap-rise 0.5s var(--ap-ease-out) backwards;
+  animation-delay: var(--d, 0ms);
+}
+
+/* ---- 高度自适应展开/折叠（grid-rows 技巧，零依赖）---- */
+.ap-collapse-grid {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows var(--ap-dur) var(--ap-ease-out);
+}
+.ap-collapse-grid.open {
+  grid-template-rows: 1fr;
+}
+.ap-collapse-grid > .ap-collapse-inner {
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* ---- 卡片退场（FileOps 应用/放弃时）---- */
+@keyframes ap-exit-fade {
+  to { opacity: 0; transform: translateY(8px) scale(0.98); }
+}
+.ap-exit {
+  animation: ap-exit-fade 0.28s var(--ap-ease-out) forwards;
+  pointer-events: none;
+}
+
+/* ---- 按钮按压反馈 ---- */
+.ap-press {
+  transition: transform var(--ap-dur-fast) var(--ap-ease-spring), box-shadow var(--ap-dur) var(--ap-ease-out), filter var(--ap-dur) var(--ap-ease-out);
+}
+.ap-press:active {
+  transform: scale(0.96);
+}
+
+/* ---- 等宽数字（耗时/进度徽章）---- */
+.ap-tabular {
+  font-variant-numeric: tabular-nums;
+  font-family: 'Consolas', 'SF Mono', 'Menlo', monospace;
+}
+
+/* ---- Toast 进度条 ---- */
+@keyframes ap-toast-bar {
+  from { transform: scaleX(1); }
+  to { transform: scaleX(0); }
+}
+
+/* ---- 无障碍：尊重系统减少动效偏好 ---- */
+@media (prefers-reduced-motion: reduce) {
+  .ap-rise,
+  .ap-shimmer,
+  .ap-breathe,
+  .ap-cursor,
+  .ap-progress-fill,
+  .ap-dot::after,
+  .ap-exit {
+    animation: none !important;
+  }
+  .ap-collapse-grid {
+    transition: none;
+  }
+  .ap-press:active {
+    transform: none;
+  }
+}

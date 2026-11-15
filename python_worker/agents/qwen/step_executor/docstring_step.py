@@ -9,12 +9,51 @@
 # - 支持流式输出
 # ---------------------------------------------------------
 
+import ast
 import os
 from .utils import extract_code
 from .prompts import docstring_prompt
+from .verification_governor import (
+    _is_docstring_only_change,
+    _extract_function_names,
+    _extract_class_names,
+    _extract_import_names,
+    _extract_decorator_names,
+)
 from ....file_ops import create_file_op, filter_valid_file_ops, get_python_files, merge_file_ops
 from ....worker_config import create_event, stream_start, stream_chunk, stream_end
 from ..qwen_api import call_qwen_with_persona, call_llm, call_llm_with_persona
+
+
+def _is_docstring_only(original_code: str, documented_code: str) -> bool:
+    """结构守护：确认 LLM 输出仅在原代码上新增/修改 docstring，未改动任何代码结构。
+
+    docstring 步骤的 LLM 可能「重写代码」而非「仅加 docstring」（例如丢失
+    OrderItem 类 / OrderStatus 枚举、改变字段与函数签名、生成
+    raise NotImplementedError 占位）。这类输出必须拒绝，否则会把正确代码覆盖成
+    退化版本。复用 verification_governor 的 `_is_docstring_only_change`
+    （剥离所有 docstring 后 AST 逐节点对比）来实现零成本守护。
+    """
+    try:
+        old_tree = ast.parse(original_code)
+        new_tree = ast.parse(documented_code)
+    except (SyntaxError, ValueError, TypeError):
+        return False
+
+    old_names = (
+        _extract_function_names(old_tree)
+        | _extract_class_names(old_tree)
+        | _extract_import_names(old_tree)
+        | _extract_decorator_names(old_tree)
+    )
+    new_names = (
+        _extract_function_names(new_tree)
+        | _extract_class_names(new_tree)
+        | _extract_import_names(new_tree)
+        | _extract_decorator_names(new_tree)
+    )
+
+    return _is_docstring_only_change(old_tree, new_tree, old_names, new_names)
 
 
 def run_docstring_step(step, context, events, task_id=None):
@@ -85,6 +124,13 @@ def run_docstring_step(step, context, events, task_id=None):
             
             if documented_code:
                 compile(documented_code, path, "exec")
+                # ⭐ 结构守护：只接受「仅添加 docstring」的输出。
+                # LLM 若在添加 docstring 时改动了类/枚举/函数签名/导入等结构，
+                # 一律拒绝，保留原代码，防止正确实现被覆盖成退化版本。
+                if not _is_docstring_only(content, documented_code):
+                    raise ValueError(
+                        "结构守护拒绝：LLM 输出改动了代码结构（非纯 docstring 变更）"
+                    )
                 results.append({
                     "path": path,
                     "original": content,

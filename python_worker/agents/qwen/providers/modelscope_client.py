@@ -1,203 +1,368 @@
 # -*- coding: utf-8 -*-
 # providers/modelscope_client.py
 # ---------------------------------------------------------
-# ModelScope LLMClient 适配器（v2.1 — 动态 max_tokens + 多文件预算估算）
-# - 模型降级链：环境变量配置，按顺序自动降级
-# - 网络重试：3 次 + [2,4,8]s 指数退避
-# - 动态 max_tokens：根据 prompt 中 # FILE: 块数估算输出预算，避免截断
-# - Qwen thinking 自动关闭：长 prompt 响应从 >120s 降至 ~30s
+# ModelScope (魔搭) LLMClient 适配器
+#
+# 2026-11-14 事后核查纠错（重要）：
+#   ModelScope API-Inference 是**免费**的开发者服务，用「魔粒」积分抵扣调用
+#   （轻量 0.5 / 主流 1 / 旗舰 2 魔粒每次），每日登录发放 200 魔粒 + 绑定
+#   阿里云 50 魔粒，短期魔粒 24h 过期、每日 0 点（UTC+8）重置。
+#   `429 insufficient balance` = **免费魔粒额度不足**，不是账户欠费，
+#   也没有充值入口。社区实测还记载：突发/单分钟限流会把 429 误报为
+#   `insufficient balance`。两者都可恢复。
+#   旧版把它当成「账户级不可恢复」永久熔断（进程内不恢复），是方向性错误。
+#
+# 本版策略：
+#   * 429 balance → 先做 1 次 2s 退避验证（排除限流误报）；
+#     两次都失败才进入 provider_health 的 **带 TTL 冷却**，到期自动半开。
+#   * 冷却期间停止遍历 6 个降级模型（额度耗尽时换模型无意义），
+#     由 qwen_api 跨 Provider 降级到 DashScope 接管。
+#   * 401/402/403 quota 才是真不可恢复，永久熔断。
+#
+# 契约边界：密钥只从 os.environ 读取，绝不落盘。
 # ---------------------------------------------------------
 
-import json
 import os
 import time
 from pathlib import Path
-from typing import Generator, List
+from typing import Generator
 
 import requests
 from dotenv import load_dotenv
 
 from ..step_executor.interfaces import LLMClient
+from ....provider_health import is_open as _provider_circuit_open
+from ....provider_health import reason as _provider_circuit_reason
+from ....provider_health import trip_if_fatal as _trip_if_fatal
 
 load_dotenv(Path(__file__).resolve().parents[3] / ".env")
 
-# ============================================================
-# 网络重试策略（对齐 qwen_client.py 的 _is_network_error + _call_with_retry）
-# ============================================================
-_NETWORK_RETRY_MAX = 3
-_NETWORK_RETRY_DELAYS = [2, 4, 8]
+_NETWORK_RETRY_MAX = 2
+_NETWORK_RETRY_DELAYS = [1, 2]
+
+# 429 insufficient balance 有可能是「单分钟限流被误报成余额不足」。
+# 按社区实测建议做 1 次短退避验证：自愈了就继续用，没自愈才冷却。
+# 用环境变量可关闭（MODELSCOPE_QUOTA_VERIFY=0），便于离线契约测试。
+_QUOTA_VERIFY_DELAY_SEC = 2.0
+_QUOTA_VERIFY_MAX = 1
+
+# ModelScope 深度思考关闭参数（开源 Qwen3 官方 chat_template_kwargs 口径）
+_THINK_OFF = {"chat_template_kwargs": {"enable_thinking": False}}
+
+# 代理熔断：MODELSCOPE_PROXY_URL 只是可选加速项，不是必需组件。
+# 一旦探测到不可用，冷却期内不再重复尝试，避免每次 LLM 调用都先白等一次连接。
+# G10.29：旧实现是进程内永久布尔，一次 DNS 抖动就永远放弃代理；改为
+# 带 TTL 的冷却（默认 300s），到期自动半开，长驻 Worker 可自愈。
+_PROXY_CIRCUIT_OPENED_AT = None
+_DEFAULT_PROXY_COOLDOWN_SEC = 300.0
+
+# G10.28: 多账号 key 池。魔搭免费魔粒按账号独立计量，单 key 耗尽时
+# 旧实现直接熔断整个 Provider，把「一个账号没额度」误判成「平台不可用」。
+# 池内顺序即优先级；一旦切到后续 key，本进程后续调用都沿用该 key，
+# 直到它也耗尽（进程重启后回到链首，届时额度可能已恢复）。
+_KEY_ENV_NAMES = (
+    "MODELSCOPE_API_KEY",
+    "MODELSCOPE_API_KEY_A",
+    "MODELSCOPE_API_KEY_B",
+    "MODELSCOPE_API_KEY_C",
+)
+
+
+def _proxy_cooldown_sec() -> float:
+    raw = (os.getenv("MODELSCOPE_PROXY_COOLDOWN_SEC") or "").strip()
+    if not raw:
+        return _DEFAULT_PROXY_COOLDOWN_SEC
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return _DEFAULT_PROXY_COOLDOWN_SEC
+
+
+def _proxy_circuit_open() -> bool:
+    """代理是否仍在熔断冷却期；到期自动半开。"""
+    global _PROXY_CIRCUIT_OPENED_AT
+    if _PROXY_CIRCUIT_OPENED_AT is None:
+        return False
+    if time.monotonic() - _PROXY_CIRCUIT_OPENED_AT >= _proxy_cooldown_sec():
+        _PROXY_CIRCUIT_OPENED_AT = None
+        print("[ModelScope] 代理熔断冷却到期，重新纳入路径候选")
+        return False
+    return True
+
+
+def _open_proxy_circuit():
+    global _PROXY_CIRCUIT_OPENED_AT
+    _PROXY_CIRCUIT_OPENED_AT = time.monotonic()
+
+
+def _is_quota_429(response) -> bool:
+    """是否为「免费魔粒额度不足」型 429（可能只是限流误报）。"""
+    try:
+        if response.status_code != 429:
+            return False
+        low = (response.text or "").lower()
+        return ("balance" in low or "insufficient_quota" in low)
+    except Exception:
+        return False
+
+
+def _quota_verify_enabled() -> bool:
+    return (os.getenv("MODELSCOPE_QUOTA_VERIFY", "1") or "1").strip() != "0"
+
+
+def _maybe_trip_account_circuit(response) -> bool:
+    """按错误性质标记 Provider 状态，返回是否触发了熔断/冷却。
+
+    * 401 / 402 / 403 quota → 真鉴权/付费故障，永久熔断（FATAL）。
+    * 429 insufficient balance → 免费魔粒额度耗尽或限流误报，进入带 TTL 的
+      冷却（QUOTA），到期自动半开重试，无需重启 Worker。
+    * 普通 429 限流 → 不熔断，交给调用方退避。
+
+    兼容旧函数名与调用点；内部分类由 provider_health.classify_response() 完成。
+    """
+    return _trip_if_fatal("modelscope", response)
+
+
+def _verify_quota_response(response, post_fn):
+    """429 balance 可能是单分钟限流被误报成「余额不足」。
+
+    退避 2 秒重发一次：恢复了就当瞬时抖动继续用；仍失败才交给
+    provider_health 进入带 TTL 的冷却。绝不遍历 6 个降级模型去放大限流。
+    """
+    if not (_is_quota_429(response) and _quota_verify_enabled()):
+        return response
+    for _ in range(_QUOTA_VERIFY_MAX):
+        time.sleep(_QUOTA_VERIFY_DELAY_SEC)
+        try:
+            response.close()
+        except Exception:
+            pass
+        try:
+            response = post_fn()
+        except Exception:
+            break
+        if not _is_quota_429(response):
+            print("[ModelScope] 429 疑似限流误报，退避重试后恢复，继续使用该模型")
+            break
+    return response
 
 
 def _is_network_error(exc: Exception) -> bool:
+    """判断是否为瞬时网络错误（值得在同模型下换直连路径重试）。"""
     name = type(exc).__name__
     if name in ("SSLEOFError", "SSLError", "ReadTimeout", "ConnectionError",
-                 "ConnectionResetError", "RemoteDisconnected", "ProtocolError"):
+                "ConnectionResetError", "RemoteDisconnected", "ProtocolError"):
         return True
     msg = str(exc).lower()
-    if "timed out" in msg or "timeout" in msg or "connection" in msg:
-        return True
-    if "eof occurred in violation of protocol" in msg:
-        return True
-    return False
+    return any(k in msg for k in ("timed out", "timeout", "connection", "refused"))
 
 
-def _call_with_retry(fn, max_retries=_NETWORK_RETRY_MAX):
-    last_error = None
-    for attempt in range(max_retries + 1):
-        try:
-            return fn()
-        except Exception as e:
-            last_error = e
-            if attempt < max_retries and _is_network_error(e):
-                delay = _NETWORK_RETRY_DELAYS[attempt]
-                print(f"[ModelScope] 网络波动 ({type(e).__name__})，{delay}s 后重试 "
-                      f"(attempt {attempt + 1}/{max_retries})...")
-                time.sleep(delay)
-            else:
-                raise
-    raise last_error
-
-
-def _extract_text_from_response(data: dict) -> str:
-    if "choices" in data and len(data["choices"]) > 0:
-        choice = data["choices"][0]
-        # 优先 message.content（非流式），Qwen 开启 chat_template_kwargs 后两者共存
-        if "message" in choice and choice["message"].get("content"):
-            return choice["message"]["content"]
-        if "delta" in choice and "content" in choice["delta"]:
-            return choice["delta"]["content"]
-        # 回退：message 存在但 content 为空（可能是流式首次包）
-        if "message" in choice and "content" in choice["message"]:
-            return choice["message"]["content"]
-    if "output" in data:
-        output = data["output"]
-        if "text" in output:
-            return output["text"]
-        if "choices" in output and len(output["choices"]) > 0:
-            choice = output["choices"][0]
-            if "message" in choice and "content" in choice["message"]:
-                return choice["message"]["content"]
-    return ""
-
-
-# ============================================================
 class ModelScopeClient(LLMClient):
     def __init__(self):
-        self._api_key = os.getenv("MODELSCOPE_API_KEY")
-        self._base_url = os.getenv("MODELSCOPE_BASE_URL",
-                                    os.getenv("MODELSCOPE_URL",
-                                              "https://api-inference.modelscope.cn/v1")).rstrip("/")
-        if not self._base_url.endswith("/chat/completions"):
-            self._base_url += "/chat/completions"
+        keys: list = []
+        for name in _KEY_ENV_NAMES:
+            val = (os.getenv(name) or "").strip()
+            if val and val not in keys:
+                keys.append(val)
+        self._api_keys = keys
+        self._key_index = 0
+        # 向后兼容：既有代码读 self._api_key 判断「是否配置」
+        self._api_key = keys[0] if keys else ""
+        self._base_url = (
+            os.getenv("MODELSCOPE_BASE_URL")
+            or "https://api-inference.modelscope.cn/v1"
+        ).rstrip("/")
+        proxy = (os.getenv("MODELSCOPE_PROXY_URL") or "").strip()
+        self._proxies = {"http": proxy, "https": proxy} if proxy else None
+        # 独立 Session：trust_env=False 让 "直连" 真正不经由环境变量代理。
+        # 否则 proxies=None 时 requests 仍读 HTTP_PROXY/HTTPS_PROXY，
+        # 代理故障会连带打死兜底路径，降级链形同虚设。
+        self._session = requests.Session()
+        self._session.trust_env = False
 
-        self._model = os.getenv("MODELSCOPE_MODEL", "Qwen/Qwen3.8-Flash-Next")
-
-        self._connect_timeout = float(os.getenv("MODELSCOPE_CONNECT_TIMEOUT_SECONDS", "10"))
-        self._read_timeout = float(os.getenv("MODELSCOPE_READ_TIMEOUT_SECONDS", "60"))
-
-        self._max_tokens = int(os.getenv("MODELSCOPE_MAX_TOKENS", "4096"))
-
-        self._max_retries = max(0, int(os.getenv("MODELSCOPE_MAX_RETRIES", "3")))
-        self._backoff = float(os.getenv("MODELSCOPE_RETRY_BACKOFF_SECONDS", "2"))
-
-    def _get_chain(self) -> List[str]:
+    # ------------------------------------------------------------------
+    # 模型降级链：MODELSCOPE_MODEL → MODELSCOPE_FALLBACK_1..5
+    # ------------------------------------------------------------------
+    def _get_chain(self):
         chain = []
-        for key in ["MODELSCOPE_MODEL", "MODELSCOPE_FALLBACK_1", "MODELSCOPE_FALLBACK_2",
-                     "MODELSCOPE_FALLBACK_3", "MODELSCOPE_FALLBACK_4", "MODELSCOPE_FALLBACK_5"]:
-            val = os.getenv(key)
+        for key in ("MODELSCOPE_MODEL", "MODELSCOPE_FALLBACK_1", "MODELSCOPE_FALLBACK_2",
+                    "MODELSCOPE_FALLBACK_3", "MODELSCOPE_FALLBACK_4", "MODELSCOPE_FALLBACK_5"):
+            val = (os.getenv(key) or "").strip()
             if val and val not in chain:
                 chain.append(val)
-        if not chain:
-            chain = ["Qwen/Qwen3.8-Flash-Next"]
-        return chain
+        return chain or ["Qwen/Qwen3.8-Flash-Next"]
 
-    def _headers(self) -> dict:
-        if not self._api_key:
-            raise ValueError("MODELSCOPE_API_KEY 未设置")
-        return {
-            "Authorization": f"Bearer {self._api_key}",
-            "Content-Type": "application/json",
-        }
+    @staticmethod
+    def _extract_text(data: dict) -> str:
+        """提取 OpenAI 兼容响应文本。
 
-    def _payload(self, prompt: str, stream: bool, model: str = None,
-                 temperature: float = 0.3, max_tokens: int = None,
-                 system_prompt: str = None) -> dict:
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
-        current_model = model or self._model
+        ModelScope API-Inference 非流式响应实测使用 choices[0].delta.content；
+        DashScope 兼容 endpoints 使用 choices[0].message.content，两者都兼容。
+        """
+        choices = data.get("choices") or []
+        if not choices:
+            return ""
+        first = choices[0] or {}
+        message = first.get("message") or {}
+        delta = first.get("delta") or {}
+        return message.get("content") or delta.get("content") or ""
+
+    # ------------------------------------------------------------------
+    # G10.28: 账号级额度轮换
+    # ------------------------------------------------------------------
+    def _current_key(self) -> str:
+        if not self._api_keys:
+            return ""
+        return self._api_keys[min(self._key_index, len(self._api_keys) - 1)]
+
+    def _rotate_key(self) -> bool:
+        """切到池内下一个 key；已到末尾返回 False（交由上层熔断）。"""
+        if self._key_index + 1 >= len(self._api_keys):
+            return False
+        self._key_index += 1
+        self._api_key = self._current_key()
+        return True
+
+    def _post(self, model, prompt, temperature, stream, proxies):
         body = {
-            "model": current_model,
-            "stream": stream,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens if max_tokens is not None else self._max_tokens,
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
         }
-        # Qwen3.5+ 默认开启思考模式，导致长 prompt 极慢；必须显式关闭
-        if "qwen" in current_model.lower():
-            body["chat_template_kwargs"] = {"enable_thinking": False}
-        return body
+        body.update(_THINK_OFF)
+        if stream:
+            body["stream"] = True
+        url = f"{self._base_url}/chat/completions"
 
-    def _timeout(self):
-        return (self._connect_timeout, self._read_timeout)
+        # 只把「429 免费额度耗尽」当作换账号信号；网络错误 / 5xx /
+        # 普通限流仍交给既有路径策略与降级链处理，避免放大故障。
+        response = None
+        for _attempt in range(max(1, len(self._api_keys))):
+            headers = {
+                "Authorization": f"Bearer {self._current_key()}",
+                "Content-Type": "application/json",
+            }
+            response = self._session.post(
+                url, headers=headers, json=body,
+                timeout=(15, 180), stream=stream, proxies=proxies or {},
+            )
+            if _is_quota_429(response) and self._rotate_key():
+                try:
+                    response.close()
+                except Exception:
+                    pass
+                print(
+                    f"[ModelScope] 当前账号额度耗尽，切换备用 key "
+                    f"({self._key_index + 1}/{len(self._api_keys)}) 重发"
+                )
+                continue
+            break
+        return response
 
-    # ── v2.1 动态 max_tokens 估算 ────────────────────────────
-    # 基于 prompt 内容（# FILE: 块数量）动态计算所需的输出 token 预算，
-    # 避免多文件生成时硬编码值导致输出截断。
-    # 公式：max(max_tokens_from_env, #FILE块数 × 2500 + 1000)
-    # 上限：16384 tokens（Qwen3.8 安全上限，thinking 关闭后足够）
-    _MAX_TOKENS_CEILING = 16384
+    # ------------------------------------------------------------------
+    # 路径策略：直连为主，代理仅为可选兜底
+    # ------------------------------------------------------------------
+    def _paths(self):
+        """直连是默认真相路径（实测 1.6s 稳定）；代理只在直连网络不可达时兜底。"""
+        paths = [("direct", None)]
+        if self._proxies and not _proxy_circuit_open():
+            paths.append(("proxy", self._proxies))
+        return paths
 
-    def _estimate_output_tokens(self, prompt: str) -> int:
-        file_blocks = prompt.count("# FILE:")
-        test_blocks = prompt.count("# TEST:")
-        total_blocks = file_blocks + test_blocks
+    # ------------------------------------------------------------------
+    # 单模型调用：直连优先，失败后再考虑代理
+    # ------------------------------------------------------------------
+    def _call_one(self, model, prompt, temperature=0.3):
+        errors = []
+        for label, proxies in self._paths():
+            try:
+                r = self._post(model, prompt, temperature, False, proxies)
+                r = _verify_quota_response(
+                    r, lambda: self._post(model, prompt, temperature, False, proxies)
+                )
+                _maybe_trip_account_circuit(r)
+                r.raise_for_status()
+                text = self._extract_text(r.json())
+                if not text:
+                    raise ValueError("ModelScope 返回空内容")
+                return text
+            except Exception as e:
+                errors.append(f"{label}:{type(e).__name__}")
+                if _provider_circuit_open("modelscope"):
+                    # 额度冷却/鉴权失效：换代理路径同样无解，立即交回跨 Provider 兜底
+                    break
+                if label == "proxy" and _is_network_error(e):
+                    _open_proxy_circuit()
+        raise RuntimeError(f"模型 {model} 调用失败 ({', '.join(errors)})")
 
-        if total_blocks == 0:
-            return self._max_tokens
+    def _stream_one(self, model, prompt, temperature, proxies) -> Generator[str, None, None]:
+        response = None
+        try:
+            response = self._post(model, prompt, temperature, True, proxies)
+            response = _verify_quota_response(
+                response, lambda: self._post(model, prompt, temperature, True, proxies)
+            )
+            _maybe_trip_account_circuit(response)
+            response.raise_for_status()
+            # SSE 响应头通常只有 `text/event-stream`，不带 charset；
+            # requests 会默认按 ISO-8859-1 解码，UTF-8 中文会变成 mojibake
+            # （曾导致生成的 .py 里中文注释乱码 → SyntaxError）。
+            # 因此取原始字节并显式按 UTF-8 解码，绝不依赖库的编码猜测。
+            for raw_line in response.iter_lines(decode_unicode=False):
+                if not raw_line:
+                    continue
+                line = (raw_line.decode("utf-8", errors="replace")
+                        if isinstance(raw_line, bytes) else str(raw_line))
+                if line.startswith("data:"):
+                    data_str = line[5:].strip()
+                elif line.startswith("data: "):
+                    data_str = line[6:].strip()
+                else:
+                    continue
+                if data_str == "[DONE]":
+                    break
+                try:
+                    import json
+                    chunk = self._extract_text(json.loads(data_str))
+                    if chunk:
+                        yield chunk
+                except (ValueError, TypeError):
+                    continue
+        finally:
+            if response is not None:
+                try:
+                    response.close()
+                except Exception:
+                    pass
 
-        per_file_budget = 2500
-        estimated = total_blocks * per_file_budget + 1000
-        return min(max(self._max_tokens, estimated), self._MAX_TOKENS_CEILING)
-
+    # ------------------------------------------------------------------
+    # LLMClient 接口
+    # ------------------------------------------------------------------
     def call(self, prompt: str, temperature: float = 0.3, **kwargs) -> str:
-        chain = self._get_chain()
+        if _provider_circuit_open("modelscope"):
+            raise RuntimeError(
+                f"ModelScope 暂时不可用（熔断/额度冷却中）: "
+                f"{_provider_circuit_reason('modelscope')}"
+            )
         if not self._api_key:
             raise RuntimeError("MODELSCOPE_API_KEY 未设置")
 
-        headers = self._headers()
+        chain = self._get_chain()
         last_error = None
-
         for model in chain:
+            if _provider_circuit_open("modelscope"):
+                break
             try:
                 print(f"[ModelScope] 调用模型: {model}")
-
-                estimated_tokens = self._estimate_output_tokens(prompt)
-
-                def _do():
-                    body = self._payload(
-                        prompt, stream=False, model=model,
-                        temperature=temperature,
-                        max_tokens=estimated_tokens,
-                        system_prompt=kwargs.get("system_prompt"),
-                    )
-                    r = requests.post(
-                        self._base_url, headers=headers, json=body,
-                        timeout=self._timeout(),
-                    )
-                    r.raise_for_status()
-                    return _extract_text_from_response(r.json())
-
-                result = _call_with_retry(_do)
-                if not result:
-                    raise ValueError(f"ModelScope 模型 {model} 返回空内容")
+                result = self._call_one(model, prompt, temperature)
                 if model != chain[0]:
                     print(f"[ModelScope] 降级模型 {model} 调用成功")
                 return result
             except Exception as e:
                 print(f"[ModelScope] 模型 {model} 失败: {e}")
                 last_error = e
+                if _provider_circuit_open("modelscope"):
+                    print("[ModelScope] 额度冷却/鉴权失效，停止遍历降级链，交回跨 Provider 兜底")
+                    break
                 continue
 
         raise RuntimeError(
@@ -205,55 +370,44 @@ class ModelScopeClient(LLMClient):
         )
 
     def call_stream(self, prompt: str, temperature: float = 0.3, **kwargs) -> Generator[str, None, None]:
-        chain = self._get_chain()
+        if _provider_circuit_open("modelscope"):
+            yield (f"\n\n[API 调用失败: ModelScope 暂时不可用（熔断/额度冷却中） - "
+                   f"{_provider_circuit_reason('modelscope')}]")
+            return
         if not self._api_key:
-            yield f"\n\n[API 调用失败: MODELSCOPE_API_KEY 未设置]"
+            yield "\n\n[API 调用失败: MODELSCOPE_API_KEY 未设置]"
             return
 
-        headers = self._headers()
-        system_prompt = kwargs.get("system_prompt")
+        chain = self._get_chain()
         last_error = None
-
         for model in chain:
-            try:
-                print(f"[ModelScope] 流式调用: {model}")
-
-                def _do_connect():
-                    body = self._payload(
-                        prompt, stream=True, model=model,
-                        temperature=temperature, system_prompt=system_prompt,
-                    )
-                    return requests.post(
-                        self._base_url, headers=headers, json=body,
-                        timeout=self._timeout(), stream=True,
-                    )
-
-                response = _call_with_retry(_do_connect, max_retries=2)
-                response.raise_for_status()
+            if _provider_circuit_open("modelscope"):
+                break
+            for label, proxies in self._paths():
+                if _provider_circuit_open("modelscope"):
+                    break
                 emitted = False
-                for line in response.iter_lines(decode_unicode=True):
-                    if not line:
-                        continue
-                    if line.startswith("data:"):
-                        data_str = line[5:].strip()
-                        if data_str == "[DONE]":
-                            break
-                        try:
-                            data = json.loads(data_str)
-                        except json.JSONDecodeError:
-                            continue
-                        chunk = _extract_text_from_response(data)
-                        if chunk:
-                            emitted = True
-                            yield chunk
-                if emitted:
+                try:
+                    print(f"[ModelScope Stream] 调用模型: {model} ({label})")
+                    for chunk in self._stream_one(model, prompt, temperature, proxies):
+                        emitted = True
+                        yield chunk
+                    if not emitted:
+                        raise ValueError("ModelScope 流式返回空内容")
                     if model != chain[0]:
-                        print(f"[ModelScope] 降级模型 {model} 流式调用成功")
+                        print(f"[ModelScope Stream] 降级模型 {model} 调用成功")
                     return
-                last_error = ValueError(f"模型 {model} 返回空流内容")
-            except Exception as e:
-                print(f"[ModelScope] 模型 {model} 流式失败: {e}")
-                last_error = e
-                continue
+                except Exception as e:
+                    print(f"[ModelScope Stream] 模型 {model} ({label}) 失败: {e}")
+                    last_error = e
+                    if label == "proxy" and _is_network_error(e):
+                        _open_proxy_circuit()
+                    if emitted:
+                        # 已向调用方吐出内容，换路径重试会造成重复输出
+                        return
+                    if _provider_circuit_open("modelscope"):
+                        print("[ModelScope Stream] 额度冷却/鉴权失效，停止遍历降级链")
+                        break
+                    continue
 
-        yield f"\n\n[API 调用失败: 所有模型不可用 - {last_error}]"
+        yield f"\n\n[API 调用失败: 所有 ModelScope 模型不可用 - {last_error}]"

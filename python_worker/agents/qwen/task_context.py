@@ -13,6 +13,7 @@
 # ---------------------------------------------------------
 
 import os
+import re
 
 from ...worker_config import stream_start, stream_chunk
 from ...context_builder import (

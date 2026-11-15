@@ -95,7 +95,21 @@ def execute_step(task_id: str, step: dict, events: list, context: dict):
 
     step_type = step.get("type")
 
+    # G10.18/20: 按步骤 + 意图选择模型链（样板步骤/架构文档走快模型，
+    # 写码/修复走强模型）
+    try:
+        from ..qwen_model_probe import set_step_model_hint
+        _step_intent = (context.get("meta", {}) or {}).get("intent") or ""
+        set_step_model_hint(step_type, _step_intent)
+    except Exception:
+        pass
+
     if step_type not in STEP_DISPATCHER:
+        try:
+            from ..qwen_model_probe import set_step_model_hint
+            set_step_model_hint(None)
+        except Exception:
+            pass
         step["output"] = {"text": f"未知步骤类型：{step_type}"}
         return
 
@@ -160,6 +174,13 @@ def execute_step(task_id: str, step: dict, events: list, context: dict):
         raise e
 
     finally:
+        # G10.18: 步骤结束后必须清空 hint，避免 finalize_task 的
+        # 交付闸门修复/收尾调用误用快模型
+        try:
+            from ..qwen_model_probe import set_step_model_hint
+            set_step_model_hint(None)
+        except Exception:
+            pass
         # P0：步骤完成事件 → 前端更新 StepTree 为 completed
         if task_id:
             try:

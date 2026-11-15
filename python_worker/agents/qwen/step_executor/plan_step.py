@@ -206,7 +206,7 @@ def run_plan_step(step, context, events, task_id=None):
         events.append(create_event("plan_output", {
             "plan": result or "",
             "llm_success": llm_success
-        }))
+        }, task_id=task_id, sequence=len(events) + 1))
     except Exception as e:
         print(f"[ERROR] Failed to append event: {e}")
     

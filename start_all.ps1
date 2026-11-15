@@ -334,10 +334,7 @@ Write-Host "   🐍 Python: $pythonExe" -ForegroundColor Cyan
 
 # Worker 配置（v3.0 流式输出版）
 $workers = @(
-    @{Name="Qwen"; Script="python_worker.agents.qwen.qwen_worker_v2"; EnvId="qwen-worker-1"},
-    @{Name="Gemini"; Script="python_worker.agents.gemini.gemini_worker_v2"; EnvId="gemini-worker-1"},
-    @{Name="ModelScope"; Script="python_worker.agents.modelscope.modelscope_worker_v3"; EnvId="modelscope-worker-1"},
-    @{Name="Local LLM"; Script="python_worker.agents.local_llm.local_worker_v3"; EnvId="local-worker-1"}
+    @{Name="Qwen"; Script="python_worker.agents.qwen.qwen_worker_v2"; EnvId="qwen-worker-1"}
 )
 
 foreach ($worker in $workers) {
@@ -397,7 +394,4 @@ Write-Host "   🧠 记忆中枢: $(if ($dockerRunning -and (docker ps --filter 
 Write-Host "   Node API: $(if (Test-PortInUse -Port 3000) { '✅ 运行中' } else { '❌ 未运行' })" -ForegroundColor White
 Write-Host "   AlphaPilot Proxy: $(if (Test-PortInUse -Port 8000) { '✅ 运行中' } else { '❌ 未运行' })" -ForegroundColor White
 Write-Host "   Qwen Worker: ✅ 已启动 (新窗口)" -ForegroundColor White
-Write-Host "   Gemini Worker: ✅ 已启动 (新窗口)" -ForegroundColor White
-Write-Host "   ModelScope Worker: ✅ 已启动 (新窗口)" -ForegroundColor White
-Write-Host "   Local LLM Worker: ✅ 已启动 (新窗口)" -ForegroundColor White
 Write-Host ""

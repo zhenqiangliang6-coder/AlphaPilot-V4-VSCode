@@ -139,7 +139,7 @@ def run_doc_step(step, context, events, task_id=None):
             "markdown": markdown,
             "documented_code": documented,
             "text": output_text
-        }))
+        }, task_id=task_id, sequence=len(events) + 1))
     except Exception as e:
         print(f"[WARN] 创建事件失败: {e}")
     

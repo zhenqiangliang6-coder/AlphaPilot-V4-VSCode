@@ -2,6 +2,32 @@
 import re
 from typing import Optional, Union
 
+# ── G10.26: 上游模型失败文本（FAIL-CLOSED）──────────────────────────
+# 背景：qwen_client.call_stream() 在整条降级链全挂时不抛异常，而是
+# yield 一段可读的错误文本。旧实现把它当成正常生成内容继续走
+# extract_code → 单文件降级 → FileOp → DeliveryGate → EvidenceGate，
+# 最终任务写 awaiting_authorization、验收判「执行成功」，但零产出。
+# 这些标记均由本机代码拼装，正常生成的代码里不会凭空出现；即使
+# LLM 在注释里偶然复述，按 FAIL-CLOSED 宁可少放行也不交付垃圾。
+# 只认本机代码拼装的固定前缀（qwen_client.call_stream 全链失败 /
+# write_step 捕获异常的产物）。刻意不收录「所有模型不可用」这类自然语言
+# 片段：它可能被设计文档或字符串字面量正常引用，造成误伤。
+_UPSTREAM_FAILURE_MARKERS = (
+    "[API 调用失败:",
+    "# LLM 调用失败:",
+)
+
+
+def is_upstream_failure_text(text: Union[str, object]) -> bool:
+    """判断 LLM 返回值是否其实是「上游不可用」的错误提示文本。
+
+    只认本机代码生成的确定性标记，不做模糊语义猜测（FAIL-OPEN 免疫）。
+    非字符串输入一律返回 False，交给后续 extract_code 的类型防线处理。
+    """
+    if not isinstance(text, str) or not text:
+        return False
+    return any(marker in text for marker in _UPSTREAM_FAILURE_MARKERS)
+
 
 def extract_code(text: Union[str, object], fallback_strategies: bool = True) -> str:
     """

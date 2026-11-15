@@ -57,6 +57,8 @@ class DeepSeekClient(LLMClient):
         try:
             with requests.post(self._url, headers=self._headers(), json=body, timeout=300, stream=True) as r:
                 r.raise_for_status()
+                # SSE 无 charset 时 requests 默认 ISO-8859-1，中文会变 mojibake
+                r.encoding = "utf-8"
                 for line in r.iter_lines(decode_unicode=True):
                     if not line:
                         continue

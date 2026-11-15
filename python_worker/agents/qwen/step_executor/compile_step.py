@@ -35,7 +35,7 @@ def _get_pending_lang_files(context, language):
         "python": (".py",),
     }
     exts = lang_ext_map.get(language, (".py",))
-    return [f for f in pending if any(f.get("path", "").endswith(ext) for ext in exts)]
+    return [f for f in pending if any((f.get("path") or "").endswith(ext) for ext in exts)]
 
 
 def _files_exist_on_disk(workspace_path, language):
@@ -92,7 +92,7 @@ def run_compile_step(step, context, events, task_id=None):
     if not files_on_disk and pending_lang_files:
         pending_list = [f["path"] for f in pending_lang_files[:8]]
         manifest_hint = ""
-        package_json_pending = any(f.get("path", "").endswith("package.json") for f in pending_lang_files)
+        package_json_pending = any((f.get("path") or "").endswith("package.json") for f in pending_lang_files)
         if package_json_pending:
             manifest_hint = " (含 package.json)"
         pending_count = len(pending_lang_files)
@@ -126,7 +126,7 @@ def run_compile_step(step, context, events, task_id=None):
             "tool": f"compile.{language}",
             "status": "deferred",
             "reason": "files_pending_authorization",
-        }))
+        }, task_id=task_id, sequence=len(events) + 1))
         if task_id:
             stream_end(task_id)
         return
@@ -204,7 +204,7 @@ def run_compile_step(step, context, events, task_id=None):
         "tool": f"compile.{language}",
         "status": "completed" if compile_result.success else "failed",
         "compile_result": results["compile"],
-    }))
+    }, task_id=task_id, sequence=len(events) + 1))
 
     if task_id:
         stream_end(task_id)
