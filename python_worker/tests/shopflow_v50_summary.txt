@@ -1,0 +1,4 @@
+v50 start 2026-11-18 09:59:40
+pass 1 rc=127 at 2026-11-18 10:00:41
+STOP: pass 1 failed, not burning remaining passes
+DONE

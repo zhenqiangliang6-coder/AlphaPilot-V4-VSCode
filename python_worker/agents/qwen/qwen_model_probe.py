@@ -571,7 +571,19 @@ def get_text_fallback_chain() -> List[str]:
         fast = os.getenv("QWEN_FAST_MODEL")
         if fast and _use_fast_model():
             chain = [fast] + [m for m in chain if m != fast]
-        return chain[:4]
+        # G10.35：「配置优先」不能变成「配置即死路」。shopflow_v14_1 实证：
+        # .env 里 QWEN_MODEL=qwen3.6-plus / QWEN_FAST_MODEL=qwen-plus 当天
+        # 免费额度全部耗尽(403)，而运行时探测已验证 qwen3.8-27b 等 6 个
+        # 模型可用(200)；旧实现 `if chain: return chain[:4]` 让探测结果
+        # 永远排不上，整条执行链全是死模型，R5 直接 FAIL-CLOSED。
+        # 探测结果有进程内 TTL 缓存，追加不产生重复网络开销。
+        try:
+            for m in (probe_qwen_models().get("text") or [])[:3]:
+                if m and m not in chain:
+                    chain.append(m)
+        except Exception:
+            pass
+        return chain[:6]
 
     probe = probe_qwen_models()
     if probe["text"]:

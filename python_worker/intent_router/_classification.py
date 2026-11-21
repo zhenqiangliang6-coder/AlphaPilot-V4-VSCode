@@ -346,21 +346,32 @@ def call_provider_for_classify(prompt: str, model_name: str, model_override: str
                 "max_tokens": adaptive_tokens,
                 "response_format": {"type": "json_object"},
             }
+            # G10.36：推理模型默认先吐 reasoning_content，分类只要一行 JSON。
+            # 实测 qwen3.8-27b 关闭思考后分类从数十秒降到秒级；部分模型强制
+            # enable_thinking=True，遇 400 自动摘掉该参数重试（同 response_format）。
+            no_think_models = {
+                m.strip() for m in
+                os.environ.get("QWEN_NO_THINK_MODELS", "deepseek-v4.1-flash,qwen3.8-27b").split(",")
+                if m.strip()
+            }
+            if model in no_think_models:
+                body["enable_thinking"] = False
             r = session.post(url, headers=headers, json=body, timeout=max_timeout)
-            if r.status_code == 400:
+            for _retry in range(2):
+                if r.status_code != 400:
+                    break
                 try:
-                    err_data = r.json()
-                    err_msg_lower = str(err_data).lower()
+                    err_lower = str(r.json()).lower()
                 except Exception:
-                    err_msg_lower = r.text.lower()
-                if "response_format" in err_msg_lower or "json_object" in err_msg_lower:
+                    err_lower = r.text.lower()
+                if "enable_thinking" in err_lower and "enable_thinking" in body:
+                    del body["enable_thinking"]
+                elif ("response_format" in err_lower or "json_object" in err_lower) and "response_format" in body:
                     del body["response_format"]
-                    r = session.post(url, headers=headers, json=body, timeout=max_timeout)
-                    r.raise_for_status()
                 else:
-                    r.raise_for_status()
-            else:
-                r.raise_for_status()
+                    break
+                r = session.post(url, headers=headers, json=body, timeout=max_timeout)
+            r.raise_for_status()
             data = r.json()
             choices = data.get("choices", [])
             if choices:

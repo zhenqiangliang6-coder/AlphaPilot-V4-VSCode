@@ -1,0 +1,150 @@
+{
+  "task_id": "77e4cabd-d440-44c2-b461-f0c9d4703786",
+  "created_at": "2026-11-14T07:36:53.221Z",
+  "workspace_root": "C:\\Users\\49772\\Desktop\\shopflow_ecommerce",
+  "files": {
+    "backend/shopflow.db": {
+      "existed": false
+    },
+    "backend/database.py": {
+      "existed": true,
+      "content": "from sqlalchemy import create_engine\nfrom sqlalchemy.ext.declarative import declarative_base\nfrom sqlalchemy.orm import sessionmaker\nimport os\n\nDATABASE_URL = os.getenv(\"DATABASE_URL\", \"sqlite:///./test.db\")\n\nengine = create_engine(\n    DATABASE_URL, connect_args={\"check_same_thread\": False} if \"sqlite\" in DATABASE_URL else {}\n)\nSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)\n\nBase = declarative_base()\n\ndef get_db():\n    db = SessionLocal()\n    try:\n        yield db\n    finally:\n        db.close()",
+      "sha256": "897bb3f63b39686e7760aba5f48968a566a043e364d2b52f3eba879c8a872faf",
+      "size": 530,
+      "mtime_ms": 1794641549362.3296
+    },
+    "backend/models/__init__.py": {
+      "existed": true,
+      "content": "from .order import Order\nfrom .inventory import InventoryItem\nfrom .enums import OrderStatus, PaymentMethod\n\n__all__ = [\"Order\", \"InventoryItem\", \"OrderStatus\", \"PaymentMethod\"]",
+      "sha256": "63a1c89f2f091e626c8ca33406a7394b595ae9d18403fc8ce4e4597336a15db5",
+      "size": 177,
+      "mtime_ms": 1794641549365.3271
+    },
+    "backend/models/enums.py": {
+      "existed": true,
+      "content": "import enum\n\nclass OrderStatus(str, enum.Enum):\n    PENDING = \"pending\"\n    CONFIRMED = \"confirmed\"\n    SHIPPED = \"shipped\"\n    DELIVERED = \"delivered\"\n    CANCELLED = \"cancelled\"\n\nclass PaymentMethod(str, enum.Enum):\n    CREDIT_CARD = \"credit_card\"\n    PAYPAL = \"paypal\"\n    BANK_TRANSFER = \"bank_transfer\"",
+      "sha256": "073b4cd65aa3f65db5a6a4799cd11c09d7e071e13242a3a9a871c657c581eedc",
+      "size": 307,
+      "mtime_ms": 1794641549367.2893
+    },
+    "backend/models/order.py": {
+      "existed": true,
+      "content": "from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Enum, Float\nfrom sqlalchemy.sql import func\nfrom sqlalchemy.orm import relationship\nfrom backend.database import Base\nfrom backend.models.enums import OrderStatus, PaymentMethod\n\nclass Order(Base):\n    __tablename__ = \"orders\"\n\n    id = Column(Integer, primary_key=True, index=True)\n    user_id = Column(String, index=True, nullable=False)\n    status = Column(Enum(OrderStatus), default=OrderStatus.PENDING, nullable=False)\n    payment_method = Column(Enum(PaymentMethod), nullable=True)\n    total_amount = Column(Float, nullable=False, default=0.0)\n    created_at = Column(DateTime(timezone=True), server_default=func.now())\n    updated_at = Column(DateTime(timezone=True), onupdate=func.now())\n\n    # Relationship to inventory items (many-to-many via order_items table would be ideal, \n    # but keeping simple for this scope based on typical single-file structure requests)\n    # Assuming a simplified model where an order has multiple items linked directly or via association table.\n    # For strict optimization, we assume a direct link or separate item table. \n    # Let's add a generic 'items' relationship placeholder if defined elsewhere, \n    # but since we don't have an OrderItem model file, we'll stick to basic fields.\n    \n    def __repr__(self):\n        return f\"<Order(id={self.id}, status='{self.status}', total={self.total_amount})>\"",
+      "sha256": "ad2299c9050dd6a90cccd1ceacb54a53968b22f46558893144eaa495fdbeee79",
+      "size": 1422,
+      "mtime_ms": 1794641549371.0068
+    },
+    "backend/models/inventory.py": {
+      "existed": true,
+      "content": "from sqlalchemy import Column, Integer, String, Float, DateTime\nfrom sqlalchemy.sql import func\nfrom backend.database import Base\n\nclass InventoryItem(Base):\n    __tablename__ = \"inventory_items\"\n\n    id = Column(Integer, primary_key=True, index=True)\n    name = Column(String, nullable=False, unique=True)\n    description = Column(String, nullable=True)\n    stock_quantity = Column(Integer, nullable=False, default=0)\n    price = Column(Float, nullable=False)\n    created_at = Column(DateTime(timezone=True), server_default=func.now())\n\n    def __repr__(self):\n        return f\"<InventoryItem(id={self.id}, name='{self.name}', stock={self.stock_quantity})>\"",
+      "sha256": "3bd4c899da20715a2a78616029145aa8feab71039b7c99d5bea3586ac9bbd94a",
+      "size": 658,
+      "mtime_ms": 1794641549379.276
+    },
+    "backend/schemas/order.py": {
+      "existed": true,
+      "content": "from pydantic import BaseModel, Field\nfrom typing import Optional, List\nfrom datetime import datetime\nfrom backend.models.enums import OrderStatus, PaymentMethod\n\nclass OrderItemCreate(BaseModel):\n    product_id: int\n    quantity: int = Field(gt=0)\n    price: float = Field(ge=0)\n\nclass OrderCreate(BaseModel):\n    user_id: str\n    items: List[OrderItemCreate]\n    payment_method: Optional[PaymentMethod] = None\n\nclass OrderResponse(BaseModel):\n    id: int\n    user_id: str\n    status: OrderStatus\n    payment_method: Optional[PaymentMethod]\n    total_amount: float\n    created_at: datetime\n    updated_at: Optional[datetime]\n\n    class Config:\n        from_attributes = True",
+      "sha256": "4d693a1f12d197893709235e0e5f82f26ddc2d5090ca245e18af46238db5c007",
+      "size": 675,
+      "mtime_ms": 1794641549375.1067
+    },
+    "backend/schemas/inventory.py": {
+      "existed": true,
+      "content": "from pydantic import BaseModel, Field\nfrom typing import Optional\nfrom datetime import datetime\n\nclass InventoryItemCreate(BaseModel):\n    name: str = Field(min_length=1, max_length=100)\n    description: Optional[str] = None\n    stock_quantity: int = Field(ge=0, default=0)\n    price: float = Field(ge=0)\n\nclass InventoryItemResponse(BaseModel):\n    id: int\n    name: str\n    description: Optional[str]\n    stock_quantity: int\n    price: float\n    created_at: datetime\n    \n    class Config:\n        from_attributes = True",
+      "sha256": "74bdf261f7b5e5d71d40e4bdde42676c9bb8504f0709132fdaaf101b5f5cf232",
+      "size": 522,
+      "mtime_ms": 1794641549377.119
+    },
+    "backend/services/order_service.py": {
+      "existed": true,
+      "content": "from sqlalchemy.orm import Session\nfrom typing import List\nfrom fastapi import HTTPException, status\nfrom backend.models.order import Order\nfrom backend.models.inventory import InventoryItem\nfrom backend.models.enums import OrderStatus\nfrom backend.schemas.order import OrderCreate\n\nclass OrderService:\n    @staticmethod\n    def create_order(db: Session, order_data: OrderCreate) -> Order:\n        \"\"\"\n        Creates a new order and validates inventory availability.\n        \n        Args:\n            db: Database session.\n            order_data: Order creation payload.\n            \n        Returns:\n            Created Order object.\n            \n        Raises:\n            HTTPException: If inventory is insufficient or other validation fails.\n        \"\"\"\n        total_amount = 0.0\n        \n        # Validate inventory and calculate total\n        for item in order_data.items:\n            inv_item = db.query(InventoryItem).filter(InventoryItem.id == item.product_id).first()\n            if not inv_item:\n                raise HTTPException(\n                    status_code=status.HTTP_404_NOT_FOUND, \n                    detail=f\"Product ID {item.product_id} not found.\"\n                )\n            if inv_item.stock_quantity < item.quantity:\n                raise HTTPException(\n                    status_code=status.HTTP_400_BAD_REQUEST, \n                    detail=f\"Insufficient stock for Product ID {item.product_id}. Available: {inv_item.stock_quantity}\"\n                )\n            total_amount += item.price * item.quantity\n\n        # Deduct inventory\n        for item in order_data.items:\n            inv_item = db.query(InventoryItem).filter(InventoryItem.id == item.product_id).with_for_update().first()\n            inv_item.stock_quantity -= item.quantity\n\n        # Create Order\n        new_order = Order(\n            user_id=order_data.user_id,\n            status=OrderStatus.PENDING,\n            payment_method=order_data.payment_method,\n            total_amount=total_amount\n        )\n        \n        db.add(new_order)\n        db.commit()\n        db.refresh(new_order)\n        \n        return new_order\n\n    @staticmethod\n    def get_order_by_id(db: Session, order_id: int) -> Order:\n        \"\"\"Retrieves an order by ID.\"\"\"\n        order = db.query(Order).filter(Order.id == order_id).first()\n        if not order:\n            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=\"Order not found\")\n        return order\n\n    @staticmethod\n    def list_orders(db: Session, skip: int = 0, limit: int = 100) -> List[Order]:\n        \"\"\"Lists orders with pagination.\"\"\"\n        return db.query(Order).offset(skip).limit(limit).all()",
+      "sha256": "bdb5c12fcb29d0ae61d3ad157c82494d8aa0efeac87ccd83dbcece0b244c0254",
+      "size": 2670,
+      "mtime_ms": 1794641549384.4626
+    },
+    "backend/routers/orders.py": {
+      "existed": true,
+      "content": "from fastapi import APIRouter, Depends, HTTPException, status\nfrom sqlalchemy.orm import Session\nfrom typing import List\nfrom backend.database import get_db\nfrom backend.services.order_service import OrderService\nfrom backend.schemas.order import OrderCreate, OrderResponse\n\nrouter = APIRouter(\n    prefix=\"/orders\",\n    tags=[\"Orders\"],\n    responses={404: {\"description\": \"Not found\"}},\n)\n\n@router.post(\"/\", response_model=OrderResponse, status_code=status.HTTP_201_CREATED)\ndef create_order(order_in: OrderCreate, db: Session = Depends(get_db)):\n    \"\"\"\n    Create a new order.\n    \"\"\"\n    return OrderService.create_order(db, order_in)\n\n@router.get(\"/{order_id}\", response_model=OrderResponse)\ndef read_order(order_id: int, db: Session = Depends(get_db)):\n    \"\"\"\n    Get a specific order by ID.\n    \"\"\"\n    return OrderService.get_order_by_id(db, order_id)\n\n@router.get(\"/\", response_model=List[OrderResponse])\ndef list_orders(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):\n    \"\"\"\n    List all orders.\n    \"\"\"\n    return OrderService.list_orders(db, skip, limit)",
+      "sha256": "f8706617bf8372f7c3b32de6f1b4ae185c7cf7bf145a343d35c1e4f37f2a7231",
+      "size": 1086,
+      "mtime_ms": 1794641549390.9446
+    },
+    "backend/routers/inventory.py": {
+      "existed": true,
+      "content": "from fastapi import APIRouter, Depends, HTTPException, status\nfrom sqlalchemy.orm import Session\nfrom typing import List\nfrom backend.database import get_db\nfrom backend.models.inventory import InventoryItem\nfrom backend.schemas.inventory import InventoryItemCreate, InventoryItemResponse\n\nrouter = APIRouter(\n    prefix=\"/inventory\",\n    tags=[\"Inventory\"],\n)\n\n@router.post(\"/\", response_model=InventoryItemResponse, status_code=status.HTTP_201_CREATED)\ndef create_item(item_in: InventoryItemCreate, db: Session = Depends(get_db)):\n    \"\"\"\n    Create a new inventory item.\n    \"\"\"\n    existing_item = db.query(InventoryItem).filter(InventoryItem.name == item_in.name).first()\n    if existing_item:\n        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=\"Item name already exists\")\n    \n    db_item = InventoryItem(**item_in.model_dump())\n    db.add(db_item)\n    db.commit()\n    db.refresh(db_item)\n    return db_item\n\n@router.get(\"/{item_id}\", response_model=InventoryItemResponse)\ndef read_item(item_id: int, db: Session = Depends(get_db)):\n    \"\"\"\n    Get an inventory item by ID.\n    \"\"\"\n    item = db.query(InventoryItem).filter(InventoryItem.id == item_id).first()\n    if item is None:\n        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=\"Item not found\")\n    return item\n\n@router.get(\"/\", response_model=List[InventoryItemResponse])\ndef list_items(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):\n    \"\"\"\n    List all inventory items.\n    \"\"\"\n    return db.query(InventoryItem).offset(skip).limit(limit).all()",
+      "sha256": "c28dbf1b6b94743584c748ba638eb87c1c99d767b1994481372feb50a034befa",
+      "size": 1575,
+      "mtime_ms": 1794641549392.9565
+    },
+    "backend/main.py": {
+      "existed": true,
+      "content": "from fastapi import FastAPI\nfrom backend.database import Base, engine\nfrom backend.routers import orders, inventory\n\n# Create tables\nBase.metadata.create_all(bind=engine)\n\napp = FastAPI(title=\"AlphaPilot OS Backend\", version=\"1.0.0\")\n\napp.include_router(orders.router)\napp.include_router(inventory.router)\n\n@app.get(\"/\")\ndef read_root():\n    return {\"message\": \"Welcome to AlphaPilot OS API\"}",
+      "sha256": "d0c35ae9555fd67e0e306bb2a0f0c6d6632c3135621983784e8ed0a408e40dc5",
+      "size": 392,
+      "mtime_ms": 1794641549394.4526
+    },
+    "tests/conftest.py": {
+      "existed": true,
+      "content": "import pytest\nfrom fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom backend.main import app\nfrom backend.database import Base, get_db\n\nSQLALCHEMY_DATABASE_URL = \"sqlite:///./test.db\"\n\nengine = create_engine(\n    SQLALCHEMY_DATABASE_URL, connect_args={\"check_same_thread\": False}\n)\nTestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)\n\n@pytest.fixture(scope=\"function\")\ndef db_session():\n    Base.metadata.create_all(bind=engine)\n    connection = engine.connect()\n    transaction = connection.begin()\n    session = TestingSessionLocal(bind=connection)\n    \n    yield session\n    \n    session.close()\n    transaction.rollback()\n    connection.close()\n    Base.metadata.drop_all(bind=engine)\n\n@pytest.fixture(scope=\"function\")\ndef client(db_session):\n    def override_get_db():\n        try:\n            yield db_session\n        finally:\n            pass\n            \n    app.dependency_overrides[get_db] = override_get_db\n    with TestClient(app) as c:\n        yield c\n    app.dependency_overrides.clear()",
+      "sha256": "6627510f45b5546a3d5b542eb207b8df8f92b1091bed83dac04dd8eef31727a8",
+      "size": 1102,
+      "mtime_ms": 1794641549397.9724
+    },
+    "tests/test_orders.py": {
+      "existed": true,
+      "content": "import pytest\nfrom backend.models.inventory import InventoryItem\nfrom backend.models.order import Order\nfrom backend.models.enums import OrderStatus, PaymentMethod\n\ndef test_create_order_success(client, db_session):\n    # Seed inventory\n    item = InventoryItem(name=\"Widget\", stock_quantity=10, price=5.0)\n    db_session.add(item)\n    db_session.commit()\n    db_session.refresh(item)\n    \n    order_payload = {\n        \"user_id\": \"user123\",\n        \"items\": [\n            {\n                \"product_id\": item.id,\n                \"quantity\": 2,\n                \"price\": 5.0\n            }\n        ],\n        \"payment_method\": \"credit_card\"\n    }\n    \n    response = client.post(\"/orders/\", json=order_payload)\n    assert response.status_code == 201\n    data = response.json()\n    assert data[\"user_id\"] == \"user123\"\n    assert data[\"total_amount\"] == 10.0\n    assert data[\"status\"] == \"pending\"\n    \n    # Verify stock deduction\n    db_session.refresh(item)\n    assert item.stock_quantity == 8\n\ndef test_create_order_insufficient_stock(client, db_session):\n    item = InventoryItem(name=\"Rare Item\", stock_quantity=1, price=100.0)\n    db_session.add(item)\n    db_session.commit()\n    db_session.refresh(item)\n    \n    order_payload = {\n        \"user_id\": \"user123\",\n        \"items\": [\n            {\n                \"product_id\": item.id,\n                \"quantity\": 5,\n                \"price\": 100.0\n            }\n        ]\n    }\n    \n    response = client.post(\"/orders/\", json=order_payload)\n    assert response.status_code == 400\n    assert \"Insufficient stock\" in response.json()[\"detail\"]\n\ndef test_get_order(client, db_session):\n    # Create an order first\n    item = InventoryItem(name=\"Test\", stock_quantity=10, price=1.0)\n    db_session.add(item)\n    db_session.commit()\n    \n    order_payload = {\n        \"user_id\": \"user1\",\n        \"items\": [{\"product_id\": item.id, \"quantity\": 1, \"price\": 1.0}]\n    }\n    create_res = client.post(\"/orders/\", json=order_payload)\n    order_id = create_res.json()[\"id\"]\n    \n    response = client.get(f\"/orders/{order_id}\")\n    assert response.status_code == 200\n    assert response.json()[\"id\"] == order_id",
+      "sha256": "37ec46a1c4ba71745aebad973a7e0aa396292ecef8b5cac38db696e8d99c0eb6",
+      "size": 2149,
+      "mtime_ms": 1794641549400.844
+    },
+    "tests/test_inventory.py": {
+      "existed": true,
+      "content": "import pytest\nfrom backend.models.inventory import InventoryItem\n\ndef test_create_inventory_item(client):\n    item_payload = {\n        \"name\": \"New Gadget\",\n        \"description\": \"A cool gadget\",\n        \"stock_quantity\": 50,\n        \"price\": 19.99\n    }\n    response = client.post(\"/inventory/\", json=item_payload)\n    assert response.status_code == 201\n    data = response.json()\n    assert data[\"name\"] == \"New Gadget\"\n    assert data[\"stock_quantity\"] == 50\n\ndef test_duplicate_item_name(client):\n    item_payload = {\"name\": \"Unique\", \"stock_quantity\": 1, \"price\": 1.0}\n    client.post(\"/inventory/\", json=item_payload)\n    \n    response = client.post(\"/inventory/\", json=item_payload)\n    assert response.status_code == 400\n    assert \"already exists\" in response.json()[\"detail\"]\n\ndef test_get_inventory_item(client, db_session):\n    item = InventoryItem(name=\"Fetch Me\", stock_quantity=5, price=10.0)\n    db_session.add(item)\n    db_session.commit()\n    db_session.refresh(item)\n    \n    response = client.get(f\"/inventory/{item.id}\")\n    assert response.status_code == 200\n    assert response.json()[\"name\"] == \"Fetch Me\"",
+      "sha256": "d11cf3fa0749f203978214530e313e6d99ac2b0774f7b751e320c79d15040a0b",
+      "size": 1130,
+      "mtime_ms": 1794641549405.3342
+    },
+    ".alphapilot_generated.mark": {
+      "existed": true,
+      "content": "[\n  \"architecture_design.md\",\n  \"backend/database.py\",\n  \"backend/main.py\",\n  \"backend/models/__init__.py\",\n  \"backend/models/enums.py\",\n  \"backend/models/inventory.py\",\n  \"backend/models/order.py\",\n  \"backend/routers/inventory.py\",\n  \"backend/routers/orders.py\",\n  \"backend/schemas/inventory.py\",\n  \"backend/schemas/order.py\",\n  \"backend/services/order_service.py\",\n  \"conftest.py\",\n  \"test_orders.py\",\n  \"tests/conftest.py\",\n  \"tests/test_inventory.py\",\n  \"tests/test_orders.py\"\n]",
+      "sha256": "6d1ce3cce174b10a58cb789d8822a232de6bba2590a90f9e105e644af39ce849",
+      "size": 482,
+      "mtime_ms": 1794641549407.3357
+    },
+    "backend/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794641549408.3342
+    },
+    "backend/routers/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794641549411.0366
+    },
+    "backend/schemas/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794641549413.0442
+    },
+    "backend/services/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794641549415.1123
+    },
+    "tests/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794641549416.5757
+    }
+  }
+}

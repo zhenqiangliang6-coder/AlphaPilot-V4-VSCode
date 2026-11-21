@@ -100,6 +100,8 @@ const ToastProvider: React.FC<{ children?: React.ReactNode }> = ({ children }) =
           {toasts.map((t, i) => (
             <div
               key={t.id}
+              role={t.kind === 'error' ? 'alert' : 'status'}
+              aria-label={t.message}
               className="ap-glass ap-rise pointer-events-auto relative overflow-hidden rounded-xl pl-4 pr-5 py-2.5 shadow-xl shadow-black/40 flex items-center gap-2.5 text-xs text-gray-200 min-w-[220px] max-w-[420px]"
               style={{ '--d': `${i * 60}ms` } as React.CSSProperties}
             >

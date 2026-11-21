@@ -1,0 +1,35 @@
+{
+  "task_id": "f5363112-84ea-4612-ac8e-b739b731b0e0",
+  "created_at": "2026-11-14T18:00:51.376Z",
+  "workspace_root": "C:\\Users\\49772\\Desktop\\shopflow_ecommerce",
+  "files": {
+    "backend/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794679161676.744
+    },
+    "backend/routers/orders.py": {
+      "existed": true,
+      "content": "from typing import   # ← BUG: List removed\r\n\r\nfrom fastapi import APIRouter, Depends, HTTPException, status\r\nfrom sqlalchemy.orm import Session\r\n\r\nfrom backend.database import get_db\r\nfrom backend.models.order import Order, OrderStatus\r\nfrom backend.schemas.order import OrderCreate, OrderResponse, OrderUpdateStatus\r\n\r\nrouter = APIRouter()\r\n\r\n\r\n@router.post(\"/\", response_model=OrderResponse, status_code=status.HTTP_200_OK)\r\ndef create_order(\r\n    order_in: OrderCreate, db: Session = Depends(get_db)\r\n) -> Order:\r\n    \"\"\"\r\n    创建新订单。\r\n    \"\"\"\r\n    # 验证初始状态是否为 pending\r\n    if order_in.status != OrderStatus.PENDING:\r\n        raise HTTPException(\r\n            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,\r\n            detail=\"New orders must start with 'pending' status\",\r\n        )\r\n\r\n    db_order = Order(**order_in.model_dump())\r\n    db.add(db_order)\r\n    db.commit()\r\n    db.refresh(db_order)\r\n    return db_order\r\n\r\n\r\n@router.get(\"/\", response_model=List[OrderResponse], status_code=status.HTTP_200_OK)\r\ndef read_orders(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):\r\n    \"\"\"\r\n    获取订单列表。\r\n    \"\"\"\r\n    orders = db.query(Order).offset(skip).limit(limit).all()\r\n    return orders\r\n\r\n\r\n@router.get(\"/{order_id}\", response_model=OrderResponse, status_code=status.HTTP_200_OK)\r\ndef read_order(order_id: int, db: Session = Depends(get_db)):\r\n    \"\"\"\r\n    根据 ID 获取单个订单。\r\n    \"\"\"\r\n    order = db.query(Order).filter(Order.id == order_id).first()\r\n    if order is None:\r\n        raise HTTPException(status_code=404, detail=\"Order not found\")\r\n    return order\r\n\r\n\r\n@router.put(\"/{order_id}/status\", response_model=OrderResponse, status_code=status.HTTP_200_OK)\r\ndef update_order_status(\r\n    order_id: int,\r\n    status_update: OrderUpdateStatus,\r\n    db: Session = Depends(get_db),\r\n):\r\n    \"\"\"\r\n    更新订单状态。\r\n    \"\"\"\r\n    order = db.query(Order).filter(Order.id == order_id).first()\r\n    if order is None:\r\n        raise HTTPException(status_code=404, detail=\"Order not found\")\r\n\r\n    try:\r\n        current_status = OrderStatus(order.status)\r\n    except ValueError:\r\n        raise HTTPException(\r\n            status_code=500, \r\n            detail=f\"Invalid status stored in database: {order.status}\"\r\n        )\r\n\r\n    new_status = status_update.new_status\r\n\r\n    # 验证状态转换是否合法\r\n    allowed_next_states = current_status.next_states()\r\n    if new_status.value not in allowed_next_states:\r\n        raise HTTPException(\r\n            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,\r\n            detail=f\"Invalid status transition from {current_status.value} to {new_status.value}. Allowed: {allowed_next_states}\",\r\n        )\r\n\r\n    order.status = new_status.value\r\n    db.commit()\r\n    db.refresh(order)\r\n    return order\r\n\r\n\r\n@router.delete(\"/{order_id}\", status_code=status.HTTP_204_NO_CONTENT)\r\ndef delete_order(order_id: int, db: Session = Depends(get_db)):\r\n    \"\"\"\r\n    删除订单。\r\n    \"\"\"\r\n    order = db.query(Order).filter(Order.id == order_id).first()\r\n    if order is None:\r\n        raise HTTPException(status_code=404, detail=\"Order not found\")\r\n\r\n    db.delete(order)\r\n    db.commit()\r\n    return None",
+      "sha256": "552c0f3dfc1578f12d4d53de45410ef8ce11a204e7cfc7ce3ee2cf4d5f6af1d1",
+      "size": 3235,
+      "mtime_ms": 1794679173877.983
+    },
+    ".alphapilot_generated.mark": {
+      "existed": true,
+      "content": "[\n  \"backend/__init__.py\",\n  \"backend/database.py\",\n  \"backend/main.py\",\n  \"backend/models/enums.py\",\n  \"backend/models/order.py\",\n  \"backend/routers/orders.py\",\n  \"backend/schemas/order.py\",\n  \"tests/conftest.py\",\n  \"tests/test_orders.py\"\n]",
+      "sha256": "21def4799a68532ca4f9fc87868a883a5daadac9e3c8d8af9a4c8a400217995a",
+      "size": 241,
+      "mtime_ms": 1794679161679.3438
+    },
+    "backend/routers/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794679161684.027
+    }
+  }
+}

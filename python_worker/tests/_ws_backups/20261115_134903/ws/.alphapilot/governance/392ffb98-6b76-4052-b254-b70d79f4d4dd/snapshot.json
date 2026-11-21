@@ -1,0 +1,35 @@
+{
+  "task_id": "392ffb98-6b76-4052-b254-b70d79f4d4dd",
+  "created_at": "2026-11-14T23:08:06.778Z",
+  "workspace_root": "C:\\Users\\49772\\Desktop\\shopflow_ecommerce",
+  "files": {
+    "backend/routers/orders.py": {
+      "existed": true,
+      "content": "from fastapi import APIRouter, Depends, HTTPException, status\r\nfrom sqlalchemy.orm import Session\r\nfrom typing import   # ← BUG: List removed\r\nfrom datetime import datetime\r\n\r\nfrom backend.database import get_db\r\nfrom backend.models.order import Order, OrderStatus\r\nfrom backend.schemas.order import OrderCreate, OrderResponse, OrderUpdateStatus\r\n\r\nrouter = APIRouter()\r\n\r\n@router.post(\"/\", response_model=OrderResponse, status_code=status.HTTP_200_OK)\r\ndef create_order(order_data: OrderCreate, db: Session = Depends(get_db)):\r\n    db_order = Order(\r\n        user_id=order_data.user_id,\r\n        status=OrderStatus.PENDING.value,\r\n        total_amount=order_data.total_amount,\r\n        items=order_data.items,\r\n        created_at=datetime.utcnow()\r\n    )\r\n    db.add(db_order)\r\n    db.commit()\r\n    db.refresh(db_order)\r\n    return db_order\r\n\r\n@router.get(\"/\", response_model=List[OrderResponse], status_code=status.HTTP_200_OK)\r\ndef list_orders(db: Session = Depends(get_db)):\r\n    orders = db.query(Order).all()\r\n    return orders\r\n\r\n@router.get(\"/{order_id}\", response_model=OrderResponse, status_code=status.HTTP_200_OK)\r\ndef get_order(order_id: int, db: Session = Depends(get_db)):\r\n    order = db.query(Order).filter(Order.id == order_id).first()\r\n    if not order:\r\n        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=\"Order not found\")\r\n    return order\r\n\r\n@router.put(\"/{order_id}/status\", response_model=OrderResponse, status_code=status.HTTP_200_OK)\r\ndef update_order_status(order_id: int, status_update: OrderUpdateStatus, db: Session = Depends(get_db)):\r\n    order = db.query(Order).filter(Order.id == order_id).first()\r\n    if not order:\r\n        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=\"Order not found\")\r\n\r\n    try:\r\n        current_enum = OrderStatus(order.status)\r\n        allowed_next = current_enum.next_states()\r\n        if status_update.new_status not in allowed_next:\r\n            raise HTTPException(\r\n                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,\r\n                detail=f\"Invalid status transition from {order.status} to {status_update.new_status}\"\r\n            )\r\n    except ValueError:\r\n        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=\"Invalid current status\")\r\n\r\n    order.status = status_update.new_status\r\n    db.commit()\r\n    db.refresh(order)\r\n    return order\r\n\r\n@router.delete(\"/{order_id}\", status_code=status.HTTP_204_NO_CONTENT)\r\ndef delete_order(order_id: int, db: Session = Depends(get_db)):\r\n    order = db.query(Order).filter(Order.id == order_id).first()\r\n    if not order:\r\n        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=\"Order not found\")\r\n    db.delete(order)\r\n    db.commit()\r\n    return",
+      "sha256": "1cc06344c9601be5db1933aebd30aa077f8f85396d20709f5da2df52bd2266e4",
+      "size": 2769,
+      "mtime_ms": 1794697238215.7593
+    },
+    "backend/routers/__init__.py": {
+      "existed": true,
+      "content": "from backend.routers.orders import router",
+      "sha256": "f0a5c88b0e701b41c0df23a36fc2e00b3e0b704bc7e79150a91e4148b52c47e0",
+      "size": 41,
+      "mtime_ms": 1794697225727.191
+    },
+    ".alphapilot_generated.mark": {
+      "existed": true,
+      "content": "[\n  \"backend/__init__.py\",\n  \"backend/database.py\",\n  \"backend/main.py\",\n  \"backend/main.py\",\n  \"backend/models/__init__.py\",\n  \"backend/models/enums.py\",\n  \"backend/models/order.py\",\n  \"backend/routers/__init__.py\",\n  \"backend/routers/orders.py\",\n  \"backend/routers/orders.py\",\n  \"backend/schemas/__init__.py\",\n  \"backend/schemas/order.py\",\n  \"requirements.txt\",\n  \"requirements.txt\",\n  \"tests/__init__.py\",\n  \"tests/conftest.py\",\n  \"tests/conftest.py\",\n  \"tests/test_orders.py\"\n]",
+      "sha256": "3dc3ed98d303e0838d5b20f62d37199845dfe5b78fd3561e1bc3244db328c6c1",
+      "size": 481,
+      "mtime_ms": 1794697225758.8872
+    },
+    "backend/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794697225702.08
+    }
+  }
+}

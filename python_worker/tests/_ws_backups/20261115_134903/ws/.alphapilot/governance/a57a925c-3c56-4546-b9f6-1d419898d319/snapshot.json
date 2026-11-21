@@ -1,0 +1,86 @@
+{
+  "task_id": "a57a925c-3c56-4546-b9f6-1d419898d319",
+  "created_at": "2026-11-14T23:30:01.449Z",
+  "workspace_root": "C:\\Users\\49772\\Desktop\\shopflow_ecommerce",
+  "files": {
+    "backend/database.py": {
+      "existed": true,
+      "content": "from sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker, declarative_base\n\nSQLALCHEMY_DATABASE_URL = \"sqlite:///./backend/shopflow.db\"\n\nengine = create_engine(\n    SQLALCHEMY_DATABASE_URL, connect_args={\"check_same_thread\": False}\n)\nSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)\nBase = declarative_base()\n\n\ndef get_db():\n    \"\"\"Yield a database session and ensure it is closed after use.\"\"\"\n    db = SessionLocal()\n    try:\n        yield db\n    finally:\n        db.close()",
+      "sha256": "dad5ced3e5ef5e593c1c5f8249c7cb607160d298ec52aa4bfc76ac9f0d439387",
+      "size": 523,
+      "mtime_ms": 1794697225705.5674
+    },
+    "backend/models/inventory.py": {
+      "existed": true,
+      "content": "import uuid\nfrom sqlalchemy import Column, String, Integer, Float\nfrom backend.database import Base\n\nclass Inventory(Base):\n    __tablename__ = \"inventory\"\n\n    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))\n    product_name = Column(String, unique=True, nullable=False)\n    sku = Column(String, nullable=False)\n    quantity = Column(Integer, default=0, nullable=False)\n    unit_price = Column(Float, nullable=False)",
+      "sha256": "7f047bfb64407ab29261fc1a719a83528c2db7a3e1eea34359784f6d86b2f6da",
+      "size": 442,
+      "mtime_ms": 1794698289256.7544
+    },
+    "backend/models/order.py": {
+      "existed": true,
+      "content": "from sqlalchemy import Column, Integer, String, Float, DateTime, JSON\nfrom sqlalchemy.sql import func\nfrom backend.database import Base\nfrom backend.models.enums import OrderStatus\n\nclass Order(Base):\n    __tablename__ = \"orders\"\n\n    id = Column(Integer, primary_key=True, autoincrement=True, index=True)\n    user_id = Column(String, index=True)\n    status = Column(String, default=OrderStatus.PENDING.value)\n    total_amount = Column(Float, default=0.0)\n    items = Column(JSON, default=list)\n    created_at = Column(DateTime(timezone=True), server_default=func.now())\n\n__all__ = [\"Order\", \"OrderStatus\"]",
+      "sha256": "7f94128116cfbf544e81bfc918fb6ddd61912a29f6e1b323dc023ff9a6377453",
+      "size": 606,
+      "mtime_ms": 1794697225723.19
+    },
+    "backend/services/__init__.py": {
+      "existed": false
+    },
+    "backend/services/order_service.py": {
+      "existed": false
+    },
+    "backend/services/inventory_service.py": {
+      "existed": false
+    },
+    "backend/routers/inventory.py": {
+      "existed": true,
+      "content": "from fastapi import APIRouter, Depends, HTTPException\nfrom sqlalchemy.orm import Session\nfrom backend.database import get_db\nfrom backend.models.inventory import Inventory\nfrom backend.schemas.inventory import InventoryCreate, InventoryUpdate, InventoryResponse\n\nrouter = APIRouter()\n\n@router.post(\"\", response_model=InventoryResponse, status_code=200)\ndef create_inventory(item: InventoryCreate, db: Session = Depends(get_db)):\n    existing = db.query(Inventory).filter(Inventory.product_name == item.product_name).first()\n    if existing:\n        raise HTTPException(status_code=400, detail=\"already exists\")\n    new_inv = Inventory(**item.model_dump())\n    db.add(new_inv)\n    db.commit()\n    db.refresh(new_inv)\n    return new_inv\n\n@router.get(\"\", response_model=list[InventoryResponse], status_code=200)\ndef list_inventory(db: Session = Depends(get_db)):\n    return db.query(Inventory).all()\n\n@router.get(\"/{product_name}\", response_model=InventoryResponse, status_code=200)\ndef get_inventory(product_name: str, db: Session = Depends(get_db)):\n    inv = db.query(Inventory).filter(Inventory.product_name == product_name).first()\n    if not inv:\n        raise HTTPException(status_code=404, detail=\"Inventory not found\")\n    return inv\n\n@router.patch(\"/{product_name}\", response_model=InventoryResponse, status_code=200)\ndef update_inventory(product_name: str, update_data: InventoryUpdate, db: Session = Depends(get_db)):\n    inv = db.query(Inventory).filter(Inventory.product_name == product_name).first()\n    if not inv:\n        raise HTTPException(status_code=404, detail=\"Inventory not found\")\n    for key, value in update_data.model_dump(exclude_unset=True).items():\n        setattr(inv, key, value)\n    db.commit()\n    db.refresh(inv)\n    return inv",
+      "sha256": "83d22eee21988ee3ad31f635e6b00cfa2a73de22615a263dd1540fc86b04c528",
+      "size": 1760,
+      "mtime_ms": 1794698289289.769
+    },
+    "requirements.txt": {
+      "existed": true,
+      "content": "fastapi\nuvicorn\nsqlalchemy\npydantic\npytest\nhttpx",
+      "sha256": "6f91c0bd1f184be15fb461172dfa5a32f5027fb5bc4eec6c283f2f83be7bf29c",
+      "size": 48,
+      "mtime_ms": 1794698289315.066
+    },
+    ".alphapilot_generated.mark": {
+      "existed": true,
+      "content": "[\n  \"backend/main.py\",\n  \"backend/models/__init__.py\",\n  \"backend/models/inventory.py\",\n  \"backend/routers/inventory.py\",\n  \"backend/schemas/inventory.py\",\n  \"requirements.txt\",\n  \"requirements.txt\",\n  \"tests/test_inventory.py\",\n  \"tests/test_inventory.py\"\n]",
+      "sha256": "6aaea3d52192560eff0feba98dbf44a88c3b0015ce552cdb709f69193ebce88d",
+      "size": 258,
+      "mtime_ms": 1794698289323.0994
+    },
+    "backend/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794698289317.5862
+    },
+    "backend/models/__init__.py": {
+      "existed": true,
+      "content": "from backend.models.order import Order\nfrom backend.models.inventory import Inventory",
+      "sha256": "c8186296a1e7711093130f83acf0ade5ddf8ebaf0afdd084ff3b03fbf41f120b",
+      "size": 85,
+      "mtime_ms": 1794698289257.7527
+    },
+    "backend/routers/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794698289318.5833
+    },
+    "backend/routers/orders.py": {
+      "existed": true,
+      "content": "from typing import List, Optional\nfrom backend.models.order import Order\nfrom backend.schemas.order import OrderCreate, OrderResponse\nfrom fastapi import APIRouter, Depends, HTTPException, status\nfrom sqlalchemy.orm import Session\nfrom datetime import datetime\n\nfrom backend.database import get_db\nfrom backend.models.order import Order, OrderStatus\nfrom backend.schemas.order import OrderCreate, OrderResponse, OrderUpdateStatus\nfrom backend.models.inventory import Inventory\n\nrouter = APIRouter()\n\n@router.post(\"\", response_model=OrderResponse, status_code=status.HTTP_200_OK)\ndef create_order(order_data: OrderCreate, db: Session = Depends(get_db)):\n    # Inventory check and deduction\n    if order_data.items:\n        for item in order_data.items:\n            product_name = item.get(\"product_name\")\n            quantity = item.get(\"quantity\", 0)\n            \n            inv = db.query(Inventory).filter(Inventory.product_name == product_name).first()\n            if not inv:\n                raise HTTPException(\n                    status_code=status.HTTP_400_BAD_REQUEST,\n                    detail=f\"Product {product_name} does not exist in inventory\"\n                )\n            if inv.quantity < quantity:\n                raise HTTPException(\n                    status_code=status.HTTP_400_BAD_REQUEST,\n                    detail=\"Insufficient stock\"\n                )\n            inv.quantity -= quantity\n    \n    db_order = Order(\n        user_id=order_data.user_id,\n        status=OrderStatus.PENDING.value,\n        total_amount=order_data.total_amount,\n        items=order_data.items,\n        created_at=datetime.utcnow()\n    )\n    db.add(db_order)\n    db.commit()\n    db.refresh(db_order)\n    return db_order\n\n@router.get(\"\", response_model=List[OrderResponse], status_code=status.HTTP_200_OK)\ndef list_orders(db: Session = Depends(get_db)):\n    orders = db.query(Order).all()\n    return orders\n\n@router.get(\"/{order_id}\", response_model=OrderResponse, status_code=status.HTTP_200_OK)\ndef get_order(order_id: int, db: Session = Depends(get_db)):\n    order = db.query(Order).filter(Order.id == order_id).first()\n    if not order:\n        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=\"Order not found\")\n    return order\n\n@router.put(\"/{order_id}/status\", response_model=OrderResponse, status_code=status.HTTP_200_OK)\ndef update_order_status(order_id: int, status_update: OrderUpdateStatus, db: Session = Depends(get_db)):\n    order = db.query(Order).filter(Order.id == order_id).first()\n    if not order:\n        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=\"Order not found\")\n\n    try:\n        current_enum = OrderStatus(order.status)\n        allowed_next = current_enum.next_states()\n        if status_update.new_status not in allowed_next:\n            raise HTTPException(\n                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,\n                detail=f\"Invalid status transition from {order.status} to {status_update.new_status}\"\n            )\n    except ValueError:\n        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=\"Invalid current status\")\n\n    order.status = status_update.new_status\n    db.commit()\n    db.refresh(order)\n    return order\n\n@router.delete(\"/{order_id}\", status_code=status.HTTP_204_NO_CONTENT)\ndef delete_order(order_id: int, db: Session = Depends(get_db)):\n    order = db.query(Order).filter(Order.id == order_id).first()\n    if not order:\n        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=\"Order not found\")\n    db.delete(order)\n    db.commit()\n    return",
+      "sha256": "b9365f635188f4591e6139a8a98029347168a9dfd5c7f6537be68bf62e96e217",
+      "size": 3608,
+      "mtime_ms": 1794698289321.5837
+    }
+  }
+}

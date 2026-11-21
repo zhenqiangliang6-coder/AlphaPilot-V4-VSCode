@@ -1,0 +1,88 @@
+{
+  "task_id": "af5b4827-716b-493d-a4b5-5744f42a4c79",
+  "created_at": "2026-11-14T09:50:14.611Z",
+  "workspace_root": "C:\\Users\\49772\\Desktop\\shopflow_ecommerce",
+  "files": {
+    "requirements.txt": {
+      "existed": false
+    },
+    "backend/__init__.py": {
+      "existed": true,
+      "content": "\"\"\"Backend package initialization.\"\"\"\nfrom .main import create_app\nfrom .routers.__init__ import api_router\nfrom .schemas.order import OrderCreate, OrderResponse, OrderStatus\n\n__all__ = [\"create_app\", \"api_router\", \"OrderCreate\", \"OrderResponse\", \"OrderStatus\"]",
+      "sha256": "4e37d9ca5399c6ed25b2a010e698b6ed7bb3a08d2fa9b99b2096a3f4fa91efb4",
+      "size": 261,
+      "mtime_ms": 1794649672267.118
+    },
+    "backend/database.py": {
+      "existed": false
+    },
+    "backend/models/__init__.py": {
+      "existed": false
+    },
+    "backend/models/enums.py": {
+      "existed": false
+    },
+    "backend/models/order.py": {
+      "existed": false
+    },
+    "backend/schemas/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794649672298.4688
+    },
+    "backend/schemas/order.py": {
+      "existed": true,
+      "content": "\"\"\"Pydantic schemas for order management.\"\"\"\nfrom pydantic import BaseModel, Field, ConfigDict\nfrom datetime import datetime, timezone\nfrom enum import Enum\nfrom typing import Any\n\nclass OrderStatus(str, Enum):\n    PENDING = \"pending\"\n    PROCESSING = \"processing\"\n    COMPLETED = \"completed\"\n    CANCELLED = \"cancelled\"\n\nclass OrderBase(BaseModel):\n    customer_id: str = Field(..., min_length=1, max_length=64, pattern=r\"^[a-zA-Z0-9_-]+$\")\n    items: list[dict[str, Any]] = Field(..., min_length=1)\n    total_amount: float = Field(..., gt=0, le=1_000_000.0)\n\nclass OrderCreate(OrderBase):\n    model_config = ConfigDict(extra=\"forbid\")\n\nclass OrderResponse(OrderBase):\n    id: str = Field(..., pattern=r\"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$\")\n    status: OrderStatus = Field(default=OrderStatus.PENDING)\n    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))\n    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))\n    model_config = ConfigDict(from_attributes=True)",
+      "sha256": "d8e2483c0396cb911822c0da12b60457741b477db1bed7c1cf50754509d96d90",
+      "size": 1052,
+      "mtime_ms": 1794649672285.4768
+    },
+    "backend/routers/__init__.py": {
+      "existed": true,
+      "content": "\"\"\"Router aggregation module.\"\"\"\nfrom fastapi import APIRouter\nfrom .orders import router as orders_router\n\napi_router = APIRouter()\napi_router.include_router(orders_router, prefix=\"/orders\", tags=[\"orders\"])",
+      "sha256": "9fed5d70e63c376ccd7f655ec74e2c17093c26db0e83ab994f3ce211072c464f",
+      "size": 208,
+      "mtime_ms": 1794649672275.597
+    },
+    "backend/routers/orders.py": {
+      "existed": true,
+      "content": "\"\"\"Order management endpoints.\"\"\"\nimport uuid\nfrom fastapi import APIRouter, HTTPException, Query\nfrom typing import Optional\nfrom datetime import datetime, timezone\nfrom ..schemas.order import OrderCreate, OrderResponse, OrderStatus\n\nrouter = APIRouter()\n\n_store: dict[str, dict] = {}\n\ndef _now_utc() -> datetime:\n    return datetime.now(timezone.utc)\n\n@router.post(\"/\", response_model=OrderResponse, status_code=201)\nasync def create_order(payload: OrderCreate):\n    order_id = str(uuid.uuid4())\n    now = _now_utc()\n    record = {\n        \"id\": order_id,\n        \"customer_id\": payload.customer_id,\n        \"items\": payload.items,\n        \"total_amount\": payload.total_amount,\n        \"status\": OrderStatus.PENDING.value,\n        \"created_at\": now,\n        \"updated_at\": now,\n    }\n    _store[order_id] = record\n    return record\n\n@router.get(\"/{order_id}\", response_model=OrderResponse)\nasync def get_order(order_id: str):\n    record = _store.get(order_id)\n    if not record:\n        raise HTTPException(status_code=404, detail=\"Order not found\")\n    return record\n\n@router.get(\"/\", response_model=list[OrderResponse])\nasync def list_orders(\n    status: Optional[str] = Query(None, description=\"Filter by status\"),\n    limit: int = Query(20, ge=1, le=100),\n    offset: int = Query(0, ge=0),\n):\n    records = list(_store.values())\n    if status:\n        records = [r for r in records if r.get(\"status\") == status]\n    return records[offset : offset + limit]\n\n@router.put(\"/{order_id}/status\", response_model=OrderResponse)\nasync def update_order_status(order_id: str, status: str):\n    record = _store.get(order_id)\n    if not record:\n        raise HTTPException(status_code=404, detail=\"Order not found\")\n    valid = {v.value for v in OrderStatus}\n    if status not in valid:\n        raise HTTPException(status_code=422, detail=f\"Invalid status. Allowed: {valid}\")\n    record[\"status\"] = status\n    record[\"updated_at\"] = _now_utc()\n    return record\n\n@router.delete(\"/{order_id}\", status_code=204)\nasync def delete_order(order_id: str):\n    if order_id not in _store:\n        raise HTTPException(status_code=404, detail=\"Order not found\")\n    del _store[order_id]\n    return None\n\n### doc\n# Order Management API\n\n## 概述\n基于 FastAPI 构建的异步订单管理服务，提供完整的 CRUD 接口、状态机校验、分页查询与自动化测试套件。\n\n## 快速开始\npip install fastapi uvicorn pydantic pytest httpx\nuvicorn backend.main:create_app --factory --reload\n\n## 核心特性\n- **Pydantic V2 校验**：严格字段约束、模式匹配、额外字段拒绝\n- **异步优先**：全链路 `async/await`，非阻塞 I/O 设计\n- **生命周期管理**：启动/关闭钩子，资源安全释放\n- **测试就绪**：`conftest.py` 提供会话级客户端与隔离夹具\n- **标准响应**：HTTP 状态码规范，OpenAPI 文档自动生成\n\n## 端点说明\n| Method | Path                | Description          |\n|--------|---------------------|----------------------|\n| POST   | `/orders/`          | 创建订单             |\n| GET    | `/orders/{id}`      | 获取订单详情         |\n| GET    | `/orders/`          | 分页/过滤查询        |\n| PUT    | `/orders/{id}/status` | 更新订单状态       |\n| DELETE | `/orders/{id}`      | 删除订单             |\n\n## 测试运行\npytest tests/ -v --tb=short\n\n### docstring\n\"\"\"\nModule: backend.schemas.order\nPurpose: Define Pydantic models for order creation and response serialization.\nUsage: Import OrderCreate for request validation, OrderResponse for endpoint output.\n\"\"\"\n\n\"\"\"\nModule: backend.routers.orders\nPurpose: Expose HTTP endpoints for order lifecycle management.\nUsage: Mount via FastAPI include_router. Handles validation, storage, and status transitions.\n\"\"\"\n\n\"\"\"\nModule: backend.main\nPurpose: Application factory and server configuration.\nUsage: Call create_app() to instantiate FastAPI instance. Supports lifespan events and middleware.\n\"\"\"\n\n\"\"\"\nModule: tests.conftest\nPurpose: Pytest fixture definitions for integration testing.\nUsage: Automatically loaded by pytest. Provides app, client, payload, and store isolation.\n\"\"\"",
+      "sha256": "4a336c9edcb7f4308cb1fb68326c73e10129733f7c90f02577374db13ce34d4c",
+      "size": 4127,
+      "mtime_ms": 1794649672294.785
+    },
+    "backend/main.py": {
+      "existed": true,
+      "content": "\"\"\"Application factory and configuration.\"\"\"\nfrom contextlib import asynccontextmanager\nfrom fastapi import FastAPI\nfrom fastapi.middleware.cors import CORSMiddleware\nfrom .routers.__init__ import api_router\nimport logging\n\nlogging.basicConfig(level=logging.INFO, format=\"%(asctime)s | %(levelname)s | %(message)s\")\nlogger = logging.getLogger(__name__)\n\n@asynccontextmanager\nasync def lifespan(app: FastAPI):\n    logger.info(\"Initializing application resources...\")\n    yield\n    logger.info(\"Cleaning up application resources...\")\n\ndef create_app() -> FastAPI:\n    app = FastAPI(\n        title=\"Order Management API\",\n        version=\"1.0.0\",\n        lifespan=lifespan,\n        docs_url=\"/docs\",\n        redoc_url=\"/redoc\",\n    )\n    app.add_middleware(\n        CORSMiddleware,\n        allow_origins=[\"*\"],\n        allow_credentials=True,\n        allow_methods=[\"*\"],\n        allow_headers=[\"*\"],\n    )\n    app.include_router(api_router)\n    return app",
+      "sha256": "d1cd46b0f3a89cefa0034bf92eceabce10802a566cd9b7f3ad083c227993261b",
+      "size": 953,
+      "mtime_ms": 1794649672279.9568
+    },
+    "tests/conftest.py": {
+      "existed": true,
+      "content": "\"\"\"Pytest configuration and fixtures.\"\"\"\nimport pytest\nfrom backend.main import create_app\nfrom fastapi.testclient import TestClient\nfrom backend.routers import orders\n\n@pytest.fixture(scope=\"session\")\ndef app():\n    return create_app()\n\n@pytest.fixture(scope=\"session\")\ndef client(app):\n    return TestClient(app)\n\n@pytest.fixture\ndef sample_order_payload():\n    return {\n        \"customer_id\": \"usr_8f3a\",\n        \"items\": [{\"sku\": \"PROD_X\", \"qty\": 2}],\n        \"total_amount\": 149.50\n    }\n\n@pytest.fixture\ndef clean_store():\n    original = orders._store.copy()\n    orders._store.clear()\n    yield\n    orders._store.clear()\n    orders._store.update(original)\n\n### test\nimport pytest\nfrom fastapi.testclient import TestClient\nfrom backend.routers import orders\n\ndef test_create_order(client: TestClient, sample_order_payload: dict, clean_store):\n    resp = client.post(\"/orders/\", json=sample_order_payload)\n    assert resp.status_code == 201\n    data = resp.json()\n    assert data[\"customer_id\"] == sample_order_payload[\"customer_id\"]\n    assert data[\"status\"] == \"pending\"\n    assert \"id\" in data\n    assert \"created_at\" in data\n\ndef test_get_order_not_found(client: TestClient):\n    resp = client.get(\"/orders/nonexistent-id\")\n    assert resp.status_code == 404\n\ndef test_list_orders_pagination(client: TestClient, clean_store):\n    for i in range(5):\n        client.post(\"/orders/\", json={\n            \"customer_id\": f\"u_{i}\",\n            \"items\": [],\n            \"total_amount\": 10.0\n        })\n    resp = client.get(\"/orders/?limit=2&offset=0\")\n    assert resp.status_code == 200\n    assert len(resp.json()) == 2\n\ndef test_update_status_invalid(client: TestClient, clean_store, sample_order_payload):\n    create_resp = client.post(\"/orders/\", json=sample_order_payload)\n    order_id = create_resp.json()[\"id\"]\n    resp = client.put(f\"/orders/{order_id}/status\", params={\"status\": \"invalid\"})\n    assert resp.status_code == 422\n\n### fix",
+      "sha256": "6c8e0ac53808cb3b360749aebc6de9558787609e4a1ce452ab325e24f5978ac7",
+      "size": 1943,
+      "mtime_ms": 1794649672293.1848
+    },
+    "tests/test_orders.py": {
+      "existed": false
+    },
+    ".alphapilot_generated.mark": {
+      "existed": true,
+      "content": "[\n  \"backend/__init__.py\",\n  \"backend/main.py\",\n  \"backend/routers/__init__.py\",\n  \"backend/routers/orders.py\",\n  \"backend/routers/orders.py\",\n  \"backend/routers/orders.py\",\n  \"backend/schemas/order.py\",\n  \"backend/schemas/order.py\",\n  \"docs/architecture_design.md\",\n  \"tests/conftest.py\",\n  \"tests/conftest.py\"\n]",
+      "sha256": "124ce4ff518f750bf10b1810620f1163cc5afa01914455b3c383ab70c4162203",
+      "size": 313,
+      "mtime_ms": 1794649672297.475
+    },
+    "tests/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794649672299.464
+    }
+  }
+}

@@ -1,0 +1,70 @@
+{
+  "task_id": "51ee6b08-bb5d-4f61-8d6f-739c67080b61",
+  "created_at": "2026-11-14T09:15:34.249Z",
+  "workspace_root": "C:\\Users\\49772\\Desktop\\shopflow_ecommerce",
+  "files": {
+    "tests/conftest.py": {
+      "existed": true,
+      "content": "import pytest\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom sqlalchemy.pool import StaticPool\nfrom fastapi.testclient import TestClient\n\nfrom backend.main import app\nfrom backend.database import Base, get_db\n\nSQLALCHEMY_DATABASE_URL = \"sqlite:///:memory:\"\n\nengine = create_engine(\n    SQLALCHEMY_DATABASE_URL,\n    connect_args={\"check_same_thread\": False},\n    poolclass=StaticPool,\n)\nTestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)\n\n@pytest.fixture(scope=\"function\")\ndef db_session():\n    Base.metadata.create_all(bind=engine)\n    session = TestingSessionLocal()\n    try:\n        yield session\n    finally:\n        session.close()\n        Base.metadata.drop_all(bind=engine)\n\n@pytest.fixture(scope=\"function\")\ndef client(db_session):\n    def override_get_db():\n        try:\n            yield db_session\n        finally:\n            pass\n            \n    app.dependency_overrides[get_db] = override_get_db\n    with TestClient(app) as test_client:\n        yield test_client\n    app.dependency_overrides.clear()",
+      "sha256": "1e8fa507849873daeeb280a99239d839fcf456659c7549e5e6b172da03df1348",
+      "size": 1080,
+      "mtime_ms": 1794647618009.6707
+    },
+    "backend/main.py": {
+      "existed": true,
+      "content": "from fastapi import FastAPI\nfrom fastapi.middleware.cors import CORSMiddleware\nfrom backend.database import engine, Base\nfrom backend.routers import orders\n\nBase.metadata.create_all(bind=engine)\n\napp = FastAPI()\n\napp.add_middleware(\n    CORSMiddleware,\n    allow_origins=[\"*\"],\n    allow_credentials=True,\n    allow_methods=[\"*\"],\n    allow_headers=[\"*\"],\n)\n\napp.include_router(orders.router, prefix=\"/orders\")\n\n@app.get(\"/\")\ndef read_root():\n    return {\"message\": \"ShopFlow API is running\"}",
+      "sha256": "543c6e98ef05c8db379b0ba06c4f4cd8cf346f98b57b86af427e2a2d75e7806e",
+      "size": 492,
+      "mtime_ms": 1794647618004.6638
+    },
+    "backend/routers/orders.py": {
+      "existed": true,
+      "content": "from fastapi import APIRouter, Depends, HTTPException, status\r\nfrom sqlalchemy.orm import Session\r\nfrom typing import   # ← BUG: List removed\r\nfrom backend.database import get_db\r\nfrom backend.models.order import Order, OrderStatus\r\nfrom backend.schemas.order import OrderCreate, OrderResponse, OrderUpdateStatus\r\n\r\nrouter = APIRouter()\r\n\r\n@router.post(\"/\", response_model=OrderResponse, status_code=status.HTTP_200_OK)\r\ndef create_order(order_in: OrderCreate, db: Session = Depends(get_db)):\r\n    db_order = Order(\r\n        user_id=order_in.user_id,\r\n        total_amount=order_in.total_amount,\r\n        items=order_in.items,\r\n        status=OrderStatus.PENDING\r\n    )\r\n    db.add(db_order)\r\n    db.commit()\r\n    db.refresh(db_order)\r\n    return db_order\r\n\r\n@router.get(\"/\", response_model=List[OrderResponse], status_code=status.HTTP_200_OK)\r\ndef get_orders(db: Session = Depends(get_db)):\r\n    return db.query(Order).all()\r\n\r\n@router.get(\"/{order_id}\", response_model=OrderResponse, status_code=status.HTTP_200_OK)\r\ndef get_order(order_id: int, db: Session = Depends(get_db)):\r\n    order = db.query(Order).filter(Order.id == order_id).first()\r\n    if not order:\r\n        raise HTTPException(status_code=404, detail=\"Order not found\")\r\n    return order\r\n\r\n@router.put(\"/{order_id}/status\", response_model=OrderResponse, status_code=status.HTTP_200_OK)\r\ndef update_order_status(order_id: int, status_in: OrderUpdateStatus, db: Session = Depends(get_db)):\r\n    order = db.query(Order).filter(Order.id == order_id).first()\r\n    if not order:\r\n        raise HTTPException(status_code=404, detail=\"Order not found\")\r\n    \r\n    current_status = OrderStatus(order.status)\r\n    if status_in.new_status not in current_status.next_states():\r\n        raise HTTPException(status_code=422, detail=\"Invalid status transition\")\r\n        \r\n    order.status = status_in.new_status\r\n    db.commit()\r\n    db.refresh(order)\r\n    return order\r\n\r\n@router.delete(\"/{order_id}\", status_code=status.HTTP_204_NO_CONTENT)\r\ndef delete_order(order_id: int, db: Session = Depends(get_db)):\r\n    order = db.query(Order).filter(Order.id == order_id).first()\r\n    if not order:\r\n        raise HTTPException(status_code=404, detail=\"Order not found\")\r\n    db.delete(order)\r\n    db.commit()\r\n    return None",
+      "sha256": "8d401e1b0a8db25b0b87010180d760cf74649ddb4296bf531fae6e21e5713461",
+      "size": 2276,
+      "mtime_ms": 1794647627704.2986
+    },
+    "backend/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794647618005.6726
+    },
+    "backend/routers/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794647618000.1492
+    },
+    "backend/schemas/order.py": {
+      "existed": true,
+      "content": "from pydantic import BaseModel\nfrom typing import List, Any\nfrom datetime import datetime\nfrom backend.models.enums import OrderStatus\n\nclass OrderCreate(BaseModel):\n    user_id: str\n    total_amount: float\n    items: List[Any] = []\n\nclass OrderResponse(BaseModel):\n    id: int\n    user_id: str\n    status: OrderStatus\n    total_amount: float\n    items: List[Any]\n    created_at: datetime\n\n    class Config:\n        from_attributes = True\n\nclass OrderUpdateStatus(BaseModel):\n    new_status: OrderStatus",
+      "sha256": "9e23f33597a71e789217398e496235c424b4fe67008299b918ebbd0d0821baf7",
+      "size": 503,
+      "mtime_ms": 1794647617992.8362
+    },
+    ".alphapilot_generated.mark": {
+      "existed": true,
+      "content": "[\n  \"backend/__init__.py\",\n  \"backend/database.py\",\n  \"backend/main.py\",\n  \"backend/models/__init__.py\",\n  \"backend/models/enums.py\",\n  \"backend/models/order.py\",\n  \"backend/routers/__init__.py\",\n  \"backend/routers/orders.py\",\n  \"backend/schemas/__init__.py\",\n  \"backend/schemas/order.py\",\n  \"requirements.txt\",\n  \"tests/__init__.py\",\n  \"tests/conftest.py\",\n  \"tests/test_orders.py\"\n]",
+      "sha256": "f651f0681a151815f1e0b113bf9cd13d9303bd0e035b056e2dbfc22f6c458eb6",
+      "size": 384,
+      "mtime_ms": 1794647618018.5078
+    },
+    "backend/schemas/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794647617993.8337
+    },
+    "tests/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794647618012.8142
+    }
+  }
+}

@@ -1044,6 +1044,37 @@ def _rollback_workspace(ws, snapshot: dict) -> dict:
     return {"restored": restored, "deleted_new": deleted_new, "errors": errors}
 
 
+# ── G10.31: 每遍同构基线复位 ──────────────────────────────────────
+# 「连续三遍」要求每遍都从同一状态完整贯穿 R5–R10。旧实现 workspace
+# fixture 只做 mkdir：一遍跑完后工作区停在 R10 终态，下一遍 R8 又要
+# 「新增」已存在的库存模块、R9 又要替换已经消失的旧枚举，三遍状态
+# 不可比，链路必然走偏。这里复用 G1/G4 已有的 bit-for-bit 快照与原子
+# 回滚，把首遍起点固化成基线，后续每遍在 setup_class 复位。
+# 不改任何四维判定条件、不改题面、不改质量门 —— 只保证三遍同构。
+_SHOPFLOW_BASELINE = Path(__file__).parent / "_shopflow_baseline.json"
+
+
+def _reset_pass_baseline() -> None:
+    ws = Path(DEFAULT_WORKSPACE)
+    if not ws.is_dir():
+        return
+    if _SHOPFLOW_BASELINE.exists():
+        try:
+            snap = json.loads(_SHOPFLOW_BASELINE.read_text(encoding="utf-8"))
+            report = _rollback_workspace(ws, snap)
+            print(f"  🔁 工作区已复位到本轮基线: 恢复 {report['restored']} 个文件, "
+                  f"清除 {len(report['deleted_new'])} 个新增文件")
+            if report["errors"]:
+                print(f"  ⚠️ 基线复位部分失败: {report['errors'][:3]}")
+        except Exception as e:
+            print(f"  ⚠️ 基线复位失败（本遍从当前状态继续）: {e}")
+    else:
+        snap = _snapshot_workspace(ws)
+        _SHOPFLOW_BASELINE.write_text(
+            json.dumps(snap, ensure_ascii=False), encoding="utf-8")
+        print(f"  📌 已固化首遍基线: {len(snap)} 个文件")
+
+
 # =====================================================================
 # 统一任务状态机（治理唯一准入原则）
 # =====================================================================
@@ -2075,8 +2106,9 @@ class TestShopFlowProductionPath:
 
     @classmethod
     def setup_class(cls):
-        """测试前：清除项目历史记忆，避免污染 LLM 工作台"""
+        """测试前：清除项目历史记忆，并把工作区复位到本轮基线"""
         cleared = clear_project_memory("shopflow")
+        _reset_pass_baseline()
         print(f"\n{'='*70}")
         print(f"  🧪 ShopFlow 生产路径测试 — Attempt #5")
         print(f"  🧹 记忆清除: {cleared} 个历史任务")

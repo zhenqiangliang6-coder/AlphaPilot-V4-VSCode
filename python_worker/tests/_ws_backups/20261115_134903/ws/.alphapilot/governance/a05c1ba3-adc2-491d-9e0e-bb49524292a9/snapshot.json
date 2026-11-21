@@ -1,0 +1,105 @@
+{
+  "task_id": "a05c1ba3-adc2-491d-9e0e-bb49524292a9",
+  "created_at": "2026-11-14T08:31:29.980Z",
+  "workspace_root": "C:\\Users\\49772\\Desktop\\shopflow_ecommerce",
+  "files": {
+    "backend/__init__.py": {
+      "existed": true,
+      "content": "\"\"\"ShopFlow Backend Package.\"\"\"\n\n__version__ = \"1.0.0\"",
+      "sha256": "40a2175f461cbaab28bdf7e665bc1e6ac1da0a27f0bf9039ec7742eacbf0bafc",
+      "size": 54,
+      "mtime_ms": 1794644939215.6804
+    },
+    "backend/database.py": {
+      "existed": true,
+      "content": "\"\"\"Database configuration and session management.\"\"\"\n\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.ext.declarative import declarative_base\nfrom sqlalchemy.orm import sessionmaker\n\n# In production, this should come from environment variables\nDATABASE_URL = \"sqlite:///./shopflow.db\"\n\nengine = create_engine(\n    DATABASE_URL, connect_args={\"check_same_thread\": False}\n)\nSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)\n\nBase = declarative_base()\n\n\ndef get_db():\n    \"\"\"Dependency that provides a database session.\"\"\"\n    db = SessionLocal()\n    try:\n        yield db\n    finally:\n        db.close()",
+      "sha256": "d84cdeb39a98dfb09b9592f328c3bcdc2dce9334de04f05a903f86e47b4afbcc",
+      "size": 632,
+      "mtime_ms": 1794644939226.0994
+    },
+    "backend/main.py": {
+      "existed": true,
+      "content": "\"\"\"Main application entry point.\"\"\"\n\nfrom fastapi import FastAPI\nfrom fastapi.middleware.cors import CORSMiddleware\n\nfrom backend.routers.orders import router as orders_router\n\napp = FastAPI(title=\"ShopFlow API\", version=\"1.0.0\")\n\n# Configure CORS\norigins = [\n    \"http://localhost\",\n    \"http://localhost:8000\",\n    \"http://localhost:3000\",\n]\n\napp.add_middleware(\n    CORSMiddleware,\n    allow_origins=origins,\n    allow_credentials=True,\n    allow_methods=[\"*\"],\n    allow_headers=[\"*\"],\n)\n\n# Include routers\napp.include_router(orders_router, prefix=\"/orders\", tags=[\"Orders\"])\n\n\n@app.get(\"/\")\ndef read_root():\n    \"\"\"Root endpoint for health check.\"\"\"\n    return {\"message\": \"ShopFlow API is running\"}",
+      "sha256": "f9ea0b850273d56fe6a77b301b3a2dd2603dde8f8a2825ec5e5463b5ad4177e9",
+      "size": 704,
+      "mtime_ms": 1794644939229.603
+    },
+    "backend/models/__init__.py": {
+      "existed": true,
+      "content": "\"\"\"Database Models for ShopFlow.\"\"\"\n\nfrom backend.models.enums import OrderStatus, PaymentMethod\nfrom backend.models.order import Order, OrderItem\n\n__all__ = [\"Order\", \"OrderItem\", \"OrderStatus\", \"PaymentMethod\"]",
+      "sha256": "fec2a732b6d83e49611833747f83d2efb8379a8be432f18771b99b743d4dc8cf",
+      "size": 212,
+      "mtime_ms": 1794644939220.3484
+    },
+    "tests/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794644939250.2668
+    },
+    "tests/conftest.py": {
+      "existed": true,
+      "content": "import pytest\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom fastapi.testclient import TestClient\n\nfrom backend.database import Base, get_db\nfrom backend.main import app\n\nSQLALCHEMY_DATABASE_URL = \"sqlite:///./test.db\"\n\nengine = create_engine(\n    SQLALCHEMY_DATABASE_URL, connect_args={\"check_same_thread\": False}\n)\nTestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)\n\n\n@pytest.fixture(scope=\"function\")\ndef db_session():\n    \"\"\"Create a fresh database session for each test.\"\"\"\n    # Create tables\n    Base.metadata.create_all(bind=engine)\n    \n    connection = engine.connect()\n    transaction = connection.begin()\n    session = TestingSessionLocal(bind=connection)\n\n    yield session\n\n    session.close()\n    transaction.rollback()\n    connection.close()\n    # Drop tables after test to ensure clean state if needed, \n    # but usually rollback is enough for SQLite in-memory/file tests\n    \n@pytest.fixture(scope=\"function\")\ndef client(db_session):\n    \"\"\"Create a test client with dependency override.\"\"\"\n    def override_get_db():\n        try:\n            yield db_session\n        finally:\n            pass\n\n    app.dependency_overrides[get_db] = override_get_db\n    with TestClient(app) as c:\n        yield c\n    app.dependency_overrides.clear()",
+      "sha256": "7433a48e6bc0e44172e4f16d6e8e0fbb5d5aa01e3aa691939a560d10cca07a3b",
+      "size": 1319,
+      "mtime_ms": 1794644939223.4197
+    },
+    "backend/models/enums.py": {
+      "existed": true,
+      "content": "\"\"\"Enumerations for ShopFlow models.\"\"\"\n\nfrom enum import Enum\n\n\nclass OrderStatus(str, Enum):\n    PENDING = \"pending\"\n    PAID = \"paid\"\n    SHIPPED = \"shipped\"\n    DELIVERED = \"delivered\"\n    CANCELLED = \"cancelled\"\n\n\nclass PaymentMethod(str, Enum):\n    CREDIT_CARD = \"credit_card\"\n    PAYPAL = \"paypal\"\n    BANK_TRANSFER = \"bank_transfer\"",
+      "sha256": "088230f859c23dba59de6ebc67170792b60b8f49723413ddf3dfa2991b9ef509",
+      "size": 340,
+      "mtime_ms": 1794644939228.0989
+    },
+    "backend/models/order.py": {
+      "existed": true,
+      "content": "\"\"\"SQLAlchemy models for Orders and OrderItems.\"\"\"\n\nfrom datetime import datetime\nfrom typing import List, Optional\n\nfrom sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Table\nfrom sqlalchemy.orm import relationship\n\nfrom backend.database import Base\nfrom backend.models.enums import OrderStatus, PaymentMethod\n\n\nclass Order(Base):\n    __tablename__ = \"orders\"\n\n    id = Column(Integer, primary_key=True, index=True)\n    user_id = Column(String, index=True, nullable=False)\n    status = Column(String, default=OrderStatus.PENDING.value)\n    payment_method = Column(String, default=PaymentMethod.CREDIT_CARD.value)\n    total_amount = Column(Float, default=0.0)\n    created_at = Column(DateTime, default=datetime.utcnow)\n    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)\n\n    items = relationship(\"OrderItem\", back_populates=\"order\", cascade=\"all, delete-orphan\")\n\n    def update_total(self):\n        \"\"\"Recalculate total amount based on items.\"\"\"\n        self.total_amount = sum(item.price * item.quantity for item in self.items)\n\n\nclass OrderItem(Base):\n    __tablename__ = \"order_items\"\n\n    id = Column(Integer, primary_key=True, index=True)\n    order_id = Column(Integer, ForeignKey(\"orders.id\"), nullable=False)\n    product_id = Column(String, nullable=False)\n    product_name = Column(String, nullable=False)\n    quantity = Column(Integer, default=1)\n    price = Column(Float, default=0.0)\n\n    order = relationship(\"Order\", back_populates=\"items\")",
+      "sha256": "88124c6eca67da6b21a644bbfa9fba1082346209a2cc87154958ff956b5fc1cc",
+      "size": 1512,
+      "mtime_ms": 1794644939232.731
+    },
+    "backend/schemas/order.py": {
+      "existed": true,
+      "content": "\"\"\"Pydantic schemas for Order operations.\"\"\"\n\nfrom typing import List, Optional\nfrom pydantic import BaseModel, Field\nfrom datetime import datetime\n\nfrom backend.models.enums import OrderStatus, PaymentMethod\n\n\nclass OrderItemBase(BaseModel):\n    product_id: str\n    product_name: str\n    quantity: int = 1\n    price: float\n\n\nclass OrderItemCreate(OrderItemBase):\n    pass\n\n\nclass OrderItem(OrderItemBase):\n    id: int\n    order_id: int\n\n    class Config:\n        orm_mode = True\n\n\nclass OrderBase(BaseModel):\n    user_id: str\n    payment_method: PaymentMethod = PaymentMethod.CREDIT_CARD\n\n\nclass OrderCreate(OrderBase):\n    items: List[OrderItemCreate]\n\n\nclass OrderUpdate(BaseModel):\n    status: Optional[OrderStatus] = None\n    items: Optional[List[OrderItemCreate]] = None\n\n\nclass Order(OrderBase):\n    id: int\n    status: OrderStatus\n    total_amount: float\n    created_at: datetime\n    updated_at: datetime\n    items: List[OrderItem] = []\n\n    class Config:\n        orm_mode = True",
+      "sha256": "31dd2dc2fd1bbe3a60f3a3beb7c203271fd7946244690ad8f16c9df101f06c24",
+      "size": 987,
+      "mtime_ms": 1794644939238.2078
+    },
+    "backend/routers/orders.py": {
+      "existed": true,
+      "content": "\"\"\"API Router for Order management.\"\"\"\n\nfrom typing import List\nfrom fastapi import APIRouter, Depends, HTTPException, status\nfrom sqlalchemy.orm import Session\n\nfrom backend.database import get_db\nfrom backend.models.order import Order, OrderItem\nfrom backend.schemas.order import (\n    Order as OrderSchema,\n    OrderCreate,\n    OrderUpdate,\n)\nfrom backend.models.enums import OrderStatus\n\nrouter = APIRouter()\n\n\n@router.post(\"/\", response_model=OrderSchema, status_code=status.HTTP_201_CREATED)\ndef create_order(order_in: OrderCreate, db: Session = Depends(get_db)):\n    \"\"\"Create a new order with items.\"\"\"\n    db_order = Order(\n        user_id=order_in.user_id,\n        payment_method=order_in.payment_method.value,\n        status=OrderStatus.PENDING.value,\n    )\n    \n    for item_data in order_in.items:\n        db_item = OrderItem(\n            product_id=item_data.product_id,\n            product_name=item_data.product_name,\n            quantity=item_data.quantity,\n            price=item_data.price,\n        )\n        db_order.items.append(db_item)\n        \n    db_order.update_total()\n    \n    db.add(db_order)\n    db.commit()\n    db.refresh(db_order)\n    \n    return db_order\n\n\n@router.get(\"/{order_id}\", response_model=OrderSchema)\ndef read_order(order_id: int, db: Session = Depends(get_db)):\n    \"\"\"Get a specific order by ID.\"\"\"\n    db_order = db.query(Order).filter(Order.id == order_id).first()\n    if db_order is None:\n        raise HTTPException(status_code=404, detail=\"Order not found\")\n    return db_order\n\n\n@router.get(\"/\", response_model=List[OrderSchema])\ndef list_orders(user_id: str = None, db: Session = Depends(get_db)):\n    \"\"\"List all orders, optionally filtered by user_id.\"\"\"\n    query = db.query(Order)\n    if user_id:\n        query = query.filter(Order.user_id == user_id)\n    return query.all()\n\n\n@router.put(\"/{order_id}\", response_model=OrderSchema)\ndef update_order(order_id: int, order_update: OrderUpdate, db: Session = Depends(get_db)):\n    \"\"\"Update an existing order's status or items.\"\"\"\n    db_order = db.query(Order).filter(Order.id == order_id).first()\n    if db_order is None:\n        raise HTTPException(status_code=404, detail=\"Order not found\")\n\n    if order_update.status:\n        db_order.status = order_update.status.value\n        \n    if order_update.items is not None:\n        # Clear existing items and add new ones\n        db_order.items = []\n        for item_data in order_update.items:\n            db_item = OrderItem(\n                product_id=item_data.product_id,\n                product_name=item_data.product_name,\n                quantity=item_data.quantity,\n                price=item_data.price,\n            )\n            db_order.items.append(db_item)\n        db_order.update_total()\n\n    db.commit()\n    db.refresh(db_order)\n    return db_order\n\n\n@router.delete(\"/{order_id}\", status_code=status.HTTP_204_NO_CONTENT)\ndef delete_order(order_id: int, db: Session = Depends(get_db)):\n    \"\"\"Delete an order.\"\"\"\n    db_order = db.query(Order).filter(Order.id == order_id).first()\n    if db_order is None:\n        raise HTTPException(status_code=404, detail=\"Order not found\")\n    \n    db.delete(db_order)\n    db.commit()\n    return None",
+      "sha256": "f47a8d5aea1c2be52cbd6cc6d88428085218a95e713ee253f85d837bc411ff23",
+      "size": 3205,
+      "mtime_ms": 1794644939241.71
+    },
+    "tests/test_orders.py": {
+      "existed": true,
+      "content": "\"\"\"Unit tests for Order API endpoints.\"\"\"\n\nimport pytest\nfrom fastapi.testclient import TestClient\n\nfrom backend.main import app\nfrom backend.models.enums import OrderStatus, PaymentMethod\n\n\n@pytest.fixture\ndef client_with_db(client):\n    \"\"\"Alias for the standard client fixture which includes DB override.\"\"\"\n    return client\n\n\ndef test_create_order(client_with_db):\n    \"\"\"Test creating a valid order.\"\"\"\n    payload = {\n        \"user_id\": \"user123\",\n        \"payment_method\": \"credit_card\",\n        \"items\": [\n            {\n                \"product_id\": \"prod1\",\n                \"product_name\": \"Widget A\",\n                \"quantity\": 2,\n                \"price\": 10.50\n            },\n            {\n                \"product_id\": \"prod2\",\n                \"product_name\": \"Gadget B\",\n                \"quantity\": 1,\n                \"price\": 25.00\n            }\n        ]\n    }\n    \n    response = client_with_db.post(\"/orders/\", json=payload)\n    \n    assert response.status_code == 201\n    data = response.json()\n    assert data[\"user_id\"] == \"user123\"\n    assert data[\"status\"] == \"pending\"\n    assert data[\"total_amount\"] == 46.00  # (2 * 10.50) + (1 * 25.00)\n    assert len(data[\"items\"]) == 2\n\n\ndef test_read_order(client_with_db):\n    \"\"\"Test retrieving a created order.\"\"\"\n    # First create an order\n    payload = {\n        \"user_id\": \"user456\",\n        \"payment_method\": \"paypal\",\n        \"items\": [\n            {\n                \"product_id\": \"prod3\",\n                \"product_name\": \"Thing C\",\n                \"quantity\": 1,\n                \"price\": 5.00\n            }\n        ]\n    }\n    create_resp = client_with_db.post(\"/orders/\", json=payload)\n    assert create_resp.status_code == 201\n    order_id = create_resp.json()[\"id\"]\n    \n    # Then retrieve it\n    get_resp = client_with_db.get(f\"/orders/{order_id}\")\n    assert get_resp.status_code == 200\n    assert get_resp.json()[\"id\"] == order_id\n    assert get_resp.json()[\"user_id\"] == \"user456\"\n\n\ndef test_list_orders(client_with_db):\n    \"\"\"Test listing orders for a specific user.\"\"\"\n    # Create two orders for same user\n    payload = {\n        \"user_id\": \"user789\",\n        \"payment_method\": \"bank_transfer\",\n        \"items\": [{\"product_id\": \"p1\", \"product_name\": \"n1\", \"quantity\": 1, \"price\": 1.0}]\n    }\n    client_with_db.post(\"/orders/\", json=payload)\n    client_with_db.post(\"/orders/\", json=payload)\n    \n    # List orders\n    resp = client_with_db.get(\"/orders/?user_id=user789\")\n    assert resp.status_code == 200\n    assert len(resp.json()) >= 2\n\n\ndef test_update_order_status(client_with_db):\n    \"\"\"Test updating an order's status.\"\"\"\n    # Create order\n    payload = {\n        \"user_id\": \"user_upd\",\n        \"payment_method\": \"credit_card\",\n        \"items\": [{\"product_id\": \"p1\", \"product_name\": \"n1\", \"quantity\": 1, \"price\": 10.0}]\n    }\n    create_resp = client_with_db.post(\"/orders/\", json=payload)\n    order_id = create_resp.json()[\"id\"]\n    \n    # Update status\n    update_payload = {\"status\": \"paid\"}\n    update_resp = client_with_db.put(f\"/orders/{order_id}\", json=update_payload)\n    \n    assert update_resp.status_code == 200\n    assert update_resp.json()[\"status\"] == \"paid\"\n\n\ndef test_delete_order(client_with_db):\n    \"\"\"Test deleting an order.\"\"\"\n    # Create order\n    payload = {\n        \"user_id\": \"user_del\",\n        \"payment_method\": \"credit_card\",\n        \"items\": [{\"product_id\": \"p1\", \"product_name\": \"n1\", \"quantity\": 1, \"price\": 10.0}]\n    }\n    create_resp = client_with_db.post(\"/orders/\", json=payload)\n    order_id = create_resp.json()[\"id\"]\n    \n    # Delete\n    del_resp = client_with_db.delete(f\"/orders/{order_id}\")\n    assert del_resp.status_code == 204\n    \n    # Verify deleted\n    get_resp = client_with_db.get(f\"/orders/{order_id}\")\n    assert get_resp.status_code == 404",
+      "sha256": "9be4a19dc46fdce96403db40ba4f8e938bf9c470624fb2461a20ca70eb9e12b9",
+      "size": 3792,
+      "mtime_ms": 1794644939243.719
+    },
+    ".alphapilot_generated.mark": {
+      "existed": true,
+      "content": "[\n  \"backend/__init__.py\",\n  \"backend/database.py\",\n  \"backend/main.py\",\n  \"backend/models/__init__.py\",\n  \"backend/models/enums.py\",\n  \"backend/models/order.py\",\n  \"backend/routers/orders.py\",\n  \"backend/schemas/order.py\",\n  \"docs/architecture_design.md\",\n  \"docs/architecture_design.md\",\n  \"main.py\",\n  \"tests/conftest.py\",\n  \"tests/test_orders.py\"\n]",
+      "sha256": "307ef973ff3025e79fc4d5d34e0075bce301d0e121e6c654130e667a442a7f8b",
+      "size": 352,
+      "mtime_ms": 1794644939245.748
+    },
+    "backend/routers/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794644939246.2607
+    },
+    "backend/schemas/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794644939248.2676
+    }
+  }
+}

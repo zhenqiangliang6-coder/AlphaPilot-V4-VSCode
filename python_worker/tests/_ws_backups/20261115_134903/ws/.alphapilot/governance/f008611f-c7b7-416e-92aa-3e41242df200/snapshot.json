@@ -1,0 +1,35 @@
+{
+  "task_id": "f008611f-c7b7-416e-92aa-3e41242df200",
+  "created_at": "2026-11-14T21:11:32.252Z",
+  "workspace_root": "C:\\Users\\49772\\Desktop\\shopflow_ecommerce",
+  "files": {
+    "backend/routers/orders.py": {
+      "existed": true,
+      "content": "from typing import   # ← BUG: List removed\r\nfrom fastapi import APIRouter, Depends, HTTPException, status\r\nfrom sqlalchemy.orm import Session\r\nfrom sqlalchemy.exc import IntegrityError\r\nfrom backend.database import get_db\r\nfrom backend.models.order import Order\r\nfrom backend.models.enums import OrderStatus\r\nfrom backend.schemas.order import OrderCreate, OrderResponse, OrderUpdateStatus\r\n\r\nrouter = APIRouter()\r\n\r\n@router.post(\"/\", response_model=OrderResponse, status_code=status.HTTP_201_CREATED)\r\ndef create_order(order_data: OrderCreate, db: Session = Depends(get_db)):\r\n    try:\r\n        new_order = Order(\r\n            user_id=order_data.user_id,\r\n            total_amount=order_data.total_amount,\r\n            items=order_data.items,\r\n            status=OrderStatus.PENDING.value\r\n        )\r\n        db.add(new_order)\r\n        db.commit()\r\n        db.refresh(new_order)\r\n        return new_order\r\n    except IntegrityError:\r\n        db.rollback()\r\n        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=\"Failed to create order due to data constraints\")\r\n\r\n@router.get(\"/\", response_model=List[OrderResponse], status_code=status.HTTP_200_OK)\r\ndef read_orders(db: Session = Depends(get_db)):\r\n    return db.query(Order).all()\r\n\r\n@router.get(\"/{order_id}\", response_model=OrderResponse, status_code=status.HTTP_200_OK)\r\ndef read_order(order_id: int, db: Session = Depends(get_db)):\r\n    order = db.query(Order).filter(Order.id == order_id).first()\r\n    if not order:\r\n        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=\"Order not found\")\r\n    return order\r\n\r\n@router.put(\"/{order_id}/status\", response_model=OrderResponse, status_code=status.HTTP_200_OK)\r\ndef update_order_status(order_id: int, status_data: OrderUpdateStatus, db: Session = Depends(get_db)):\r\n    order = db.query(Order).filter(Order.id == order_id).first()\r\n    if not order:\r\n        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=\"Order not found\")\r\n\r\n    try:\r\n        current_status = OrderStatus(order.status)\r\n    except ValueError:\r\n        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=\"Invalid current status in database\")\r\n\r\n    if status_data.new_status not in current_status.next_states():\r\n        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=\"Invalid status transition\")\r\n\r\n    order.status = status_data.new_status\r\n    try:\r\n        db.commit()\r\n        db.refresh(order)\r\n    except IntegrityError:\r\n        db.rollback()\r\n        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=\"Failed to update status\")\r\n    return order\r\n\r\n@router.delete(\"/{order_id}\", status_code=status.HTTP_204_NO_CONTENT)\r\ndef delete_order(order_id: int, db: Session = Depends(get_db)):\r\n    order = db.query(Order).filter(Order.id == order_id).first()\r\n    if not order:\r\n        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=\"Order not found\")\r\n    try:\r\n        db.delete(order)\r\n        db.commit()\r\n    except IntegrityError:\r\n        db.rollback()\r\n        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=\"Failed to delete order\")",
+      "sha256": "0eeed5a7aa20a2720bf9b4d399931b0c1ec1715237df65250cfebca23117bdb3",
+      "size": 3181,
+      "mtime_ms": 1794690029841.109
+    },
+    "backend/routers/__init__.py": {
+      "existed": true,
+      "content": "from backend.routers.orders import router\n\n__all__ = [\"router\"]",
+      "sha256": "17c48b2269edc72228b01bb096e58aa12cb3711b594247db622bf59ea98393b8",
+      "size": 63,
+      "mtime_ms": 1794690018131.4363
+    },
+    ".alphapilot_generated.mark": {
+      "existed": true,
+      "content": "[\n  \"backend/__init__.py\",\n  \"backend/database.py\",\n  \"backend/main.py\",\n  \"backend/models/__init__.py\",\n  \"backend/models/enums.py\",\n  \"backend/models/order.py\",\n  \"backend/routers/__init__.py\",\n  \"backend/routers/orders.py\",\n  \"backend/schemas/__init__.py\",\n  \"backend/schemas/order.py\",\n  \"docs/api.md\",\n  \"requirements.txt\",\n  \"tests/conftest.py\",\n  \"tests/test_orders.py\"\n]",
+      "sha256": "e117e7e3cc6939905c71efa8942fcdd57940470d7b590da666a348224015a042",
+      "size": 378,
+      "mtime_ms": 1794690018151.199
+    },
+    "backend/__init__.py": {
+      "existed": true,
+      "content": "__all__ = []",
+      "sha256": "778206d0ec545e3d877df7a9cd07188b11e565ebaeb8330015ad3d1ffe8bb665",
+      "size": 12,
+      "mtime_ms": 1794690018138.5718
+    }
+  }
+}

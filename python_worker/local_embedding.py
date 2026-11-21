@@ -173,7 +173,10 @@ class LocalEmbeddingProvider:
         for attempt_spec in [spec, EMBEDDING_MODELS[2]]:
             try:
                 from fastembed import TextEmbedding
-                self._model = TextEmbedding(model_name=attempt_spec["name"])
+                self._model = TextEmbedding(
+                    model_name=attempt_spec["name"],
+                    cache_dir=_persistent_cache,
+                )
                 self._dim = attempt_spec["dim"]
                 self._backend = "fastembed"
                 self._active_spec = attempt_spec

@@ -1,0 +1,102 @@
+{
+  "task_id": "dfe01070-6754-422a-87b0-25d0d1c3ceed",
+  "created_at": "2026-11-14T18:04:56.868Z",
+  "workspace_root": "C:\\Users\\49772\\Desktop\\shopflow_ecommerce",
+  "files": {
+    "routers/orders.py": {
+      "existed": false
+    },
+    "backend/database.py": {
+      "existed": true,
+      "content": "from sqlalchemy import create_engine\nfrom sqlalchemy.ext.declarative import declarative_base\nfrom sqlalchemy.orm import sessionmaker\n\nSQLALCHEMY_DATABASE_URL = \"sqlite:///./backend/shopflow.db\"\n\nengine = create_engine(\n    SQLALCHEMY_DATABASE_URL, connect_args={\"check_same_thread\": False}\n)\nSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)\n\nBase = declarative_base()\n\n\ndef get_db():\n    db = SessionLocal()\n    try:\n        yield db\n    finally:\n        db.close()",
+      "sha256": "1227e972abc113a67b127a9c0d6f6fa21d351027fa33d65f87e205a81ab1d0ae",
+      "size": 492,
+      "mtime_ms": 1794679161654.9016
+    },
+    "backend/models/inventory.py": {
+      "existed": false
+    },
+    "backend/models/order.py": {
+      "existed": true,
+      "content": "from datetime import datetime, timezone\nfrom sqlalchemy import Column, Integer, String, Float, DateTime, JSON\nfrom backend.database import Base\nfrom backend.models.enums import OrderStatus\n\n\ndef utc_now():\n    \"\"\"Helper to get current UTC time.\"\"\"\n    return datetime.now(timezone.utc)\n\n\nclass Order(Base):\n    __tablename__ = \"orders\"\n\n    id = Column(Integer, primary_key=True, index=True)\n    user_id = Column(String, nullable=False)\n    status = Column(String, nullable=False, default=OrderStatus.PENDING.value)\n    total_amount = Column(Float, nullable=False, default=0.0)\n    items = Column(JSON, nullable=False, default=list)\n    created_at = Column(DateTime(timezone=True), default=utc_now)",
+      "sha256": "8dc33d849dc5db71e08b3e55f5a12ce175939a0a1cef4932f08d643d56511719",
+      "size": 698,
+      "mtime_ms": 1794679161651.2761
+    },
+    "backend/models/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794679161679.3438
+    },
+    "backend/schemas/inventory.py": {
+      "existed": false
+    },
+    "backend/schemas/order.py": {
+      "existed": true,
+      "content": "from datetime import datetime\nfrom typing import Any, List\n\nfrom pydantic import BaseModel, Field\n\nfrom backend.models.enums import OrderStatus\n\n\nclass OrderBase(BaseModel):\n    user_id: str\n    total_amount: float = 0.0\n    items: List[Any] = []\n\n\nclass OrderCreate(OrderBase):\n    status: OrderStatus = OrderStatus.PENDING\n\n\nclass OrderResponse(OrderBase):\n    id: int\n    status: OrderStatus\n    created_at: datetime\n\n    class Config:\n        from_attributes = True\n\n\nclass OrderUpdateStatus(BaseModel):\n    new_status: OrderStatus",
+      "sha256": "3308d9d2ace67e22d4027401b3de6a0068598d40f356e3f1dc3db43129ee18cf",
+      "size": 535,
+      "mtime_ms": 1794679161666.9417
+    },
+    "backend/routers/inventory.py": {
+      "existed": false
+    },
+    "backend/routers/orders.py": {
+      "existed": true,
+      "content": "\nfrom typing import List\nfrom backend.models.order import Order\nfrom backend.models.enums import OrderStatus\nfrom fastapi import APIRouter, Depends, HTTPException, status\nfrom sqlalchemy.orm import Session\n\nfrom backend.database import get_db\nfrom backend.models.order import Order, OrderStatus\nfrom backend.schemas.order import OrderCreate, OrderResponse, OrderUpdateStatus\n\nrouter = APIRouter()\n\n\n@router.post(\"/\", response_model=OrderResponse, status_code=status.HTTP_200_OK)\ndef create_order(\n    order_in: OrderCreate, db: Session = Depends(get_db)\n) -> Order:\n    \"\"\"\n    创建新订单。\n    \"\"\"\n    # 验证初始状态是否为 pending\n    if order_in.status != OrderStatus.PENDING:\n        raise HTTPException(\n            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,\n            detail=\"New orders must start with 'pending' status\",\n        )\n\n    db_order = Order(**order_in.model_dump())\n    db.add(db_order)\n    db.commit()\n    db.refresh(db_order)\n    return db_order\n\n\n@router.get(\"/\", response_model=List[OrderResponse], status_code=status.HTTP_200_OK)\ndef read_orders(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):\n    \"\"\"\n    获取订单列表。\n    \"\"\"\n    orders = db.query(Order).offset(skip).limit(limit).all()\n    return orders\n\n\n@router.get(\"/{order_id}\", response_model=OrderResponse, status_code=status.HTTP_200_OK)\ndef read_order(order_id: int, db: Session = Depends(get_db)):\n    \"\"\"\n    根据 ID 获取单个订单。\n    \"\"\"\n    order = db.query(Order).filter(Order.id == order_id).first()\n    if order is None:\n        raise HTTPException(status_code=404, detail=\"Order not found\")\n    return order\n\n\n@router.put(\"/{order_id}/status\", response_model=OrderResponse, status_code=status.HTTP_200_OK)\ndef update_order_status(\n    order_id: int,\n    status_update: OrderUpdateStatus,\n    db: Session = Depends(get_db),\n):\n    \"\"\"\n    更新订单状态。\n    \"\"\"\n    order = db.query(Order).filter(Order.id == order_id).first()\n    if order is None:\n        raise HTTPException(status_code=404, detail=\"Order not found\")\n\n    try:\n        current_status = OrderStatus(order.status)\n    except ValueError:\n        raise HTTPException(\n            status_code=500, \n            detail=f\"Invalid status stored in database: {order.status}\"\n        )\n\n    new_status = status_update.new_status\n\n    # 验证状态转换是否合法\n    allowed_next_states = current_status.next_states()\n    if new_status.value not in allowed_next_states:\n        raise HTTPException(\n            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,\n            detail=f\"Invalid status transition from {current_status.value} to {new_status.value}. Allowed: {allowed_next_states}\",\n        )\n\n    order.status = new_status.value\n    db.commit()\n    db.refresh(order)\n    return order\n\n\n@router.delete(\"/{order_id}\", status_code=status.HTTP_204_NO_CONTENT)\ndef delete_order(order_id: int, db: Session = Depends(get_db)):\n    \"\"\"\n    删除订单。\n    \"\"\"\n    order = db.query(Order).filter(Order.id == order_id).first()\n    if order is None:\n        raise HTTPException(status_code=404, detail=\"Order not found\")\n\n    db.delete(order)\n    db.commit()\n    return None",
+      "sha256": "1cec921838d31693d64faff973bc03d0d40e2948d62c75b0ac872e4956ccded0",
+      "size": 3197,
+      "mtime_ms": 1794679251386.77
+    },
+    "backend/main.py": {
+      "existed": true,
+      "content": "from fastapi import FastAPI\nfrom fastapi.middleware.cors import CORSMiddleware\nfrom backend.database import engine, Base\nfrom backend.models.order import Order  # Ensure model is imported for metadata creation\nfrom backend.routers import orders  # Import router to ensure it's registered\n\n# Create tables\nBase.metadata.create_all(bind=engine)\n\napp = FastAPI(title=\"ShopFlow API\")\n\norigins = [\n    \"*\",\n]\n\napp.add_middleware(\n    CORSMiddleware,\n    allow_origins=origins,\n    allow_credentials=True,\n    allow_methods=[\"*\"],\n    allow_headers=[\"*\"],\n)\n\napp.include_router(orders.router, prefix=\"/orders\", tags=[\"orders\"])\n\n\n@app.get(\"/\")\ndef read_root():\n    return {\"message\": \"ShopFlow API is running\"}",
+      "sha256": "9ca6e953125e0a300d404c59b6505113749adfb573da2abb675ae6741d6f4f44",
+      "size": 704,
+      "mtime_ms": 1794679161656.9043
+    },
+    "tests/test_inventory.py": {
+      "existed": false
+    },
+    ".alphapilot_generated.mark": {
+      "existed": true,
+      "content": "[\n  \"backend/__init__.py\",\n  \"backend/routers/orders.py\"\n]",
+      "sha256": "8121bc490bf6c12e35e0bc4d6cdf49832a6fb55d6c22cd15a5e76bcac3741da2",
+      "size": 58,
+      "mtime_ms": 1794679251388.7158
+    },
+    "backend/__init__.py": {
+      "existed": true,
+      "content": "\"\"\"Backend package initialization.\"\"\"\n__version__ = \"1.0.0\"",
+      "sha256": "15df2fef62743106b9aecc95084683db726a91eb4626d94f10d9121288f756e1",
+      "size": 59,
+      "mtime_ms": 1794679251384.7744
+    },
+    "backend/routers/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794679251391.3206
+    },
+    "backend/schemas/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794679161686.8145
+    },
+    "routers/__init__.py": {
+      "existed": false
+    },
+    "tests/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794679161689.229
+    }
+  }
+}

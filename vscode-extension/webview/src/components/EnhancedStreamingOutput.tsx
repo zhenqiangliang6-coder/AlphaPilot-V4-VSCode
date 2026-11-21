@@ -12,55 +12,13 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { useTypewriter } from '../hooks/useTypewriter';
+import { parseContentSegments } from './streamSegments';
 
 interface EnhancedStreamingOutputProps {
   content: string;
   isStreaming: boolean;
   channel?: 'reasoning' | 'content';
   speed?: number; // 每字符毫秒（兼容旧参数），默认 5ms → 200 cps
-}
-
-interface ContentSegment {
-  type: 'text' | 'code_block';
-  content: string;
-  language: string;
-  isComplete: boolean; // 代码块是否已闭合 ```
-}
-
-function parseContentSegments(text: string): ContentSegment[] {
-  const segments: ContentSegment[] = [];
-  const regex = /```(\w*)\n([\s\S]*?)(```|$)/g;
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-
-  while ((match = regex.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      segments.push({
-        type: 'text',
-        content: text.substring(lastIndex, match.index),
-        language: '',
-        isComplete: true,
-      });
-    }
-    segments.push({
-      type: 'code_block',
-      content: match[2] || '',
-      language: (match[1] || '').toLowerCase(),
-      isComplete: match[3] === '```',
-    });
-    lastIndex = match.index + match[0].length;
-  }
-
-  if (lastIndex < text.length) {
-    segments.push({
-      type: 'text',
-      content: text.substring(lastIndex),
-      language: '',
-      isComplete: true,
-    });
-  }
-
-  return segments;
 }
 
 const BLOCK_ICONS: Record<string, string> = {

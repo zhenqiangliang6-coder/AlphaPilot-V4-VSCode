@@ -1,0 +1,104 @@
+{
+  "task_id": "1840103e-06fc-4915-8d04-8313800c940c",
+  "created_at": "2026-11-14T17:48:22.281Z",
+  "workspace_root": "C:\\Users\\49772\\Desktop\\shopflow_ecommerce",
+  "files": {
+    "backend/models/enums.py": {
+      "existed": true,
+      "content": "from enum import Enum\n\n\nclass OrderStatus(str, Enum):\n    \"\"\"订单状态枚举，定义订单生命周期及合法的状态迁移。\"\"\"\n\n    PENDING = \"pending\"\n    CONFIRMED = \"confirmed\"\n    SHIPPED = \"shipped\"\n    DELIVERED = \"delivered\"\n    CANCELLED = \"cancelled\"\n\n    def next_states(self) -> list[str]:\n        \"\"\"\n        返回当前状态允许迁移到的下一状态值列表。\n        \n        线性顺序: pending -> confirmed -> shipped -> delivered\n        cancelled 为终态，不可迁移。\n        delivered 为终态，不可迁移。\n        \"\"\"\n        transitions = {\n            self.PENDING: [self.CONFIRMED.value, self.CANCELLED.value],\n            self.CONFIRMED: [self.SHIPPED.value, self.CANCELLED.value],\n            self.SHIPPED: [self.DELIVERED.value, self.CANCELLED.value],\n            self.DELIVERED: [],\n            self.CANCELLED: [],\n        }\n        return transitions.get(self, [])",
+      "sha256": "2202c6cab3166f99209826e9827426c156d182aac5da6e09b75e8eb5dcdf4d00",
+      "size": 926,
+      "mtime_ms": 1794678031364.7898
+    },
+    "tests/test_orders.py": {
+      "existed": true,
+      "content": "import pytest\nfrom backend.models.enums import OrderStatus\n\ndef test_create_order(client):\n    \"\"\"Test creating a new order.\"\"\"\n    order_data = {\n        \"user_id\": \"user_123\",\n        \"total_amount\": 99.99,\n        \"items\": []\n    }\n    response = client.post(\"/orders/\", json=order_data)\n    assert response.status_code == 201\n    data = response.json()\n    assert data[\"user_id\"] == \"user_123\"\n    assert data[\"status\"] == OrderStatus.PENDING.value\n    assert data[\"total_amount\"] == 99.99\n    assert \"id\" in data\n\ndef test_list_orders(client):\n    \"\"\"Test retrieving the list of orders.\"\"\"\n    # First create an order\n    order_data = {\n        \"user_id\": \"user_456\",\n        \"total_amount\": 50.0,\n        \"items\": []\n    }\n    client.post(\"/orders/\", json=order_data)\n    \n    response = client.get(\"/orders/\")\n    assert response.status_code == 200\n    data = response.json()\n    assert len(data) > 0\n    assert any(o[\"user_id\"] == \"user_456\" for o in data)\n\ndef test_get_single_order(client):\n    \"\"\"Test retrieving a single order by ID.\"\"\"\n    order_data = {\n        \"user_id\": \"user_789\",\n        \"total_amount\": 120.5,\n        \"items\": []\n    }\n    create_resp = client.post(\"/orders/\", json=order_data)\n    assert create_resp.status_code == 201\n    order_id = create_resp.json()[\"id\"]\n    \n    response = client.get(f\"/orders/{order_id}\")\n    assert response.status_code == 200\n    data = response.json()\n    assert data[\"id\"] == order_id\n    assert data[\"user_id\"] == \"user_789\"\n    assert data[\"total_amount\"] == 120.5\n\ndef test_update_order_status(client):\n    \"\"\"Test updating order status via PUT.\"\"\"\n    order_data = {\n        \"user_id\": \"user_abc\",\n        \"total_amount\": 10.0,\n        \"items\": []\n    }\n    create_resp = client.post(\"/orders/\", json=order_data)\n    order_id = create_resp.json()[\"id\"]\n    \n    update_data = {\n        \"new_status\": OrderStatus.CONFIRMED.value\n    }\n    response = client.put(f\"/orders/{order_id}/status\", json=update_data)\n    assert response.status_code == 200\n    data = response.json()\n    assert data[\"status\"] == OrderStatus.CONFIRMED.value\n\ndef test_delete_order(client):\n    \"\"\"Test deleting an order.\"\"\"\n    order_data = {\n        \"user_id\": \"user_del\",\n        \"total_amount\": 5.0,\n        \"items\": []\n    }\n    create_resp = client.post(\"/orders/\", json=order_data)\n    order_id = create_resp.json()[\"id\"]\n    \n    response = client.delete(f\"/orders/{order_id}\")\n    assert response.status_code == 204\n    \n    # Verify it's gone\n    get_resp = client.get(f\"/orders/{order_id}\")\n    assert get_resp.status_code == 404\n\ndef test_invalid_status_transition(client):\n    \"\"\"Test invalid status transition returns 422.\"\"\"\n    order_data = {\n        \"user_id\": \"user_inv\",\n        \"total_amount\": 20.0,\n        \"items\": []\n    }\n    create_resp = client.post(\"/orders/\", json=order_data)\n    order_id = create_resp.json()[\"id\"]\n    \n    # Try to move from PENDING directly to DELIVERED (invalid)\n    update_data = {\n        \"new_status\": OrderStatus.DELIVERED.value\n    }\n    response = client.put(f\"/orders/{order_id}/status\", json=update_data)\n    assert response.status_code == 422",
+      "sha256": "3585825ef061d1363d3a8b2dfe4d0396cc1bcddf5ca918beee69e9f155218178",
+      "size": 3143,
+      "mtime_ms": 1794678031390.6963
+    },
+    "backend/utils/__init__.py": {
+      "existed": false
+    },
+    "backend/utils/state_machine.py": {
+      "existed": false
+    },
+    "backend/schemas/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794678031404.2688
+    },
+    "backend/routers/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794678117352.4504
+    },
+    "backend/database.py": {
+      "existed": true,
+      "content": "import os\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker, declarative_base\n\n# Use environment variable for database URL to support different environments (dev/test/prod)\nSQLALCHEMY_DATABASE_URL = os.getenv(\"DATABASE_URL\", \"sqlite:///./backend/shopflow.db\")\n\nengine = create_engine(\n    SQLALCHEMY_DATABASE_URL,\n    connect_args={\"check_same_thread\": False} if \"sqlite\" in SQLALCHEMY_DATABASE_URL else {},\n)\n\nSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)\n\nBase = declarative_base()\n\n\ndef get_db():\n    \"\"\"\n    FastAPI dependency that yields a SQLAlchemy database session.\n    Ensures the session is closed after each request.\n    \"\"\"\n    db = SessionLocal()\n    try:\n        yield db\n    finally:\n        db.close()",
+      "sha256": "8e394b8c9a8305c28dac90e86e88ea5b9c776b5bc82787a596b6f53073690633",
+      "size": 774,
+      "mtime_ms": 1794678031358.567
+    },
+    "backend/models/order.py": {
+      "existed": true,
+      "content": "from datetime import datetime, timezone\nfrom typing import Any, Dict, List\n\nfrom sqlalchemy import Column, DateTime, Float, JSON, String, Integer\nfrom sqlalchemy.dialects.sqlite import JSON as SQLiteJSON\n\nfrom backend.database import Base\nfrom backend.models.enums import OrderStatus\n\n# Re-export OrderStatus to satisfy contract requirement\n__all__ = [\"Order\", \"OrderStatus\"]\n\n\nclass Order(Base):\n    __tablename__ = \"orders\"\n\n    # Using Integer primary key for better performance and simplicity in SQLite/Postgres\n    id = Column(Integer, primary_key=True, index=True)\n    user_id = Column(String, nullable=False, index=True)\n    status = Column(String, nullable=False, default=OrderStatus.PENDING.value)\n    total_amount = Column(Float, nullable=False, default=0.0)\n    items = Column(JSON, nullable=False, default=list)\n    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)\n\n    def __init__(self, **kwargs):\n        super().__init__(**kwargs)\n        if 'status' not in kwargs or kwargs['status'] is None:\n            self.status = OrderStatus.PENDING.value\n        if 'items' not in kwargs or kwargs['items'] is None:\n            self.items = []",
+      "sha256": "3704a6a7e8d56208982d09643bfd51358a50db01545ed9a18c884eefc5262869",
+      "size": 1206,
+      "mtime_ms": 1794678031369.3875
+    },
+    "backend/models/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794678117348.4124
+    },
+    "backend/schemas/order.py": {
+      "existed": true,
+      "content": "from datetime import datetime\nfrom typing import List, Optional\n\nfrom pydantic import BaseModel, Field, ConfigDict\n\n\nclass OrderItemSchema(BaseModel):\n    product_id: str\n    quantity: int\n    price: float\n\n\nclass OrderCreate(BaseModel):\n    user_id: str\n    items: List[dict] = Field(default_factory=list)\n    total_amount: float = 0.0\n\n\nclass OrderResponse(BaseModel):\n    model_config = ConfigDict(from_attributes=True)\n\n    id: int\n    user_id: str\n    status: str\n    total_amount: float\n    items: List[dict]\n    created_at: datetime\n\n\nclass OrderUpdateStatus(BaseModel):\n    new_status: str",
+      "sha256": "982cde16e4407e61ab8bf75cd57f1f18c7bc0c0c91efad431a9776509f1df2b8",
+      "size": 597,
+      "mtime_ms": 1794678031373.6877
+    },
+    "backend/routers/orders.py": {
+      "existed": true,
+      "content": "import uuid\nfrom typing import List\n\nfrom fastapi import APIRouter, Depends, HTTPException, status\nfrom sqlalchemy.orm import Session\n\nfrom backend.database import get_db\nfrom backend.models.order import Order, OrderStatus\nfrom backend.schemas.order import OrderCreate, OrderResponse, OrderUpdateStatus\n\nrouter = APIRouter()\n\n\n@router.post(\"/\", response_model=OrderResponse, status_code=status.HTTP_201_CREATED)\ndef create_order(\n    order_in: OrderCreate,\n    db: Session = Depends(get_db),\n):\n    \"\"\"\n    Create a new order.\n    \"\"\"\n    # Calculate total amount if not provided or ensure consistency\n    # For this scope, we trust the input total_amount but validate structure\n    \n    db_order = Order(\n        user_id=order_in.user_id,\n        status=OrderStatus.PENDING.value,\n        total_amount=order_in.total_amount,\n        items=order_in.items,\n    )\n    \n    db.add(db_order)\n    db.commit()\n    db.refresh(db_order)\n    \n    return db_order\n\n\n@router.get(\"/\", response_model=List[OrderResponse], status_code=status.HTTP_200_OK)\ndef list_orders(\n    skip: int = 0,\n    limit: int = 100,\n    db: Session = Depends(get_db),\n):\n    \"\"\"\n    Retrieve a list of orders.\n    \"\"\"\n    orders = db.query(Order).offset(skip).limit(limit).all()\n    return orders\n\n\n@router.get(\"/{order_id}\", response_model=OrderResponse, status_code=status.HTTP_200_OK)\ndef read_order(\n    order_id: int,\n    db: Session = Depends(get_db),\n):\n    \"\"\"\n    Retrieve a single order by ID.\n    \"\"\"\n    order = db.query(Order).filter(Order.id == order_id).first()\n    if order is None:\n        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=\"Order not found\")\n    return order\n\n\n@router.put(\"/{order_id}/status\", response_model=OrderResponse, status_code=status.HTTP_200_OK)\ndef update_order_status(\n    order_id: int,\n    status_update: OrderUpdateStatus,\n    db: Session = Depends(get_db),\n):\n    \"\"\"\n    Update the status of an order with validation against allowed transitions.\n    \"\"\"\n    order = db.query(Order).filter(Order.id == order_id).first()\n    if order is None:\n        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=\"Order not found\")\n    \n    current_status_enum = OrderStatus(order.status)\n    new_status_str = status_update.new_status\n    \n    # Validate if new_status is a valid enum value\n    try:\n        new_status_enum = OrderStatus(new_status_str)\n    except ValueError:\n        raise HTTPException(\n            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,\n            detail=f\"Invalid status value: {new_status_str}\"\n        )\n    \n    # Check transition validity\n    allowed_next_states = current_status_enum.next_states()\n    \n    if new_status_str not in allowed_next_states:\n        raise HTTPException(\n            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,\n            detail=f\"Cannot transition from {current_status_enum.value} to {new_status_str}. Allowed: {allowed_next_states}\"\n        )\n    \n    order.status = new_status_str\n    db.commit()\n    db.refresh(order)\n    \n    return order\n\n\n@router.delete(\"/{order_id}\", status_code=status.HTTP_204_NO_CONTENT)\ndef delete_order(\n    order_id: int,\n    db: Session = Depends(get_db),\n):\n    \"\"\"\n    Delete an order by ID.\n    \"\"\"\n    order = db.query(Order).filter(Order.id == order_id).first()\n    if order is None:\n        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=\"Order not found\")\n    \n    db.delete(order)\n    db.commit()",
+      "sha256": "170720762c5e3c595b81f1e3d30d02e8f077ab78e06927128f08d02729885027",
+      "size": 3463,
+      "mtime_ms": 1794678117349.4104
+    },
+    "backend/main.py": {
+      "existed": true,
+      "content": "from fastapi import FastAPI\nfrom fastapi.middleware.cors import CORSMiddleware\nfrom backend.database import Base, engine\nfrom backend.routers import orders\n\n# Create tables in the database (for production/dev mode with file DB)\nBase.metadata.create_all(bind=engine)\n\napp = FastAPI(title=\"ShopFlow API\")\n\n# Configure CORS\norigins = [\n    \"http://localhost\",\n    \"http://localhost:3000\",\n    \"http://127.0.0.1\",\n    \"http://127.0.0.1:8000\",\n]\n\napp.add_middleware(\n    CORSMiddleware,\n    allow_origins=origins,\n    allow_credentials=True,\n    allow_methods=[\"*\"],\n    allow_headers=[\"*\"],\n)\n\n# Include routers\napp.include_router(orders.router, prefix=\"/orders\", tags=[\"orders\"])\n\n\n@app.get(\"/\")\ndef read_root():\n    return {\"message\": \"ShopFlow API is running\"}",
+      "sha256": "2ec64aaba02acea7be23c801b8f9794061a2753a4b1aee32026735db2f2f95fe",
+      "size": 759,
+      "mtime_ms": 1794678031382.031
+    },
+    ".alphapilot_generated.mark": {
+      "existed": true,
+      "content": "[\n  \"backend/__init__.py\",\n  \"backend/models/__init__.py\",\n  \"backend/routers/orders.py\"\n]",
+      "sha256": "61ce992b020b127f65808dec458e635d699d0f4e4d0e6fc6e2bc7eedbaf51a16",
+      "size": 90,
+      "mtime_ms": 1794678117351.4502
+    },
+    "backend/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794678117347.4019
+    },
+    "tests/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794678031406.7756
+    }
+  }
+}

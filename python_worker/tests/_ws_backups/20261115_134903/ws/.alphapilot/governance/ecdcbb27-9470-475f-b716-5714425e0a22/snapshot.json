@@ -1,0 +1,147 @@
+{
+  "task_id": "ecdcbb27-9470-475f-b716-5714425e0a22",
+  "created_at": "2026-11-14T07:41:34.175Z",
+  "workspace_root": "C:\\Users\\49772\\Desktop\\shopflow_ecommerce",
+  "files": {
+    "backend/database.py": {
+      "existed": true,
+      "content": "from sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker, DeclarativeBase\nimport os\n\nDATABASE_URL = \"sqlite:///./backend/shopflow.db\"\n\nengine = create_engine(\n    DATABASE_URL, connect_args={\"check_same_thread\": False}\n)\nSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)\n\n\nclass Base(DeclarativeBase):\n    pass\n\n\ndef get_db():\n    db = SessionLocal()\n    try:\n        yield db\n    finally:\n        db.close()",
+      "sha256": "ed40425f4823a55e1112f48522a77181b04c690bee15cdcea8b4d2e54bcff9b3",
+      "size": 454,
+      "mtime_ms": 1794641813231.9958
+    },
+    "backend/models/__init__.py": {
+      "existed": true,
+      "content": "from backend.models.order import Order, OrderItem\nfrom backend.models.inventory import InventoryItem\nfrom backend.models.enums import OrderStatus\n\n__all__ = [\"Order\", \"OrderItem\", \"InventoryItem\", \"OrderStatus\"]",
+      "sha256": "d67a266670de6533c8def373ffc0a79a7d4483481fd8125ed593628612b254a8",
+      "size": 211,
+      "mtime_ms": 1794641813234.737
+    },
+    "backend/models/enums.py": {
+      "existed": true,
+      "content": "from enum import Enum\n\n\nclass OrderStatus(str, Enum):\n    \"\"\"\n    订单状态枚举，定义合法的状态值及其迁移规则。\n    \"\"\"\n\n    PENDING = \"pending\"\n    CONFIRMED = \"confirmed\"\n    SHIPPED = \"shipped\"\n    DELIVERED = \"delivered\"\n    CANCELLED = \"cancelled\"\n\n    def next_states(self) -> list[str]:\n        \"\"\"\n        返回当前状态允许直接迁移到的下一状态列表。\n        \n        Returns:\n            list[str]: 允许的目标状态字符串列表。\n        \"\"\"\n        transitions = {\n            OrderStatus.PENDING: [OrderStatus.CONFIRMED.value, OrderStatus.CANCELLED.value],\n            OrderStatus.CONFIRMED: [OrderStatus.SHIPPED.value, OrderStatus.CANCELLED.value],\n            OrderStatus.SHIPPED: [OrderStatus.DELIVERED.value, OrderStatus.CANCELLED.value],\n            OrderStatus.DELIVERED: [],\n            OrderStatus.CANCELLED: [],\n        }\n        return transitions.get(self, [])",
+      "sha256": "2ac8c966fd28e1e129e1d5fd50a35a014bcc5ab2206f954877062ac7a82bc783",
+      "size": 931,
+      "mtime_ms": 1794641813237.578
+    },
+    "backend/models/order.py": {
+      "existed": true,
+      "content": "import uuid\nfrom datetime import datetime\nfrom sqlalchemy import Column, String, Float, Integer, DateTime, ForeignKey\nfrom sqlalchemy.orm import relationship\nfrom backend.database import Base\nfrom backend.models.enums import OrderStatus\n\n\nclass Order(Base):\n    __tablename__ = \"orders\"\n\n    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))\n    customer_name = Column(String(255), nullable=False)\n    status = Column(String(20), nullable=False, default=OrderStatus.PENDING.value)\n    total_price = Column(Float, nullable=False, default=0.0)\n    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)\n\n    items = relationship(\"OrderItem\", back_populates=\"order\", cascade=\"all, delete-orphan\")\n\n    def calculate_total(self):\n        self.total_price = sum(item.unit_price * item.quantity for item in self.items)\n\n\nclass OrderItem(Base):\n    __tablename__ = \"order_items\"\n\n    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))\n    order_id = Column(String(36), ForeignKey(\"orders.id\"), nullable=False)\n    product_name = Column(String(255), nullable=False)\n    quantity = Column(Integer, nullable=False)\n    unit_price = Column(Float, nullable=False)\n\n    order = relationship(\"Order\", back_populates=\"items\")",
+      "sha256": "6cc66f03b3e63519e4a17057f68fffb02c02de11cee6f68ce4ce9b4459cdfd53",
+      "size": 1279,
+      "mtime_ms": 1794641813239.6277
+    },
+    "backend/models/inventory.py": {
+      "existed": true,
+      "content": "import uuid\nfrom sqlalchemy import Column, String, Integer, Float\nfrom backend.database import Base\n\n\nclass InventoryItem(Base):\n    __tablename__ = \"inventory_items\"\n\n    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))\n    name = Column(String(255), nullable=False, unique=True)\n    quantity = Column(Integer, nullable=False, default=0)\n    price = Column(Float, nullable=False, default=0.0)",
+      "sha256": "7143528d2f63cdabcd52e4f3d74f2da4031baf968e7a0fe2d4e7c79a7bd1a11c",
+      "size": 421,
+      "mtime_ms": 1794641813241.5493
+    },
+    "backend/schemas/order.py": {
+      "existed": true,
+      "content": "from typing import List, Optional\nfrom datetime import datetime\nfrom pydantic import BaseModel, Field\nfrom backend.models.enums import OrderStatus\n\n\nclass OrderItemCreate(BaseModel):\n    product_name: str = Field(..., min_length=1, description=\"Product name\")\n    quantity: int = Field(..., gt=0, description=\"Quantity must be positive\")\n    unit_price: float = Field(..., ge=0.0, description=\"Unit price\")\n\n\nclass OrderCreate(BaseModel):\n    customer_name: str = Field(..., min_length=1, description=\"Customer name\")\n    items: List[OrderItemCreate] = Field(..., min_items=1, description=\"List of order items\")\n\n\nclass OrderItemResponse(BaseModel):\n    id: str\n    order_id: str\n    product_name: str\n    quantity: int\n    unit_price: float\n\n    model_config = {\"from_attributes\": True}\n\n\nclass OrderResponse(BaseModel):\n    id: str\n    customer_name: str\n    status: OrderStatus\n    total_price: float\n    created_at: datetime\n    items: List[OrderItemResponse]\n\n    model_config = {\"from_attributes\": True}\n\n\nclass OrderUpdateStatus(BaseModel):\n    status: OrderStatus = Field(..., description=\"New status for the order\")",
+      "sha256": "0e312fb852000bfbea072921b9971792332ca6e6bc4cd7ee05f306fd06a8539a",
+      "size": 1124,
+      "mtime_ms": 1794641813243.6191
+    },
+    "backend/schemas/inventory.py": {
+      "existed": true,
+      "content": "from pydantic import BaseModel, Field\n\n\nclass InventoryCreate(BaseModel):\n    name: str = Field(..., min_length=1, description=\"Product name\")\n    quantity: int = Field(..., ge=0, description=\"Initial stock quantity\")\n    price: float = Field(..., ge=0.0, description=\"Price per unit\")\n\n\nclass InventoryUpdate(BaseModel):\n    quantity: int | None = Field(None, ge=0, description=\"Updated stock quantity\")\n    price: float | None = Field(None, ge=0.0, description=\"Updated price per unit\")\n\n\nclass InventoryResponse(BaseModel):\n    id: str\n    name: str\n    quantity: int\n    price: float\n\n    model_config = {\"from_attributes\": True}",
+      "sha256": "01ef372e867955e333a2204ce1922437b155341d2555d8b21faeb7d2d1bee3e5",
+      "size": 633,
+      "mtime_ms": 1794641813245.1362
+    },
+    "backend/services/order_service.py": {
+      "existed": true,
+      "content": "from sqlalchemy.orm import Session\nfrom backend.models.order import Order, OrderItem\nfrom backend.schemas.order import OrderCreate\n\n\ndef create_order_with_items(db: Session, order_in: OrderCreate) -> Order:\n    \"\"\"\n    Creates an order and its associated items in a single transaction.\n    \n    Args:\n        db: Database session.\n        order_in: The input data for creating the order.\n        \n    Returns:\n        The newly created Order object with items populated.\n    \"\"\"\n    # Create Order instance\n    new_order = Order(\n        customer_name=order_in.customer_name,\n        total_price=0.0  # Will be calculated below\n    )\n    \n    # Create Items and calculate total\n    total_price = 0.0\n    for item_in in order_in.items:\n        item_total = item_in.quantity * item_in.unit_price\n        total_price += item_total\n        \n        new_item = OrderItem(\n            product_name=item_in.product_name,\n            quantity=item_in.quantity,\n            unit_price=item_in.unit_price\n        )\n        new_order.items.append(new_item)\n        \n    new_order.total_price = total_price\n    \n    # Persist to DB\n    db.add(new_order)\n    db.commit()\n    db.refresh(new_order)\n    \n    return new_order",
+      "sha256": "f0776fc24f35db3e0a15a267fbe14f224e612c164ab341ce78fb230fe2886f04",
+      "size": 1209,
+      "mtime_ms": 1794641813247.1377
+    },
+    "backend/routers/inventory.py": {
+      "existed": true,
+      "content": "from fastapi import APIRouter, Depends, HTTPException, status\nfrom sqlalchemy.orm import Session\nfrom typing import List\n\nfrom backend.database import get_db\nfrom backend.models.inventory import InventoryItem\nfrom backend.schemas.inventory import (\n    InventoryCreate,\n    InventoryUpdate,\n    InventoryResponse,\n)\n\nrouter = APIRouter(prefix=\"/inventory\", tags=[\"Inventory\"])\n\n\n@router.post(\"/\", response_model=InventoryResponse, status_code=status.HTTP_201_CREATED)\ndef create_inventory_item(item_in: InventoryCreate, db: Session = Depends(get_db)):\n    \"\"\"\n    Add a new item to inventory.\n    \"\"\"\n    # Check for duplicate name\n    existing = db.query(InventoryItem).filter(InventoryItem.name == item_in.name).first()\n    if existing:\n        raise HTTPException(status_code=400, detail=\"Item name already exists\")\n\n    db_item = InventoryItem(\n        name=item_in.name,\n        quantity=item_in.quantity,\n        price=item_in.price\n    )\n    db.add(db_item)\n    db.commit()\n    db.refresh(db_item)\n    return db_item\n\n\n@router.get(\"/\", response_model=List[InventoryResponse])\ndef list_inventory_items(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):\n    \"\"\"\n    Retrieve all inventory items.\n    \"\"\"\n    items = db.query(InventoryItem).offset(skip).limit(limit).all()\n    return items\n\n\n@router.get(\"/{item_id}\", response_model=InventoryResponse)\ndef get_inventory_item(item_id: str, db: Session = Depends(get_db)):\n    \"\"\"\n    Retrieve a specific inventory item by ID.\n    \"\"\"\n    db_item = db.query(InventoryItem).filter(InventoryItem.id == item_id).first()\n    if db_item is None:\n        raise HTTPException(status_code=404, detail=\"Inventory item not found\")\n    return db_item\n\n\n@router.put(\"/{item_id}\", response_model=InventoryResponse)\ndef update_inventory_item(\n    item_id: str, item_update: InventoryUpdate, db: Session = Depends(get_db)\n):\n    \"\"\"\n    Update inventory item details (quantity or price).\n    \"\"\"\n    db_item = db.query(InventoryItem).filter(InventoryItem.id == item_id).first()\n    if db_item is None:\n        raise HTTPException(status_code=404, detail=\"Inventory item not found\")\n\n    if item_update.quantity is not None:\n        db_item.quantity = item_update.quantity\n    if item_update.price is not None:\n        db_item.price = item_update.price\n\n    db.commit()\n    db.refresh(db_item)\n    return db_item\n\n\n@router.delete(\"/{item_id}\", status_code=status.HTTP_200_OK)\ndef delete_inventory_item(item_id: str, db: Session = Depends(get_db)):\n    \"\"\"\n    Delete an inventory item.\n    \"\"\"\n    db_item = db.query(InventoryItem).filter(InventoryItem.id == item_id).first()\n    if db_item is None:\n        raise HTTPException(status_code=404, detail=\"Inventory item not found\")\n\n    db.delete(db_item)\n    db.commit()\n    return {\"detail\": \"Inventory item deleted successfully\"}",
+      "sha256": "1bb7fe346007f885f9e3f7bc569b44a3c8578265a8239caba4e946733eb45512",
+      "size": 2830,
+      "mtime_ms": 1794641813253.0828
+    },
+    "tests/test_orders.py": {
+      "existed": true,
+      "content": "import pytest\nfrom fastapi.testclient import TestClient\nfrom uuid import UUID\n\n\ndef test_create_order_success(client: TestClient):\n    \"\"\"\n    测试成功创建订单。\n    \"\"\"\n    payload = {\n        \"customer_name\": \"Alice\",\n        \"items\": [\n            {\n                \"product_name\": \"Keyboard\",\n                \"quantity\": 1,\n                \"unit_price\": 50.0\n            },\n            {\n                \"product_name\": \"Mouse\",\n                \"quantity\": 2,\n                \"unit_price\": 20.0\n            }\n        ]\n    }\n    \n    response = client.post(\"/orders\", json=payload)\n    \n    assert response.status_code == 201\n    data = response.json()\n    assert \"id\" in data\n    assert data[\"customer_name\"] == \"Alice\"\n    assert data[\"status\"] == \"pending\"\n    assert len(data[\"items\"]) == 2\n    assert data[\"total_price\"] == 90.0  # 50 + 2*20\n    \n    # Verify ID is a valid UUID string\n    UUID(data[\"id\"])\n\n\ndef test_create_order_empty_items(client: TestClient):\n    \"\"\"\n    测试创建订单时订单项为空的情况。\n    \"\"\"\n    payload = {\n        \"customer_name\": \"Bob\",\n        \"items\": []\n    }\n    \n    response = client.post(\"/orders\", json=payload)\n    \n    assert response.status_code == 422\n\n\ndef test_get_all_orders(client: TestClient):\n    \"\"\"\n    测试查询所有订单。\n    \"\"\"\n    payload = {\n        \"customer_name\": \"Charlie\",\n        \"items\": [{\"product_name\": \"Monitor\", \"quantity\": 1, \"unit_price\": 300.0}]\n    }\n    client.post(\"/orders\", json=payload)\n    \n    response = client.get(\"/orders\")\n    \n    assert response.status_code == 200\n    data = response.json()\n    assert isinstance(data, list)\n    assert len(data) >= 1\n    assert data[0][\"customer_name\"] == \"Charlie\"\n\n\ndef test_get_single_order_success(client: TestClient):\n    \"\"\"\n    测试查询单个存在的订单。\n    \"\"\"\n    payload = {\n        \"customer_name\": \"David\",\n        \"items\": [{\"product_name\": \"Webcam\", \"quantity\": 1, \"unit_price\": 80.0}]\n    }\n    create_resp = client.post(\"/orders\", json=payload)\n    order_id = create_resp.json()[\"id\"]\n    \n    response = client.get(f\"/orders/{order_id}\")\n    \n    assert response.status_code == 200\n    data = response.json()\n    assert data[\"id\"] == order_id\n    assert data[\"customer_name\"] == \"David\"\n    assert data[\"total_price\"] == 80.0\n\n\ndef test_get_single_order_not_found(client: TestClient):\n    \"\"\"\n    测试查询不存在的订单 ID。\n    \"\"\"\n    fake_uuid = \"00000000-0000-0000-0000-000000000000\"\n    response = client.get(f\"/orders/{fake_uuid}\")\n    \n    assert response.status_code == 404\n\n\ndef test_update_status_valid_transition(client: TestClient):\n    \"\"\"\n    测试更新订单状态为合法迁移 (pending -> confirmed)。\n    \"\"\"\n    payload = {\n        \"customer_name\": \"Eve\",\n        \"items\": [{\"product_name\": \"Headset\", \"quantity\": 1, \"unit_price\": 60.0}]\n    }\n    create_resp = client.post(\"/orders\", json=payload)\n    order_id = create_resp.json()[\"id\"]\n    \n    update_payload = {\"status\": \"confirmed\"}\n    response = client.patch(f\"/orders/{order_id}/status\", json=update_payload)\n    \n    assert response.status_code == 200\n    data = response.json()\n    assert data[\"status\"] == \"confirmed\"\n\n\ndef test_update_status_invalid_transition(client: TestClient):\n    \"\"\"\n    测试非法状态迁移 (pending -> delivered)。\n    \"\"\"\n    payload = {\n        \"customer_name\": \"Frank\",\n        \"items\": [{\"product_name\": \"Speaker\", \"quantity\": 1, \"unit_price\": 100.0}]\n    }\n    create_resp = client.post(\"/orders\", json=payload)\n    order_id = create_resp.json()[\"id\"]\n    \n    update_payload = {\"status\": \"delivered\"}\n    response = client.patch(f\"/orders/{order_id}/status\", json=update_payload)\n    \n    assert response.status_code == 422\n\n\ndef test_delete_order(client: TestClient):\n    \"\"\"\n    测试删除订单。\n    \"\"\"\n    payload = {\n        \"customer_name\": \"Grace\",\n        \"items\": [{\"product_name\": \"Cable\", \"quantity\": 5, \"unit_price\": 5.0}]\n    }\n    create_resp = client.post(\"/orders\", json=payload)\n    order_id = create_resp.json()[\"id\"]\n    \n    delete_resp = client.delete(f\"/orders/{order_id}\")\n    assert delete_resp.status_code == 200\n    \n    get_resp = client.get(f\"/orders/{order_id}\")\n    assert get_resp.status_code == 404",
+      "sha256": "427a8aa637d141627658162cee2d0d203a874c8d55061c8a519e5560869d90d4",
+      "size": 4253,
+      "mtime_ms": 1794641813257.698
+    },
+    "tests/test_inventory.py": {
+      "existed": true,
+      "content": "import pytest\nfrom fastapi.testclient import TestClient\n\n\ndef test_create_inventory_item(client: TestClient):\n    \"\"\"\n    测试创建库存物品。\n    \"\"\"\n    payload = {\n        \"name\": \"USB Cable\",\n        \"quantity\": 100,\n        \"price\": 5.99\n    }\n    \n    response = client.post(\"/inventory\", json=payload)\n    \n    assert response.status_code == 201\n    data = response.json()\n    assert data[\"name\"] == \"USB Cable\"\n    assert data[\"quantity\"] == 100\n    assert data[\"price\"] == 5.99\n    assert \"id\" in data\n\n\ndef test_create_duplicate_inventory_item(client: TestClient):\n    \"\"\"\n    测试创建名称重复的库存物品。\n    \"\"\"\n    payload = {\n        \"name\": \"USB Cable\",\n        \"quantity\": 100,\n        \"price\": 5.99\n    }\n    \n    # First creation should succeed\n    client.post(\"/inventory\", json=payload)\n    \n    # Second creation should fail\n    response = client.post(\"/inventory\", json=payload)\n    assert response.status_code == 400\n\n\ndef test_list_inventory_items(client: TestClient):\n    \"\"\"\n    测试列出所有库存物品。\n    \"\"\"\n    # Create some items\n    client.post(\"/inventory\", json={\"name\": \"Item A\", \"quantity\": 10, \"price\": 1.0})\n    client.post(\"/inventory\", json={\"name\": \"Item B\", \"quantity\": 20, \"price\": 2.0})\n    \n    response = client.get(\"/inventory\")\n    \n    assert response.status_code == 200\n    data = response.json()\n    assert isinstance(data, list)\n    assert len(data) == 2\n    names = [item[\"name\"] for item in data]\n    assert \"Item A\" in names\n    assert \"Item B\" in names\n\n\ndef test_get_inventory_item_by_id(client: TestClient):\n    \"\"\"\n    测试通过 ID 获取特定库存物品。\n    \"\"\"\n    create_resp = client.post(\"/inventory\", json={\"name\": \"Specific Item\", \"quantity\": 5, \"price\": 10.0})\n    item_id = create_resp.json()[\"id\"]\n    \n    response = client.get(f\"/inventory/{item_id}\")\n    \n    assert response.status_code == 200\n    data = response.json()\n    assert data[\"id\"] == item_id\n    assert data[\"name\"] == \"Specific Item\"\n\n\ndef test_get_inventory_item_not_found(client: TestClient):\n    \"\"\"\n    测试获取不存在的库存物品 ID。\n    \"\"\"\n    fake_id = \"00000000-0000-0000-0000-000000000000\"\n    response = client.get(f\"/inventory/{fake_id}\")\n    assert response.status_code == 404\n\n\ndef test_update_inventory_item(client: TestClient):\n    \"\"\"\n    测试更新库存物品的数量。\n    \"\"\"\n    create_resp = client.post(\"/inventory\", json={\"name\": \"Update Me\", \"quantity\": 10, \"price\": 5.0})\n    item_id = create_resp.json()[\"id\"]\n    \n    update_payload = {\"quantity\": 50}\n    response = client.put(f\"/inventory/{item_id}\", json=update_payload)\n    \n    assert response.status_code == 200\n    data = response.json()\n    assert data[\"quantity\"] == 50\n    assert data[\"price\"] == 5.0  # Should remain unchanged\n\n\ndef test_delete_inventory_item(client: TestClient):\n    \"\"\"\n    测试删除库存物品。\n    \"\"\"\n    create_resp = client.post(\"/inventory\", json={\"name\": \"Delete Me\", \"quantity\": 1, \"price\": 1.0})\n    item_id = create_resp.json()[\"id\"]\n    \n    delete_resp = client.delete(f\"/inventory/{item_id}\")\n    assert delete_resp.status_code == 200\n    \n    get_resp = client.get(f\"/inventory/{item_id}\")\n    assert get_resp.status_code == 404",
+      "sha256": "56707969805a915c046a504d7b623d10186ebf374b0980d6b66e5fd2a00107f7",
+      "size": 3247,
+      "mtime_ms": 1794641813260.2083
+    },
+    "tests/conftest.py": {
+      "existed": true,
+      "content": "import pytest\nfrom fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom sqlalchemy.pool import StaticPool\n\nfrom backend.main import app\nfrom backend.database import Base, get_db\n\n# Use an in-memory SQLite database for testing to ensure isolation and speed\nSQLALCHEMY_DATABASE_URL = \"sqlite:///:memory:\"\n\nengine = create_engine(\n    SQLALCHEMY_DATABASE_URL,\n    connect_args={\"check_same_thread\": False},\n    poolclass=StaticPool,\n)\nTestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)\n\n\n@pytest.fixture(scope=\"function\")\ndef db_session():\n    \"\"\"Create a fresh database session for each test.\"\"\"\n    # Create tables\n    Base.metadata.create_all(bind=engine)\n    \n    db = TestingSessionLocal()\n    try:\n        yield db\n    finally:\n        db.close()\n        # Drop tables after test to ensure clean state\n        Base.metadata.drop_all(bind=engine)\n\n\n@pytest.fixture(scope=\"function\")\ndef client(db_session):\n    \"\"\"Provide a test client with overridden dependency.\"\"\"\n    def override_get_db():\n        try:\n            yield db_session\n        finally:\n            pass\n\n    app.dependency_overrides[get_db] = override_get_db\n    \n    with TestClient(app) as c:\n        yield c\n        \n    app.dependency_overrides.clear()",
+      "sha256": "5f3a15eeaf107f8951e3922caf0bf599a35a173e4bfdfff20e06bd0e1e544cb5",
+      "size": 1323,
+      "mtime_ms": 1794641813256.6997
+    },
+    "backend/routers/orders.py": {
+      "existed": true,
+      "content": "from fastapi import APIRouter, Depends, HTTPException, status\r\nfrom sqlalchemy.orm import Session\r\nfrom typing import   # ← BUG: List removed\r\n\r\nfrom backend.database import get_db\r\nfrom backend.models.order import Order\r\nfrom backend.models.enums import OrderStatus\r\nfrom backend.schemas.order import (\r\n    OrderCreate,\r\n    OrderResponse,\r\n    OrderUpdateStatus,\r\n)\r\nfrom backend.services.order_service import create_order_with_items\r\n\r\nrouter = APIRouter(prefix=\"/orders\", tags=[\"Orders\"])\r\n\r\n\r\n@router.post(\"/\", response_model=OrderResponse, status_code=status.HTTP_201_CREATED)\r\ndef create_order(order_in: OrderCreate, db: Session = Depends(get_db)):\r\n    \"\"\"\r\n    Create a new order with its items.\r\n    \"\"\"\r\n    try:\r\n        db_order = create_order_with_items(db, order_in)\r\n        return db_order\r\n    except Exception as e:\r\n        raise HTTPException(status_code=500, detail=str(e))\r\n\r\n\r\n@router.get(\"/\", response_model=List[OrderResponse])\r\ndef list_orders(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):\r\n    \"\"\"\r\n    Retrieve all orders.\r\n    \"\"\"\r\n    orders = db.query(Order).offset(skip).limit(limit).all()\r\n    return orders\r\n\r\n\r\n@router.get(\"/{order_id}\", response_model=OrderResponse)\r\ndef get_order(order_id: str, db: Session = Depends(get_db)):\r\n    \"\"\"\r\n    Retrieve a specific order by ID.\r\n    \"\"\"\r\n    db_order = db.query(Order).filter(Order.id == order_id).first()\r\n    if db_order is None:\r\n        raise HTTPException(status_code=404, detail=\"Order not found\")\r\n    return db_order\r\n\r\n\r\n@router.patch(\"/{order_id}/status\", response_model=OrderResponse)\r\ndef update_order_status(\r\n    order_id: str, status_update: OrderUpdateStatus, db: Session = Depends(get_db)\r\n):\r\n    \"\"\"\r\n    Update the status of an order. Validates state transitions.\r\n    \"\"\"\r\n    db_order = db.query(Order).filter(Order.id == order_id).first()\r\n    if db_order is None:\r\n        raise HTTPException(status_code=404, detail=\"Order not found\")\r\n\r\n    current_status = OrderStatus(db_order.status)\r\n    new_status_str = status_update.status\r\n    \r\n    # Validate if new status is a valid enum value\r\n    try:\r\n        new_status = OrderStatus(new_status_str)\r\n    except ValueError:\r\n        raise HTTPException(\r\n            status_code=422, detail=f\"Invalid status value: {new_status_str}\"\r\n        )\r\n\r\n    # Check transition validity\r\n    allowed_next_states = current_status.next_states()\r\n    if new_status.value not in allowed_next_states:\r\n        raise HTTPException(\r\n            status_code=422,\r\n            detail=f\"Transition from '{current_status.value}' to '{new_status.value}' is not allowed.\",\r\n        )\r\n\r\n    db_order.status = new_status.value\r\n    db.commit()\r\n    db.refresh(db_order)\r\n\r\n    return db_order\r\n\r\n\r\n@router.delete(\"/{order_id}\", status_code=status.HTTP_200_OK)\r\ndef delete_order(order_id: str, db: Session = Depends(get_db)):\r\n    \"\"\"\r\n    Delete an order and its associated items.\r\n    \"\"\"\r\n    db_order = db.query(Order).filter(Order.id == order_id).first()\r\n    if db_order is None:\r\n        raise HTTPException(status_code=404, detail=\"Order not found\")\r\n\r\n    db.delete(db_order)\r\n    db.commit()\r\n\r\n    return {\"detail\": \"Order deleted successfully\"}",
+      "sha256": "539f634f5a1c6d704e7d38e61500a305d17cfcab8a976dfec55c46dbb3140779",
+      "size": 3215,
+      "mtime_ms": 1794641826412.0498
+    },
+    "backend/main.py": {
+      "existed": true,
+      "content": "from fastapi import FastAPI\nfrom fastapi.middleware.cors import CORSMiddleware\nfrom backend.database import Base, engine\nfrom backend.routers.orders import router as orders_router\nfrom backend.routers.inventory import router as inventory_router\n\n# Create tables\nBase.metadata.create_all(bind=engine)\n\napp = FastAPI(title=\"ShopFlow API\")\n\n# CORS Middleware\norigins = [\n    \"*\",  # Allow all origins for development\n]\n\napp.add_middleware(\n    CORSMiddleware,\n    allow_origins=origins,\n    allow_credentials=True,\n    allow_methods=[\"*\"],\n    allow_headers=[\"*\"],\n)\n\n# Register routers\napp.include_router(orders_router)\napp.include_router(inventory_router)\n\n@app.get(\"/\")\ndef read_root():\n    return {\"message\": \"Welcome to ShopFlow API\"}",
+      "sha256": "ee003b5d08a210cdb2fb97cf90ec59b43ed36859dc30741ed465bcf33ff8dc7a",
+      "size": 736,
+      "mtime_ms": 1794641813255.115
+    },
+    ".alphapilot_generated.mark": {
+      "existed": true,
+      "content": "[\n  \"backend/database.py\",\n  \"backend/main.py\",\n  \"backend/models/__init__.py\",\n  \"backend/models/enums.py\",\n  \"backend/models/inventory.py\",\n  \"backend/models/order.py\",\n  \"backend/routers/inventory.py\",\n  \"backend/routers/orders.py\",\n  \"backend/schemas/inventory.py\",\n  \"backend/schemas/order.py\",\n  \"backend/services/order_service.py\",\n  \"backend/shopflow.db\",\n  \"tests/conftest.py\",\n  \"tests/test_inventory.py\",\n  \"tests/test_orders.py\"\n]",
+      "sha256": "ee957e57d6d90e579cee37d6a8022a1c092b50d12e1bdb8aed669a77ce52e8b1",
+      "size": 442,
+      "mtime_ms": 1794641813261.7258
+    },
+    "backend/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794641813264.2402
+    },
+    "backend/routers/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794641813265.2505
+    },
+    "backend/schemas/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794641813266.494
+    },
+    "backend/services/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794641813266.494
+    },
+    "tests/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794641813266.494
+    }
+  }
+}

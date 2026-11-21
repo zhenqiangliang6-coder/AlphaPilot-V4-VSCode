@@ -1,0 +1,14 @@
+{
+  "task_id": "da96ebec-98b7-48d1-8d4e-c87201853aef",
+  "created_at": "2026-11-14T22:17:15.949Z",
+  "workspace_root": "C:\\Users\\49772\\Desktop\\shopflow_ecommerce",
+  "files": {
+    ".alphapilot_generated.mark": {
+      "existed": true,
+      "content": "[\n  \".env.example\",\n  \"README.md\",\n  \"backend/__init__.py\",\n  \"backend/config.py\",\n  \"backend/database.py\",\n  \"backend/logging_config.py\",\n  \"backend/main.py\",\n  \"backend/models/__init__.py\",\n  \"backend/models/enums.py\",\n  \"backend/models/order.py\",\n  \"backend/routers/__init__.py\",\n  \"backend/routers/orders.py\",\n  \"backend/schemas/__init__.py\",\n  \"backend/schemas/order.py\",\n  \"requirements.txt\",\n  \"tests/__init__.py\",\n  \"tests/conftest.py\",\n  \"tests/test_orders.py\"\n]",
+      "sha256": "c95e599d778809c15e93a8a4a51fbbf128f6a280829fe180905564cfb24cda39",
+      "size": 471,
+      "mtime_ms": 1794693708239.6138
+    }
+  }
+}

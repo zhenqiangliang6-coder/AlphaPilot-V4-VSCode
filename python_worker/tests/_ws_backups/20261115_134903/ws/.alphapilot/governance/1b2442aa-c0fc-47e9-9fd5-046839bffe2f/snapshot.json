@@ -1,0 +1,42 @@
+{
+  "task_id": "1b2442aa-c0fc-47e9-9fd5-046839bffe2f",
+  "created_at": "2026-11-15T05:29:46.481Z",
+  "workspace_root": "C:\\Users\\49772\\Desktop\\shopflow_ecommerce",
+  "files": {
+    "backend/routers/orders.py": {
+      "existed": true,
+      "content": "import uuid\r\nfrom fastapi import APIRouter, Depends, HTTPException, status\r\nfrom sqlalchemy.orm import Session\r\nfrom typing import   # ← BUG: List removed\r\n\r\nfrom backend.database import get_db\r\nfrom backend.models.order import Order, OrderStatus\r\nfrom backend.schemas.order import OrderCreate, OrderResponse, OrderUpdateStatus\r\n\r\nrouter = APIRouter()\r\n\r\n\r\n@router.post(\"/\", response_model=OrderResponse, status_code=status.HTTP_200_OK)\r\ndef create_order(order_in: OrderCreate, db: Session = Depends(get_db)):\r\n    \"\"\"\r\n    创建新订单。\r\n    \"\"\"\r\n    # Generate a unique ID for the order\r\n    order_id = str(uuid.uuid4())\r\n    \r\n    db_order = Order(\r\n        id=order_id,\r\n        user_id=order_in.user_id,\r\n        status=OrderStatus.PENDING.value,\r\n        total_amount=order_in.total_amount,\r\n        items=order_in.items,\r\n    )\r\n    \r\n    db.add(db_order)\r\n    db.commit()\r\n    db.refresh(db_order)\r\n    \r\n    return db_order\r\n\r\n\r\n@router.get(\"/\", response_model=List[OrderResponse], status_code=status.HTTP_200_OK)\r\ndef list_orders(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):\r\n    \"\"\"\r\n    获取订单列表。\r\n    \"\"\"\r\n    orders = db.query(Order).offset(skip).limit(limit).all()\r\n    return orders\r\n\r\n\r\n@router.get(\"/{order_id}\", response_model=OrderResponse, status_code=status.HTTP_200_OK)\r\ndef read_order(order_id: str, db: Session = Depends(get_db)):\r\n    \"\"\"\r\n    根据 ID 查询单个订单。\r\n    \"\"\"\r\n    db_order = db.query(Order).filter(Order.id == order_id).first()\r\n    if db_order is None:\r\n        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=\"Order not found\")\r\n    return db_order\r\n\r\n\r\n@router.put(\"/{order_id}/status\", response_model=OrderResponse, status_code=status.HTTP_200_OK)\r\ndef update_order_status(\r\n    order_id: str, \r\n    order_update: OrderUpdateStatus, \r\n    db: Session = Depends(get_db)\r\n):\r\n    \"\"\"\r\n    更新订单状态。包含状态机逻辑校验。\r\n    \"\"\"\r\n    db_order = db.query(Order).filter(Order.id == order_id).first()\r\n    if db_order is None:\r\n        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=\"Order not found\")\r\n\r\n    current_status_enum = OrderStatus(db_order.status)\r\n    new_status_value = order_update.new_status\r\n\r\n    # Validate if the new status is a valid transition\r\n    allowed_next_states = current_status_enum.next_states()\r\n    \r\n    if new_status_value not in allowed_next_states:\r\n        raise HTTPException(\r\n            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,\r\n            detail=f\"Invalid status transition from '{current_status_enum.value}' to '{new_status_value}'. Allowed states: {allowed_next_states}\"\r\n        )\r\n\r\n    db_order.status = new_status_value\r\n    db.commit()\r\n    db.refresh(db_order)\r\n    \r\n    return db_order\r\n\r\n\r\n@router.delete(\"/{order_id}\", status_code=status.HTTP_204_NO_CONTENT)\r\ndef delete_order(order_id: str, db: Session = Depends(get_db)):\r\n    \"\"\"\r\n    删除订单。\r\n    \"\"\"\r\n    db_order = db.query(Order).filter(Order.id == order_id).first()\r\n    if db_order is None:\r\n        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=\"Order not found\")\r\n    \r\n    db.delete(db_order)\r\n    db.commit()\r\n    return",
+      "sha256": "1e06cd6466d534009402feb3bcaad75dbbb573c438f5513374657f0e9fbc042e",
+      "size": 3224,
+      "mtime_ms": 1794720526993.933
+    },
+    "backend/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794720516324.9658
+    },
+    "backend/models/__init__.py": {
+      "existed": true,
+      "content": "from backend.models.order import Order\nfrom backend.models.enums import OrderStatus",
+      "sha256": "7c8373f672bf5bd6becdaa15792f5de6ad98dcc0c7598af97c69822894b2f0e1",
+      "size": 83,
+      "mtime_ms": 1794720516334.4104
+    },
+    ".alphapilot_generated.mark": {
+      "existed": true,
+      "content": "[\n  \"backend/__init__.py\",\n  \"backend/database.py\",\n  \"backend/main.py\",\n  \"backend/models/__init__.py\",\n  \"backend/models/enums.py\",\n  \"backend/models/order.py\",\n  \"backend/routers/orders.py\",\n  \"backend/schemas/order.py\",\n  \"tests/conftest.py\",\n  \"tests/test_orders.py\",\n  \"update_in.new_status\"\n]",
+      "sha256": "d563e1adf28456cc9b8eeab458cd75ccd7ac9a87bab0f9583a095bdca0f697b7",
+      "size": 299,
+      "mtime_ms": 1794720516356.001
+    },
+    "backend/routers/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794720516341.934
+    }
+  }
+}

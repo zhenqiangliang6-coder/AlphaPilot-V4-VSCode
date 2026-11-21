@@ -1,0 +1,62 @@
+{
+  "task_id": "f9d63cbb-80a7-4773-9b94-a3803a08d3e0",
+  "created_at": "2026-11-14T07:12:26.236Z",
+  "workspace_root": "C:\\Users\\49772\\Desktop\\shopflow_ecommerce",
+  "files": {
+    "backend/shopflow.db": {
+      "existed": false
+    },
+    "backend/schemas/__init__.py": {
+      "existed": false
+    },
+    "models/order.py": {
+      "existed": false
+    },
+    "backend/database.py": {
+      "existed": false
+    },
+    "backend/models/enums.py": {
+      "existed": false
+    },
+    "backend/models/order.py": {
+      "existed": false
+    },
+    "backend/schemas/order.py": {
+      "existed": false
+    },
+    "backend/routers/orders.py": {
+      "existed": false
+    },
+    "backend/main.py": {
+      "existed": false
+    },
+    "tests/conftest.py": {
+      "existed": false
+    },
+    "tests/test_orders.py": {
+      "existed": false
+    },
+    ".alphapilot_generated.mark": {
+      "existed": true,
+      "content": "[\n  \"architecture_design.md\"\n]",
+      "sha256": "72b8ab4c0b55c4b5d125e5b27532cd7e46883869f8179219fcd8a1d273b890ae",
+      "size": 30,
+      "mtime_ms": 1794640096475.433
+    },
+    "backend/__init__.py": {
+      "existed": false
+    },
+    "backend/models/__init__.py": {
+      "existed": false
+    },
+    "backend/routers/__init__.py": {
+      "existed": false
+    },
+    "models/__init__.py": {
+      "existed": false
+    },
+    "tests/__init__.py": {
+      "existed": false
+    }
+  }
+}

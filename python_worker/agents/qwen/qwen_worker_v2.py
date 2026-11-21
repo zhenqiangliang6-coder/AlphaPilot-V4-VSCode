@@ -78,6 +78,7 @@ from ...task_state_contract import (  # G2.2: 契约常量
 )
 from ...file_ops import cleanup_previous_generated, track_generated_files, create_file_op
 from ...memory_integration import project_memory_user_id
+from ...embedding_bootstrap import ensure_embedding_ready
 from ..vision_api import has_vision_support
 
 # ⭐ 记忆集成层（延迟导入，避免循环依赖）
@@ -98,6 +99,7 @@ try:
         inject_conversation_memory,
         save_conversation_memory,
         _extract_conversation_id,
+        has_pending_authorization,
     )
     _SHORT_TERM_MEMORY_ENABLED = True
 except ImportError as e:
@@ -105,6 +107,7 @@ except ImportError as e:
     inject_conversation_memory = None
     save_conversation_memory = None
     _extract_conversation_id = None
+    has_pending_authorization = lambda context, steps=None: False
     _SHORT_TERM_MEMORY_ENABLED = False
 
 
@@ -660,7 +663,11 @@ def main_loop():
 
             # ⭐ 记忆集成：任务完成后保存洞察
             memory_user_id = context.get("meta", {}).get("memory_user_id")
-            if MEMORY_ENABLED and memory_user_id and not context.get("meta", {}).get("authorization_requests"):
+            if (
+                MEMORY_ENABLED
+                and memory_user_id
+                and not has_pending_authorization(context, steps)
+            ):
                 try:
                     # 构建任务结果摘要
                     task_result = {
@@ -686,7 +693,7 @@ def main_loop():
                     print(f"\n⚠️ [MEMORY] 保存任务记忆失败: {e}")
 
             # ── P3 短期记忆写回：conversation_id 存在时写入 ConversationStore ──
-            if _SHORT_TERM_MEMORY_ENABLED and not context.get("meta", {}).get("authorization_requests"):
+            if _SHORT_TERM_MEMORY_ENABLED and not has_pending_authorization(context, steps):
                 _conv_id = context.get("meta", {}).get("conversation_id")
                 if _conv_id:
                     try:
@@ -934,8 +941,8 @@ def main_loop():
                 error_result["protocol_version"] = PROTOCOL_VERSION
                 error_result["trace_id"] = task["trace_id"]
 
-            if result_key:
-                redis.set(result_key, json.dumps(
+            if result_key or task_id:
+                redis.set(result_key or f"task_result:{task_id}", json.dumps(
                     TaskModel.normalize_for_serialization(error_result)
                 ))
 
@@ -983,5 +990,12 @@ if __name__ == "__main__":
     print("\n🚀 Qwen Worker v3.0 已启动")
     print(f"   · Worker ID: {WORKER_ID}")
     print(f"   · Node API: 已连接")
+
+    # 本地 embedding 启动自愈 + 预加载：任何新环境启动即自动就绪，无需人工复制/下载
+    try:
+        ensure_embedding_ready()
+    except Exception as _embed_err:  # noqa: BLE001
+        print(f"[embed] 启动预加载跳过: {_embed_err}", flush=True)
+
     print(f"   · 正在监听任务队列...\n")
     main_loop()

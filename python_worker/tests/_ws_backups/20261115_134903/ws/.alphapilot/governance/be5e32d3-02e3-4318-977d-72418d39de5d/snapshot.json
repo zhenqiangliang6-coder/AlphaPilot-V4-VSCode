@@ -1,0 +1,35 @@
+{
+  "task_id": "be5e32d3-02e3-4318-977d-72418d39de5d",
+  "created_at": "2026-11-14T18:18:56.454Z",
+  "workspace_root": "C:\\Users\\49772\\Desktop\\shopflow_ecommerce",
+  "files": {
+    "backend/routers/orders.py": {
+      "existed": true,
+      "content": "\"\"\"\r\nAPI endpoints for managing orders.\r\n\"\"\"\r\nimport logging\r\nfrom typing import   # ← BUG: List removed\r\n\r\nfrom fastapi import APIRouter, Depends, HTTPException, status\r\nfrom sqlalchemy.orm import Session\r\n\r\nfrom backend.database import get_db\r\nfrom backend.models.order import Order\r\nfrom backend.models.enums import OrderStatus\r\nfrom backend.schemas.order import OrderCreate, OrderResponse, OrderUpdateStatus\r\n\r\nlogger = logging.getLogger(__name__)\r\nrouter = APIRouter()\r\n\r\n\r\n@router.post(\"/\", response_model=OrderResponse, status_code=status.HTTP_201_CREATED)\r\ndef create_order(order_in: OrderCreate, db: Session = Depends(get_db)):\r\n    \"\"\"\r\n    Create a new order. Calculates total amount from items.\r\n    \"\"\"\r\n    # Calculate total amount from items\r\n    total = sum(item.quantity * item.price for item in order_in.items)\r\n    \r\n    db_order = Order(\r\n        user_id=order_in.user_id,\r\n        status=OrderStatus.PENDING.value,\r\n        total_amount=total,\r\n        items=[item.model_dump() for item in order_in.items]\r\n    )\r\n    db.add(db_order)\r\n    db.commit()\r\n    db.refresh(db_order)\r\n    \r\n    logger.info(f\"Order {db_order.id} created for user {db_order.user_id}\")\r\n    return db_order\r\n\r\n\r\n@router.get(\"/\", response_model=List[OrderResponse], status_code=status.HTTP_200_OK)\r\ndef list_orders(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):\r\n    \"\"\"\r\n    Retrieve a list of orders with pagination.\r\n    \"\"\"\r\n    if limit > 1000:\r\n        raise HTTPException(status_code=400, detail=\"Limit cannot exceed 1000\")\r\n        \r\n    orders = db.query(Order).offset(skip).limit(limit).all()\r\n    return orders\r\n\r\n\r\n@router.get(\"/{order_id}\", response_model=OrderResponse, status_code=status.HTTP_200_OK)\r\ndef read_order(order_id: int, db: Session = Depends(get_db)):\r\n    \"\"\"\r\n    Retrieve a specific order by ID.\r\n    \"\"\"\r\n    db_order = db.query(Order).filter(Order.id == order_id).first()\r\n    if db_order is None:\r\n        raise HTTPException(status_code=404, detail=\"Order not found\")\r\n    return db_order\r\n\r\n\r\n@router.put(\"/{order_id}/status\", response_model=OrderResponse, status_code=status.HTTP_200_OK)\r\ndef update_order_status(\r\n    order_id: int, \r\n    order_update: OrderUpdateStatus, \r\n    db: Session = Depends(get_db)\r\n):\r\n    \"\"\"\r\n    Update the status of an order. Validates state transitions.\r\n    \"\"\"\r\n    db_order = db.query(Order).filter(Order.id == order_id).first()\r\n    if db_order is None:\r\n        raise HTTPException(status_code=404, detail=\"Order not found\")\r\n    \r\n    current_status = OrderStatus(db_order.status)\r\n    new_status = order_update.new_status\r\n    \r\n    # Validate state transition\r\n    allowed_next_states = current_status.next_states()\r\n    if new_status.value not in allowed_next_states:\r\n        raise HTTPException(\r\n            status_code=422, \r\n            detail=f\"Invalid status transition from {current_status.value} to {new_status.value}. Allowed: {allowed_next_states}\"\r\n        )\r\n        \r\n    db_order.status = new_status.value\r\n    db.commit()\r\n    db.refresh(db_order)\r\n    \r\n    logger.info(f\"Order {db_order.id} status updated to {new_status.value}\")\r\n    return db_order\r\n\r\n\r\n@router.delete(\"/{order_id}\", status_code=status.HTTP_204_NO_CONTENT)\r\ndef delete_order(order_id: int, db: Session = Depends(get_db)):\r\n    \"\"\"\r\n    Delete an order permanently.\r\n    \"\"\"\r\n    db_order = db.query(Order).filter(Order.id == order_id).first()\r\n    if db_order is None:\r\n        raise HTTPException(status_code=404, detail=\"Order not found\")\r\n    \r\n    db.delete(db_order)\r\n    db.commit()\r\n    logger.info(f\"Order {order_id} deleted\")\r\n    return None",
+      "sha256": "ced729f4605b265be34be0671f6fc4eb860c56a5cec79bcf6bd5fe384a801766",
+      "size": 3631,
+      "mtime_ms": 1794680272432.9912
+    },
+    "backend/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794680258544.463
+    },
+    ".alphapilot_generated.mark": {
+      "existed": true,
+      "content": "[\n  \"backend/__init__.py\",\n  \"backend/database.py\",\n  \"backend/main.py\",\n  \"backend/models/enums.py\",\n  \"backend/models/order.py\",\n  \"backend/routers/orders.py\",\n  \"backend/schemas/order.py\",\n  \"requirements.txt\",\n  \"tests/conftest.py\",\n  \"tests/test_orders.py\"\n]",
+      "sha256": "a53faedd08c5cf4e2756f2dc31f18f3c39049228ecff096377b57b7530338965",
+      "size": 263,
+      "mtime_ms": 1794680258550.5254
+    },
+    "backend/routers/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794680258552.5464
+    }
+  }
+}

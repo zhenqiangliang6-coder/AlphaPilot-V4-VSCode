@@ -1,0 +1,14 @@
+{
+  "task_id": "bf5b91e5-85dd-4742-8f02-f30b45b9cf87",
+  "created_at": "2026-11-15T00:32:31.215Z",
+  "workspace_root": "C:\\Users\\49772\\Desktop\\shopflow_ecommerce",
+  "files": {
+    ".alphapilot_generated.mark": {
+      "existed": true,
+      "content": "[\n  \"backend/__init__.py\",\n  \"backend/routers/__init__.py\",\n  \"backend/routers/orders.py\",\n  \"backend/schemas/__init__.py\",\n  \"backend/services/__init__.py\",\n  \"tests/__init__.py\"\n]",
+      "sha256": "e77539a64b63944b20f7995c0af660c07489ede31501fb84810d86848c563590",
+      "size": 181,
+      "mtime_ms": 1794700911143.046
+    }
+  }
+}

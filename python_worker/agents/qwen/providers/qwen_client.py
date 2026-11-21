@@ -16,7 +16,12 @@ from ..step_executor.interfaces import LLMClient
 
 load_dotenv(Path(__file__).resolve().parents[3] / ".env")
 
-DASHSCOPE_TEXT_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+# 允许用环境变量覆盖端点（如 DashScope 免费额度耗尽时临时改走 MaaS 兼容端点）。
+# 未设置时保持原行为，完全向后兼容。
+DASHSCOPE_TEXT_URL = os.getenv(
+    "DASHSCOPE_TEXT_URL",
+    "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+)
 
 # 重试预算：可选步骤（doc/docstring）曾因上游超时连续重试 1079 秒，
 # 把整轮任务拖过 900 秒轮询窗口。网络错误最多重试 1 次，单次读超时 45s，
@@ -27,6 +32,74 @@ DASHSCOPE_TEXT_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/com
 _NETWORK_RETRY_MAX = 2
 _NETWORK_RETRY_DELAYS = [2, 6]
 _HTTP_TIMEOUT = (10, 45)
+
+# G10.36：SSE read timeout 只约束「相邻两个 chunk 之间的间隔」，不是一次
+# 调用的总时长上界。v15 实测 qwen3.8-27b 在长 prompt 下先吐 15000+ 字符
+# reasoning_content、75s 零正文，socket 持续有数据 ⇒ 45s read timeout 永远
+# 不触发，Worker 静默挂死 1800s 直到测试轮询超时（R6 全链路崩塌）。
+# 修复三件事：
+#   1) 对支持关闭思考的模型显式 enable_thinking=False（实测 0.55s 首字、
+#      12.4s 完成，零 reasoning）；被上游拒绝时自动回退默认模式。
+#   2) 单次流式调用加墙钟总上界 + 首正文上界，超时立即中断并换模型。
+#   3) 流结束但零正文（纯 reasoning / 心跳）判失败，绝不静默返回空串。
+# G10.38：45s 已覆盖实测最慢可用模型（qwen3.7-max-preview 长 prompt
+# 19.9s 首正文）。90s 在 v17 让每个失败步骤白等一分半，R10 累计 12 次。
+_DEFAULT_STREAM_WALL_TIMEOUT_SEC = 240.0
+_DEFAULT_STREAM_FIRST_CONTENT_SEC = 45.0
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return max(1.0, float(os.getenv(name, "").strip() or default))
+    except (ValueError, AttributeError):
+        return default
+
+
+def stream_wall_timeout_sec() -> float:
+    return _env_float("QWEN_STREAM_WALL_TIMEOUT_SEC", _DEFAULT_STREAM_WALL_TIMEOUT_SEC)
+
+
+def stream_first_content_sec() -> float:
+    return _env_float("QWEN_STREAM_FIRST_CONTENT_SEC", _DEFAULT_STREAM_FIRST_CONTENT_SEC)
+
+
+def no_think_models() -> set:
+    """允许/需要关闭深度思考的模型（DashScope 顶层 enable_thinking 口径）。
+
+    G10.38 实测：deepseek-v4.1-flash 支持 False（长 prompt 0.9s 首正文、
+    4.4s 完成、零 reasoning_content）；qwen3.8-2.4t-a95b /
+    qwen3.7-max-preview / glm-5.3 强制 True，下发 False 会 400
+    「The value of the enable_thinking parameter is restricted to True」。
+    因此只按配置对明确兼容的模型下发，且仍保留 400 自动回退兜底。
+    """
+    raw = os.getenv("QWEN_NO_THINK_MODELS", "deepseek-v4.1-flash,qwen3.8-27b")
+    return {m.strip() for m in (raw or "").split(",") if m.strip()}
+
+
+def wants_no_thinking(model: str) -> bool:
+    return (model or "").strip() in no_think_models()
+
+
+def build_stream_body(model: str, prompt: str, temperature: float, no_think: bool) -> dict:
+    body = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": temperature,
+        "stream": True,
+    }
+    if no_think:
+        body["enable_thinking"] = False
+    return body
+
+
+def is_enable_thinking_rejected(response) -> bool:
+    """上游是否因 enable_thinking=False 返回 400（需去掉参数重试）。"""
+    try:
+        if response.status_code != 400:
+            return False
+        return "enable_thinking" in (response.text or "").lower()
+    except Exception:
+        return False
 
 
 # 模型级免费额度耗尽（2026-11-14 实测）：
@@ -41,7 +114,16 @@ _HTTP_TIMEOUT = (10, 45)
 # 半开重试，无需重启 Worker；真实额度仍耗尽时会重新进入冷却，
 # 不改变 FAIL-CLOSED 对失败文本的拦截语义。
 _EXHAUSTED_AT: dict = {}
+_EXHAUST_STREAK: dict = {}
 _DEFAULT_QUOTA_COOLDOWN_SEC = 300.0
+_QUOTA_COOLDOWN_CAP_SEC = 3600.0
+
+# G10.38：零正文 / 墙钟超时是「模型能力不匹配长 prompt」，不是瞬时网络
+# 抖动。v17 的 R10 里 qwen3.8-2.4t-a95b 被 10 个步骤各调用一次、每次白等
+# 90s 首正文上界才降级，累计 1080s 直接烧满 1800s 轮询窗口。一次判失败
+# 就按 TTL 摘除该模型，后续步骤直接走已验证可用的模型。
+_STREAM_FAIL_AT: dict = {}
+_DEFAULT_STREAM_FAIL_COOLDOWN_SEC = 600.0
 
 
 def _quota_cooldown_sec() -> float:
@@ -54,14 +136,29 @@ def _quota_cooldown_sec() -> float:
         return _DEFAULT_QUOTA_COOLDOWN_SEC
 
 
+def quota_cooldown_sec(model: str = "") -> float:
+    """额度冷却时长；连续耗尽按指数退避，压住「到期→立刻又 403」抖动。
+
+    v17 日志里 qwen3.8-27b 每 300s 到期就重新纳入、立刻再 403，反复
+    「重新纳入 → 冷却」刷屏。退避上限 3600s，仍保留半开自动恢复语义。
+    """
+    streak = max(1, _EXHAUST_STREAK.get(model, 1))
+    return min(_QUOTA_COOLDOWN_CAP_SEC, _quota_cooldown_sec() * (2 ** (streak - 1)))
+
+
+def stream_fail_cooldown_sec() -> float:
+    return _env_float("QWEN_STREAM_FAIL_COOLDOWN_SEC", _DEFAULT_STREAM_FAIL_COOLDOWN_SEC)
+
+
 def _is_model_cooling(model: str) -> bool:
     """模型是否仍在额度冷却期；到期自动摘除（半开重试）。"""
     marked_at = _EXHAUSTED_AT.get(model)
     if marked_at is None:
         return False
-    if time.monotonic() - marked_at >= _quota_cooldown_sec():
+    if time.monotonic() - marked_at >= quota_cooldown_sec(model):
         _EXHAUSTED_AT.pop(model, None)
-        print(f"[Qwen] 模型 {model} 额度冷却到期，重新纳入候选链")
+        print(f"[Qwen] 模型 {model} 额度冷却到期，重新纳入候选链 "
+              f"(连续耗尽 {_EXHAUST_STREAK.get(model, 1)} 次)")
         return False
     return True
 
@@ -76,22 +173,78 @@ def _is_free_quota_exhausted(response) -> bool:
         return False
 
 
+def _is_account_arrearage(response) -> bool:
+    """DashScope 账户欠费（400 overdue-payment / 未处于 good standing）。
+
+    与模型级免费额度耗尽不同，欠费是账户级不可用：所有模型都会返回 400。
+    按模型级冷却摘除即可——首个步骤会把链上每个模型都标记一次，后续步骤
+    直接跳过，避免每步白撞 3 个模型各一次 400。
+    """
+    try:
+        if response.status_code != 400:
+            return False
+        low = (response.text or "").lower()
+        return ("overdue" in low or "arrearage" in low
+                or "good standing" in low or "overdue-payment" in low)
+    except Exception:
+        return False
+
+
 def _mark_model_exhausted(model: str) -> None:
-    if model and model not in _EXHAUSTED_AT:
-        _EXHAUSTED_AT[model] = time.monotonic()
-        print(f"[Qwen] 模型 {model} 免费额度耗尽，进入 {_quota_cooldown_sec():.0f}s 冷却")
+    if not model:
+        return
+    _EXHAUST_STREAK[model] = _EXHAUST_STREAK.get(model, 0) + 1
+    _EXHAUSTED_AT[model] = time.monotonic()
+    print(f"[Qwen] 模型 {model} 免费额度耗尽，进入 "
+          f"{quota_cooldown_sec(model):.0f}s 冷却 "
+          f"(连续 {_EXHAUST_STREAK[model]} 次)")
+
+
+def mark_stream_failure(model: str) -> None:
+    """标记流式失败（零正文 / 墙钟超时），按 TTL 摘出候选链。"""
+    if not model:
+        return
+    _STREAM_FAIL_AT[model] = time.monotonic()
+    print(f"[Qwen Stream] 模型 {model} 进入 {stream_fail_cooldown_sec():.0f}s "
+          f"流式失败冷却（避免每步重复白等首正文上界）")
+
+
+def is_stream_cooling(model: str) -> bool:
+    marked_at = _STREAM_FAIL_AT.get(model)
+    if marked_at is None:
+        return False
+    if time.monotonic() - marked_at >= stream_fail_cooldown_sec():
+        _STREAM_FAIL_AT.pop(model, None)
+        print(f"[Qwen Stream] 模型 {model} 流式失败冷却到期，半开重试")
+        return False
+    return True
+
+
+def _mark_stream_success(model: str) -> None:
+    """模型成功产出正文：清掉连续失败计数，恢复其正常优先级。"""
+    _EXHAUST_STREAK.pop(model, None)
+    _STREAM_FAIL_AT.pop(model, None)
 
 
 def reset_exhausted_models() -> None:
-    """清除模型级额度冷却（运维恢复额度 / 测试隔离用）。"""
+    """清除模型级冷却（运维恢复额度 / 测试隔离用）。"""
     _EXHAUSTED_AT.clear()
+    _EXHAUST_STREAK.clear()
+    _STREAM_FAIL_AT.clear()
 
 
 def exhausted_models() -> set:
-    """当前仍在冷却期的模型集合（对外暴露时会顺带清理到期项）。"""
+    """当前仍在额度冷却期的模型集合（对外暴露时会顺带清理到期项）。"""
     for model in list(_EXHAUSTED_AT):
         _is_model_cooling(model)
     return set(_EXHAUSTED_AT)
+
+
+def stream_failing_models() -> set:
+    """当前仍在流式失败冷却期的模型集合（测试与运维观测用）。"""
+    for model in list(_STREAM_FAIL_AT):
+        is_stream_cooling(model)
+    return set(_STREAM_FAIL_AT)
 
 
 def _is_network_error(exc: Exception) -> bool:
@@ -187,71 +340,131 @@ class QwenClient(LLMClient):
 
     def call_stream(self, prompt: str, temperature: float = 0.3, **kwargs) -> Generator[str, None, None]:
         if not self._api_key:
-            yield f"\n\n[API 调用失败: DASHSCOPE_API_KEY 未设置]"
+            yield "[API 调用失败: DASHSCOPE_API_KEY 未设置]"
             return
 
         chain = self._get_chain()
         if not chain:
-            yield f"\n\n[API 调用失败: 没有可用的 Qwen 模型]"
+            yield "[API 调用失败: 没有可用的 Qwen 模型]"
             return
 
         last_error = None
         skipped_exhausted = False
+        skipped_stream_fail = False
+        wall_sec = stream_wall_timeout_sec()
+        first_sec = stream_first_content_sec()
         for model in chain:
             if _is_model_cooling(model):
                 skipped_exhausted = True
                 print(f"[Qwen Stream] 跳过额度冷却中的模型: {model}")
                 continue
-            try:
-                print(f"[Qwen Stream] 调用模型: {model}")
-
-                def _do_connect():
-                    headers = {
-                        "Authorization": f"Bearer {self._api_key}",
-                        "Content-Type": "application/json",
-                    }
-                    body = {
-                        "model": model,
-                        "messages": [{"role": "user", "content": prompt}],
-                        "temperature": temperature,
-                        "stream": True,
-                    }
-                    return self._session.post(
-                        DASHSCOPE_TEXT_URL, headers=headers, json=body,
-                        timeout=_HTTP_TIMEOUT, stream=True, proxies={},
-                    )
-
-                response = _call_with_retry(_do_connect, max_retries=_NETWORK_RETRY_MAX)
-                if _is_free_quota_exhausted(response):
-                    _mark_model_exhausted(model)
-                    last_error = RuntimeError(f"模型 {model} 免费额度耗尽(403)")
-                    continue
-                response.raise_for_status()
-                # SSE 无 charset 时 requests 默认 ISO-8859-1，中文会变 mojibake
-                response.encoding = "utf-8"
-                for line in response.iter_lines(decode_unicode=True):
-                    if not line:
-                        continue
-                    if line.startswith("data:"):
-                        data_str = line[5:].strip()
-                        if data_str == "[DONE]":
-                            break
-                        try:
-                            data = json.loads(data_str)
-                            chunk = _extract_text_from_response(data)
-                            if chunk:
-                                yield chunk
-                        except json.JSONDecodeError:
-                            continue
-                if model != chain[0]:
-                    print(f"[Qwen Stream] 降级模型 {model} 调用成功")
-                return
-            except Exception as e:
-                print(f"[Qwen Stream] 模型 {model} 失败: {e}")
-                last_error = e
+            if is_stream_cooling(model):
+                skipped_stream_fail = True
+                print(f"[Qwen Stream] 跳过流式失败冷却中的模型: {model}")
                 continue
+            print(f"[Qwen Stream] 调用模型: {model}")
+            # 关思考优先；上游拒绝该参数时回退默认模式再试一次。
+            variants = [True, False] if wants_no_thinking(model) else [False]
+            for no_think in variants:
+                try:
+                    def _do_connect(no_think=no_think):
+                        headers = {
+                            "Authorization": f"Bearer {self._api_key}",
+                            "Content-Type": "application/json",
+                        }
+                        body = build_stream_body(model, prompt, temperature, no_think)
+                        return self._session.post(
+                            DASHSCOPE_TEXT_URL, headers=headers, json=body,
+                            timeout=_HTTP_TIMEOUT, stream=True, proxies={},
+                        )
 
-        if last_error is None and skipped_exhausted:
-            yield "\n\n[API 调用失败: 候选链模型免费额度均已耗尽(403)，请领取额度或切换 Provider]"
+                    response = _call_with_retry(_do_connect, max_retries=_NETWORK_RETRY_MAX)
+                    if is_enable_thinking_rejected(response):
+                        try:
+                            response.close()
+                        except Exception:
+                            pass
+                        print(f"[Qwen Stream] 模型 {model} 拒绝关闭思考，回退默认模式")
+                        last_error = RuntimeError(f"模型 {model} 拒绝 enable_thinking=False")
+                        continue
+                    if _is_free_quota_exhausted(response):
+                        try:
+                            response.close()
+                        except Exception:
+                            pass
+                        _mark_model_exhausted(model)
+                        last_error = RuntimeError(f"模型 {model} 免费额度耗尽(403)")
+                        break
+                    if _is_account_arrearage(response):
+                        try:
+                            response.close()
+                        except Exception:
+                            pass
+                        _mark_model_exhausted(model)
+                        last_error = RuntimeError(f"模型 {model} 账户欠费/不可用(400)")
+                        break
+                    response.raise_for_status()
+                    # SSE 无 charset 时 requests 默认 ISO-8859-1，中文会变 mojibake
+                    response.encoding = "utf-8"
+                    started = time.monotonic()
+                    produced = False
+                    timed_out = False
+                    for line in response.iter_lines(decode_unicode=True):
+                        elapsed = time.monotonic() - started
+                        if elapsed > wall_sec or (not produced and elapsed > first_sec):
+                            timed_out = True
+                            break
+                        if not line:
+                            continue
+                        if line.startswith("data:"):
+                            data_str = line[5:].strip()
+                            if data_str == "[DONE]":
+                                break
+                            try:
+                                data = json.loads(data_str)
+                                chunk = _extract_text_from_response(data)
+                                if chunk:
+                                    produced = True
+                                    yield chunk
+                            except json.JSONDecodeError:
+                                continue
+                    try:
+                        response.close()
+                    except Exception:
+                        pass
+                    if timed_out:
+                        last_error = TimeoutError(
+                            f"模型 {model} 流式生成超上界 "
+                            f"(wall={wall_sec:.0f}s/first={first_sec:.0f}s, produced={produced})"
+                        )
+                        print(f"[Qwen Stream] {last_error}")
+                        mark_stream_failure(model)
+                        if produced:
+                            # 已吐出部分正文：绝不换模型重生成，否则上层会把
+                            # 两段不同模型的输出拼成一份损坏文件。
+                            yield "[API 调用失败: 流式生成超过墙钟上界，已中断]"
+                            return
+                        break
+                    if not produced:
+                        last_error = RuntimeError(
+                            f"模型 {model} 流结束但零正文(纯 reasoning_content/心跳)"
+                        )
+                        print(f"[Qwen Stream] {last_error}")
+                        mark_stream_failure(model)
+                        break
+                    if model != chain[0]:
+                        print(f"[Qwen Stream] 降级模型 {model} 调用成功")
+                    _mark_stream_success(model)
+                    return
+                except Exception as e:
+                    print(f"[Qwen Stream] 模型 {model} 失败: {e}")
+                    last_error = e
+                    break
+
+        if last_error is None and skipped_exhausted and not skipped_stream_fail:
+            yield "[API 调用失败: 候选链模型免费额度均已耗尽(403)，请领取额度或切换 Provider]"
             return
-        yield f"\n\n[API 调用失败: 所有模型不可用 - {last_error}]"
+        if last_error is None and skipped_stream_fail:
+            yield "[API 调用失败: 候选链模型均处于流式失败冷却，无可用模型]"
+            return
+        yield f"[API 调用失败: 所有模型不可用 - {last_error}]"

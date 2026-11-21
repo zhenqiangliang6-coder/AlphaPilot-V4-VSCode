@@ -1,0 +1,115 @@
+{
+  "task_id": "319ca296-dfdc-46e6-a2bf-83c0190cebcf",
+  "created_at": "2026-11-14T07:16:01.333Z",
+  "workspace_root": "C:\\Users\\49772\\Desktop\\shopflow_ecommerce",
+  "files": {
+    "models/enums.py": {
+      "existed": false
+    },
+    "backend/database.py": {
+      "existed": true,
+      "content": "\"\"\"\nSQLAlchemy engine and session management for ShopFlow.\n\"\"\"\n\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker, declarative_base\n\n# SQLite database file location relative to project root\nSQLALCHEMY_DATABASE_URL = \"sqlite:///./shopflow.db\"\n\nengine = create_engine(\n    SQLALCHEMY_DATABASE_URL, connect_args={\"check_same_thread\": False}\n)\n\nSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)\n\nBase = declarative_base()\n\n\ndef get_db():\n    \"\"\"\n    Dependency to yield a SQLAlchemy session.\n    Ensures the session is closed after each request.\n    \"\"\"\n    db = SessionLocal()\n    try:\n        yield db\n    finally:\n        db.close()",
+      "sha256": "a5c22fbeee585ac600a98040bcbe4635a07f00749b0d0be37ff9c86537d36a44",
+      "size": 684,
+      "mtime_ms": 1794640346261.1147
+    },
+    "backend/models/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794640346296.8284
+    },
+    "backend/models/enums.py": {
+      "existed": true,
+      "content": "\"\"\"\nOrder status enumeration and state transition logic.\nThis is the single source of truth for order states.\n\"\"\"\n\nimport enum\n\n\nclass OrderStatus(str, enum.Enum):\n    \"\"\"\n    Represents the lifecycle status of an order.\n    Inherits from str and Enum to allow string comparison and serialization.\n    \"\"\"\n    pending = \"pending\"\n    confirmed = \"confirmed\"\n    shipped = \"shipped\"\n    delivered = \"delivered\"\n    cancelled = \"cancelled\"\n\n    def next_states(self) -> list[str]:\n        \"\"\"\n        Returns the list of valid next state values for the current status.\n        \n        State Machine Logic:\n        - pending -> confirmed, cancelled\n        - confirmed -> shipped, cancelled\n        - shipped -> delivered, cancelled\n        - delivered -> [] (terminal)\n        - cancelled -> [] (terminal)\n        \"\"\"\n        transitions = {\n            OrderStatus.pending: [OrderStatus.confirmed, OrderStatus.cancelled],\n            OrderStatus.confirmed: [OrderStatus.shipped, OrderStatus.cancelled],\n            OrderStatus.shipped: [OrderStatus.delivered, OrderStatus.cancelled],\n            OrderStatus.delivered: [],\n            OrderStatus.cancelled: [],\n        }\n        return [state.value for state in transitions.get(self, [])]",
+      "sha256": "d217d7a2442d2938b1750d50ef6be0aa96750bdb7cc035a78bb2e61fda46ed62",
+      "size": 1239,
+      "mtime_ms": 1794640346267.3762
+    },
+    "backend/models/order.py": {
+      "existed": true,
+      "content": "\"\"\"\nSQLAlchemy ORM models for Orders and OrderItems.\n\"\"\"\n\nimport uuid\nfrom datetime import datetime\n\nfrom sqlalchemy import Column, String, Float, Integer, ForeignKey, DateTime, Enum\nfrom sqlalchemy.orm import relationship\n\nfrom backend.database import Base\nfrom backend.models.enums import OrderStatus\n\n\ndef generate_uuid():\n    \"\"\"Helper function to generate UUID strings.\"\"\"\n    return str(uuid.uuid4())\n\n\nclass Order(Base):\n    \"\"\"\n    Main Order entity.\n    \"\"\"\n    __tablename__ = \"orders\"\n\n    id = Column(String, primary_key=True, default=generate_uuid)\n    customer_name = Column(String, nullable=False)\n    # Use SQLAlchemy Enum to enforce validity at DB level if possible, \n    # but storing as String with Python validation is also common for SQLite compatibility.\n    # Here we store the value as string but validate via Python Enum in app logic.\n    status = Column(String, nullable=False, default=OrderStatus.pending.value)\n    total_price = Column(Float, nullable=False, default=0.0)\n    created_at = Column(DateTime, default=datetime.utcnow)\n    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)\n\n    items = relationship(\"OrderItem\", back_populates=\"order\", cascade=\"all, delete-orphan\")\n\n    def calculate_total(self) -> float:\n        \"\"\"\n        Recalculates the total price based on associated items.\n        \"\"\"\n        self.total_price = sum(item.unit_price * item.quantity for item in self.items)\n        return self.total_price\n\n\nclass OrderItem(Base):\n    \"\"\"\n    Line item within an Order.\n    \"\"\"\n    __tablename__ = \"order_items\"\n\n    id = Column(String, primary_key=True, default=generate_uuid)\n    order_id = Column(String, ForeignKey(\"orders.id\"), nullable=False)\n    product_name = Column(String, nullable=False)\n    quantity = Column(Integer, nullable=False)\n    unit_price = Column(Float, nullable=False)\n\n    order = relationship(\"Order\", back_populates=\"items\")",
+      "sha256": "c355d819aa87b2238080a8c9c3ff7d460ee47fe5bc0374903619f608755a8cbe",
+      "size": 1930,
+      "mtime_ms": 1794640346271.2588
+    },
+    "backend/schemas/order.py": {
+      "existed": true,
+      "content": "\"\"\"\nPydantic schemas for Order API requests and responses.\n\"\"\"\n\nfrom typing import List\nfrom datetime import datetime\nfrom pydantic import BaseModel, Field, ConfigDict\n\nfrom backend.models.enums import OrderStatus\n\n\nclass OrderItemCreate(BaseModel):\n    \"\"\"Schema for creating an order item.\"\"\"\n    product_name: str = Field(..., min_length=1, description=\"Name of the product\")\n    quantity: int = Field(..., gt=0, description=\"Quantity must be positive\")\n    unit_price: float = Field(..., gt=0.0, description=\"Unit price must be positive\")\n\n\nclass OrderCreate(BaseModel):\n    \"\"\"Schema for creating a new order.\"\"\"\n    customer_name: str = Field(..., min_length=1, description=\"Customer name\")\n    items: List[OrderItemCreate] = Field(..., min_items=1, description=\"List of order items\")\n\n\nclass OrderUpdateStatus(BaseModel):\n    \"\"\"Schema for updating order status.\"\"\"\n    status: OrderStatus\n\n\nclass OrderItemResponse(BaseModel):\n    \"\"\"Schema for returning order item data.\"\"\"\n    model_config = ConfigDict(from_attributes=True)\n\n    id: str\n    product_name: str\n    quantity: int\n    unit_price: float\n\n\nclass OrderResponse(BaseModel):\n    \"\"\"Schema for returning order data.\"\"\"\n    model_config = ConfigDict(from_attributes=True)\n\n    id: str\n    customer_name: str\n    status: OrderStatus\n    total_price: float\n    created_at: datetime\n    updated_at: datetime\n    items: List[OrderItemResponse]",
+      "sha256": "df9e7311c30b572af13cc1b5099da66ad30f34dc8e1754bd3ed41d954ed81fa2",
+      "size": 1406,
+      "mtime_ms": 1794640346274.0623
+    },
+    "backend/routers/orders.py": {
+      "existed": true,
+      "content": "\"\"\"\nFastAPI router handling CRUD operations for Orders.\n\"\"\"\n\nfrom fastapi import APIRouter, Depends, HTTPException, status\nfrom sqlalchemy.orm import Session\n\nfrom backend.database import get_db\nfrom backend.models.order import Order, OrderItem\nfrom backend.models.enums import OrderStatus\nfrom backend.schemas.order import (\n    OrderCreate,\n    OrderResponse,\n    OrderUpdateStatus,\n)\n\nrouter = APIRouter(prefix=\"/orders\", tags=[\"orders\"])\n\n\n@router.post(\"/\", response_model=OrderResponse, status_code=status.HTTP_201_CREATED)\ndef create_order(order_data: OrderCreate, db: Session = Depends(get_db)):\n    \"\"\"\n    Create a new order with its items.\n    \"\"\"\n    # Initialize order without items first\n    db_order = Order(\n        customer_name=order_data.customer_name,\n        status=OrderStatus.pending.value,\n        total_price=0.0  # Will be calculated below\n    )\n\n    # Add items\n    for item_data in order_data.items:\n        db_item = OrderItem(\n            product_name=item_data.product_name,\n            quantity=item_data.quantity,\n            unit_price=item_data.unit_price\n        )\n        db_order.items.append(db_item)\n\n    # Calculate total price\n    db_order.total_price = db_order.calculate_total()\n\n    db.add(db_order)\n    db.commit()\n    db.refresh(db_order)\n\n    return db_order\n\n\n@router.get(\"/\", response_model=list[OrderResponse])\ndef read_orders(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):\n    \"\"\"\n    Retrieve all orders with pagination.\n    \"\"\"\n    orders = db.query(Order).offset(skip).limit(limit).all()\n    return orders\n\n\n@router.get(\"/{order_id}\", response_model=OrderResponse)\ndef read_order(order_id: str, db: Session = Depends(get_db)):\n    \"\"\"\n    Retrieve a specific order by ID.\n    \"\"\"\n    order = db.query(Order).filter(Order.id == order_id).first()\n    if order is None:\n        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=\"Order not found\")\n    return order\n\n\n@router.patch(\"/{order_id}/status\", response_model=OrderResponse)\ndef update_order_status(\n    order_id: str, \n    status_update: OrderUpdateStatus, \n    db: Session = Depends(get_db)\n):\n    \"\"\"\n    Update the status of an order.\n    Validates state transitions using OrderStatus.next_states().\n    \"\"\"\n    order = db.query(Order).filter(Order.id == order_id).first()\n    if order is None:\n        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=\"Order not found\")\n\n    # Convert stored string status to Enum for validation\n    try:\n        current_status = OrderStatus(order.status)\n    except ValueError:\n        raise HTTPException(\n            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,\n            detail=\"Invalid status format in database\"\n        )\n\n    target_status = status_update.status\n\n    # Validate transition\n    allowed_next_states = current_status.next_states()\n    \n    # Check if target_status value is in allowed next states (which are strings)\n    if target_status.value not in allowed_next_states:\n        raise HTTPException(\n            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,\n            detail=f\"Invalid status transition from '{current_status.value}' to '{target_status.value}'. Allowed: {allowed_next_states}\"\n        )\n\n    order.status = target_status.value\n    db.commit()\n    db.refresh(order)\n    return order\n\n\n@router.delete(\"/{order_id}\", status_code=status.HTTP_200_OK)\ndef delete_order(order_id: str, db: Session = Depends(get_db)):\n    \"\"\"\n    Delete an order and its associated items.\n    \"\"\"\n    order = db.query(Order).filter(Order.id == order_id).first()\n    if order is None:\n        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=\"Order not found\")\n\n    db.delete(order)\n    db.commit()\n    return {\"detail\": \"Order deleted successfully\"}",
+      "sha256": "2e789f150efac863ba89f43b2df14258ad82ebc36843c4b8d5dca05b39e486fa",
+      "size": 3790,
+      "mtime_ms": 1794640346279.512
+    },
+    "backend/main.py": {
+      "existed": true,
+      "content": "\"\"\"\nFastAPI application entry point.\nInitializes the app, registers routers, and creates database tables.\n\"\"\"\n\nfrom fastapi import FastAPI\nfrom fastapi.middleware.cors import CORSMiddleware\n\nfrom backend.database import engine, Base\nfrom backend.routers import orders\n\n# Create tables\nBase.metadata.create_all(bind=engine)\n\napp = FastAPI(title=\"ShopFlow API\", version=\"1.0.0\")\n\n# CORS Configuration\norigins = [\n    \"http://localhost\",\n    \"http://localhost:8000\",\n    \"http://localhost:3000\",\n]\n\napp.add_middleware(\n    CORSMiddleware,\n    allow_origins=origins,\n    allow_credentials=True,\n    allow_methods=[\"*\"],\n    allow_headers=[\"*\"],\n)\n\n# Include Routers\napp.include_router(orders.router)\n\n\n@app.get(\"/\")\ndef read_root():\n    \"\"\"Root endpoint for health check.\"\"\"\n    return {\"message\": \"Welcome to ShopFlow API\"}",
+      "sha256": "351df0b90ebff8dbdf7ffbe14e5c7ed7d990ef321f42cd3120208ef249fa596d",
+      "size": 820,
+      "mtime_ms": 1794640346282.3982
+    },
+    "tests/conftest.py": {
+      "existed": true,
+      "content": "\"\"\"\nTest configuration and fixtures for ShopFlow.\n\"\"\"\n\nimport pytest\nfrom fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\n\nfrom backend.main import app\nfrom backend.database import Base, get_db\n\n# Use SQLite in-memory database for testing\nSQLALCHEMY_DATABASE_URL = \"sqlite:///:memory:\"\n\nengine = create_engine(\n    SQLALCHEMY_DATABASE_URL, connect_args={\"check_same_thread\": False}\n)\nTestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)\n\n\n@pytest.fixture(scope=\"function\")\ndef db_session():\n    \"\"\"Create a fresh database session for each test.\"\"\"\n    # Create tables\n    Base.metadata.create_all(bind=engine)\n    session = TestingSessionLocal()\n    try:\n        yield session\n    finally:\n        session.close()\n        # Drop tables after test\n        Base.metadata.drop_all(bind=engine)\n\n\n@pytest.fixture(scope=\"function\")\ndef client(db_session):\n    \"\"\"Create a test client with overridden dependency.\"\"\"\n    def override_get_db():\n        try:\n            yield db_session\n        finally:\n            pass\n\n    app.dependency_overrides[get_db] = override_get_db\n    with TestClient(app) as c:\n        yield c\n    app.dependency_overrides.clear()",
+      "sha256": "22e575b0cba2d88402574b190dc1d8df00eb54a6256e59cd23290020e5b4781b",
+      "size": 1248,
+      "mtime_ms": 1794640346286.3286
+    },
+    "tests/test_orders.py": {
+      "existed": true,
+      "content": "\"\"\"\nIntegration tests for Order endpoints.\n\"\"\"\n\nimport pytest\nfrom fastapi.testclient import TestClient\nfrom sqlalchemy.orm import Session\n\nfrom backend.models.order import Order\nfrom backend.models.enums import OrderStatus\n\n\ndef test_create_order_success(client: TestClient, db_session: Session):\n    \"\"\"Test creating an order with valid data returns 201 and correct response.\"\"\"\n    payload = {\n        \"customer_name\": \"John Doe\",\n        \"items\": [\n            {\"product_name\": \"Laptop\", \"quantity\": 1, \"unit_price\": 999.99},\n            {\"product_name\": \"Mouse\", \"quantity\": 2, \"unit_price\": 25.00}\n        ]\n    }\n    \n    response = client.post(\"/orders/\", json=payload)\n    \n    assert response.status_code == 201\n    data = response.json()\n    assert data[\"customer_name\"] == \"John Doe\"\n    assert data[\"status\"] == \"pending\"\n    assert len(data[\"items\"]) == 2\n    assert abs(data[\"total_price\"] - (999.99 + 2 * 25.00)) < 0.01\n    assert \"id\" in data\n    assert \"created_at\" in data\n    \n    # Verify DB persistence\n    order = db_session.query(Order).filter_by(id=data[\"id\"]).first()\n    assert order is not None\n    assert order.customer_name == \"John Doe\"\n\n\ndef test_create_order_invalid_data(client: TestClient):\n    \"\"\"Test creating an order with missing required fields returns 422.\"\"\"\n    payload = {\n        \"customer_name\": \"Jane Doe\",\n        # Missing items\n    }\n    \n    response = client.post(\"/orders/\", json=payload)\n    assert response.status_code == 422\n\n\ndef test_get_orders_list_empty(client: TestClient):\n    \"\"\"Test getting orders list when no orders exist returns empty list.\"\"\"\n    response = client.get(\"/orders/\")\n    assert response.status_code == 200\n    assert response.json() == []\n\n\ndef test_get_orders_list_non_empty(client: TestClient):\n    \"\"\"Test getting orders list after creating orders returns all orders.\"\"\"\n    # Create two orders\n    payload1 = {\n        \"customer_name\": \"Alice\",\n        \"items\": [{\"product_name\": \"Book\", \"quantity\": 1, \"unit_price\": 10.0}]\n    }\n    payload2 = {\n        \"customer_name\": \"Bob\",\n        \"items\": [{\"product_name\": \"Pen\", \"quantity\": 5, \"unit_price\": 2.0}]\n    }\n    \n    client.post(\"/orders/\", json=payload1)\n    client.post(\"/orders/\", json=payload2)\n    \n    response = client.get(\"/orders/\")\n    assert response.status_code == 200\n    data = response.json()\n    assert len(data) == 2\n    names = {order[\"customer_name\"] for order in data}\n    assert \"Alice\" in names\n    assert \"Bob\" in names\n\n\ndef test_get_single_order_success(client: TestClient):\n    \"\"\"Test retrieving a specific order by ID returns correct data.\"\"\"\n    payload = {\n        \"customer_name\": \"Charlie\",\n        \"items\": [{\"product_name\": \"Keyboard\", \"quantity\": 1, \"unit_price\": 75.0}]\n    }\n    \n    create_response = client.post(\"/orders/\", json=payload)\n    assert create_response.status_code == 201\n    order_id = create_response.json()[\"id\"]\n    \n    get_response = client.get(f\"/orders/{order_id}\")\n    assert get_response.status_code == 200\n    data = get_response.json()\n    assert data[\"id\"] == order_id\n    assert data[\"customer_name\"] == \"Charlie\"\n    assert data[\"status\"] == \"pending\"\n    assert abs(data[\"total_price\"] - 75.0) < 0.01\n\n\ndef test_get_single_order_not_found(client: TestClient):\n    \"\"\"Test retrieving a non-existent order returns 404.\"\"\"\n    fake_uuid = \"123e4567-e89b-12d3-a456-426614174000\"\n    response = client.get(f\"/orders/{fake_uuid}\")\n    assert response.status_code == 404\n\n\ndef test_update_order_status_valid_transition(client: TestClient):\n    \"\"\"Test updating order status with a valid transition returns 200.\"\"\"\n    payload = {\n        \"customer_name\": \"David\",\n        \"items\": [{\"product_name\": \"Monitor\", \"quantity\": 1, \"unit_price\": 300.0}]\n    }\n    \n    create_response = client.post(\"/orders/\", json=payload)\n    order_id = create_response.json()[\"id\"]\n    \n    # pending -> confirmed is valid\n    update_payload = {\"status\": \"confirmed\"}\n    response = client.patch(f\"/orders/{order_id}/status\", json=update_payload)\n    \n    assert response.status_code == 200\n    data = response.json()\n    assert data[\"status\"] == \"confirmed\"\n\n\ndef test_update_order_status_invalid_transition(client: TestClient):\n    \"\"\"Test updating order status with an invalid transition returns 422.\"\"\"\n    payload = {\n        \"customer_name\": \"Eve\",\n        \"items\": [{\"product_name\": \"Cable\", \"quantity\": 1, \"unit_price\": 5.0}]\n    }\n    \n    create_response = client.post(\"/orders/\", json=payload)\n    order_id = create_response.json()[\"id\"]\n    \n    # pending -> delivered is likely invalid based on typical flow logic\n    update_payload = {\"status\": \"delivered\"}\n    response = client.patch(f\"/orders/{order_id}/status\", json=update_payload)\n    \n    assert response.status_code == 422\n\n\ndef test_delete_order_success(client: TestClient):\n    \"\"\"Test deleting an existing order returns 200 and subsequent GET returns 404.\"\"\"\n    payload = {\n        \"customer_name\": \"Frank\",\n        \"items\": [{\"product_name\": \"Old Item\", \"quantity\": 1, \"unit_price\": 1.0}]\n    }\n    \n    create_response = client.post(\"/orders/\", json=payload)\n    order_id = create_response.json()[\"id\"]\n    \n    delete_response = client.delete(f\"/orders/{order_id}\")\n    assert delete_response.status_code == 200\n    \n    get_response = client.get(f\"/orders/{order_id}\")\n    assert get_response.status_code == 404\n\n\ndef test_delete_order_not_found(client: TestClient):\n    \"\"\"Test deleting a non-existent order returns 404.\"\"\"\n    fake_uuid = \"123e4567-e89b-12d3-a456-426614174000\"\n    response = client.delete(f\"/orders/{fake_uuid}\")\n    assert response.status_code == 404",
+      "sha256": "af5f1ebceb1bcaf40a5e40fa67a020fa4999e917522d5b3558c5107e45fde577",
+      "size": 5631,
+      "mtime_ms": 1794640346288.6323
+    },
+    ".alphapilot_generated.mark": {
+      "existed": true,
+      "content": "[\n  \"backend/database.py\",\n  \"backend/main.py\",\n  \"backend/models/enums.py\",\n  \"backend/models/order.py\",\n  \"backend/routers/orders.py\",\n  \"backend/schemas/__init__.py\",\n  \"backend/schemas/order.py\",\n  \"backend/shopflow.db\",\n  \"models/order.py\",\n  \"tests/conftest.py\",\n  \"tests/test_orders.py\"\n]",
+      "sha256": "a4479025ebd607b972672b963358a5022dbfd76a0972ad13eb495a47657d99f7",
+      "size": 295,
+      "mtime_ms": 1794640346290.9375
+    },
+    "backend/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794640346291.9343
+    },
+    "backend/routers/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794640346299.4658
+    },
+    "backend/schemas/__init__.py": {
+      "existed": true,
+      "content": "# Empty file to mark directory as Python package",
+      "sha256": "5a5ba7572cee7ef11a793ec050d0cfe81a90db1c94eb1505776e3fabe625b748",
+      "size": 48,
+      "mtime_ms": 1794640346253.0874
+    },
+    "models/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794640346301.4668
+    },
+    "tests/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794640346303.6887
+    }
+  }
+}

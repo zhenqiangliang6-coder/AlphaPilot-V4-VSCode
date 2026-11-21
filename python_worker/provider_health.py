@@ -175,10 +175,13 @@ def classify_response(response) -> tuple[str | None, str | None]:
         body = (response.text or "")[:400]
         low = body.lower()
         why = f"HTTP {status}: {body[:200]}"
-        if status in (401, 402) or (status == 403 and "quota" in low):
+        if status in (401, 402) or (status == 403 and (
+                "quota" in low or "denied" in low or "eligible" in low
+                or "unpurchased" in low or "access to model" in low)):
             return FATAL, why
         if status == 429 and ("insufficient balance" in low or "balance" in low
-                              or "insufficient_quota" in low):
+                              or "insufficient_quota" in low
+                              or "setlimitexceeded" in low):
             return QUOTA, why
     except Exception:
         pass

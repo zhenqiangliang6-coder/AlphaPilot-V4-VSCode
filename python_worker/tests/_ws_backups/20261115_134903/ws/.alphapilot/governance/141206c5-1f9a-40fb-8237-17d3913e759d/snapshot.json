@@ -1,0 +1,75 @@
+{
+  "task_id": "141206c5-1f9a-40fb-8237-17d3913e759d",
+  "created_at": "2026-11-14T20:38:10.264Z",
+  "workspace_root": "C:\\Users\\49772\\Desktop\\shopflow_ecommerce",
+  "files": {
+    "backend/models/__init__.py": {
+      "existed": true,
+      "content": "from backend.models.order import Order\nfrom backend.models.enums import OrderStatus",
+      "sha256": "7c8373f672bf5bd6becdaa15792f5de6ad98dcc0c7598af97c69822894b2f0e1",
+      "size": 83,
+      "mtime_ms": 1794687471402.2317
+    },
+    "backend/models/inventory.py": {
+      "existed": false
+    },
+    "backend/schemas/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794687471409.9448
+    },
+    "backend/schemas/inventory.py": {
+      "existed": false
+    },
+    "backend/routers/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794688084428.496
+    },
+    "backend/routers/inventory.py": {
+      "existed": false
+    },
+    "backend/main.py": {
+      "existed": true,
+      "content": "from fastapi import FastAPI\nfrom fastapi.middleware.cors import CORSMiddleware\nfrom backend.database import engine, Base\nfrom backend.routers import orders\n\napp = FastAPI()\n\napp.add_middleware(\n    CORSMiddleware,\n    allow_origins=[\"*\"],\n    allow_credentials=True,\n    allow_methods=[\"*\"],\n    allow_headers=[\"*\"],\n)\n\napp.include_router(orders.router, prefix=\"/orders\")\n\n@app.on_event(\"startup\")\ndef startup():\n    Base.metadata.create_all(bind=engine)\n\n@app.get(\"/\")\ndef read_root():\n    return {\"message\": \"ShopFlow API is running\"}",
+      "sha256": "efe8084214156a6c42d87bf41b05a7982649bcae3483f1a33fbd03d33aae6ba7",
+      "size": 536,
+      "mtime_ms": 1794687471428.7217
+    },
+    "requirements.txt": {
+      "existed": true,
+      "content": "fastapi>=0.100.0\nuvicorn>=0.23.0\nsqlalchemy>=2.0.0\npydantic>=2.0.0\npytest>=7.0\nhttpx>=0.24.0",
+      "sha256": "014127a9900e074715b0a2b42c329bda0aeb160663fdf265a99649f11bef95f2",
+      "size": 92,
+      "mtime_ms": 1794687471433.378
+    },
+    "tests/test_inventory.py": {
+      "existed": false
+    },
+    ".alphapilot_generated.mark": {
+      "existed": true,
+      "content": "[\n  \"backend/routers/orders.py\"\n]",
+      "sha256": "c40ee314a55817ee45fa40fcb47c5e01767db17736bd1f676a5f6c6b62791cf0",
+      "size": 33,
+      "mtime_ms": 1794688084433.0073
+    },
+    "backend/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794688084427.4856
+    },
+    "tests/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794687471446.294
+    }
+  }
+}

@@ -1,0 +1,89 @@
+{
+  "task_id": "2d1011b3-ae4d-4572-ba41-8707b24144e7",
+  "created_at": "2026-11-14T19:31:03.918Z",
+  "workspace_root": "C:\\Users\\49772\\Desktop\\shopflow_ecommerce",
+  "files": {
+    "requirements.txt": {
+      "existed": true,
+      "content": "fastapi>=0.100.0\nuvicorn>=0.22.0\nsqlalchemy>=2.0.0\npydantic>=2.0.0\npytest>=7.4.0\nhttpx>=0.24.0",
+      "sha256": "6d05bc1d7f6f1a4111ac8201950e5274733a47e01d64dd82ab31c6fe97d33e69",
+      "size": 94,
+      "mtime_ms": 1794683749557.0103
+    },
+    "backend/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794683892156.8125
+    },
+    "backend/routers/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794683892157.809
+    },
+    "backend/database.py": {
+      "existed": true,
+      "content": "from sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker, declarative_base\n\nSQLALCHEMY_DATABASE_URL = \"sqlite:///./backend/shopflow.db\"\nengine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={\"check_same_thread\": False})\nSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)\nBase = declarative_base()\n\ndef get_db():\n    db = SessionLocal()\n    try:\n        yield db\n    finally:\n        db.close()",
+      "sha256": "2bcfef6109a3650c5f76bfd3c9486dacffc2e10ea1b134ce9c4383f1df202d61",
+      "size": 445,
+      "mtime_ms": 1794683749551.4937
+    },
+    "backend/models/__init__.py": {
+      "existed": true,
+      "content": "from backend.models.order import Order\nfrom backend.models.enums import OrderStatus",
+      "sha256": "7c8373f672bf5bd6becdaa15792f5de6ad98dcc0c7598af97c69822894b2f0e1",
+      "size": 83,
+      "mtime_ms": 1794683749574.9104
+    },
+    "backend/models/inventory.py": {
+      "existed": false
+    },
+    "backend/schemas/inventory.py": {
+      "existed": false
+    },
+    "backend/routers/inventory.py": {
+      "existed": false
+    },
+    "tests/test_inventory.py": {
+      "existed": false
+    },
+    ".alphapilot_generated.mark": {
+      "existed": true,
+      "content": "[\n  \"backend/__init__.py\",\n  \"backend/routers/__init__.py\",\n  \"backend/routers/orders.py\"\n]",
+      "sha256": "5b1c054b4cefe3dc51e0c6210199ed4beb4c4abad2930de915c352752b9fbfa9",
+      "size": 91,
+      "mtime_ms": 1794683892168.7002
+    },
+    "backend/schemas/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794683749579.9868
+    },
+    "tests/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794683749583.3926
+    },
+    "backend/main.py": {
+      "existed": true,
+      "content": "from fastapi import FastAPI\nfrom fastapi.middleware.cors import CORSMiddleware\nfrom backend.database import engine, Base\nfrom backend.routers.orders import router as orders_router\n\napp = FastAPI(title=\"ShopFlow API\")\n\napp.add_middleware(\n    CORSMiddleware,\n    allow_origins=[\"*\"],\n    allow_credentials=True,\n    allow_methods=[\"*\"],\n    allow_headers=[\"*\"],\n)\n\n@app.get(\"/\")\ndef read_root():\n    return {\"message\": \"ShopFlow API is running\"}\n\napp.include_router(orders_router, prefix=\"/orders\")\n\nBase.metadata.create_all(bind=engine)",
+      "sha256": "c4d771077aac38a300425082c658cc7b399c6dbae3767cfd23daddfa8e31ce2c",
+      "size": 536,
+      "mtime_ms": 1794683749553.0022
+    },
+    "backend/routers/orders.py": {
+      "existed": true,
+      "content": "from typing import List\nfrom fastapi import APIRouter, Depends, HTTPException, status\nfrom sqlalchemy.orm import Session\nfrom datetime import datetime, timezone\nimport uuid\n\nfrom backend.database import get_db\nfrom backend.models.order import Order, OrderStatus\nfrom backend.schemas.order import OrderCreate, OrderResponse, OrderUpdateStatus\n\nrouter = APIRouter()\n\n@router.post(\"/\", response_model=OrderResponse, status_code=status.HTTP_200_OK)\ndef create_order(order_data: OrderCreate, db: Session = Depends(get_db)):\n    new_order = Order(\n        id=str(uuid.uuid4()),\n        user_id=order_data.user_id,\n        status=OrderStatus.PENDING.value,\n        total_amount=order_data.total_amount,\n        items=order_data.items,\n        created_at=datetime.now(timezone.utc)\n    )\n    db.add(new_order)\n    db.commit()\n    db.refresh(new_order)\n    return new_order\n\n@router.get(\"/\", response_model=List[OrderResponse], status_code=status.HTTP_200_OK)\ndef list_orders(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):\n    return db.query(Order).offset(skip).limit(limit).all()\n\n@router.get(\"/{order_id}\", response_model=OrderResponse, status_code=status.HTTP_200_OK)\ndef get_order(order_id: str, db: Session = Depends(get_db)):\n    order = db.query(Order).filter(Order.id == order_id).first()\n    if not order:\n        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=\"Order not found\")\n    return order\n\n@router.put(\"/{order_id}/status\", response_model=OrderResponse, status_code=status.HTTP_200_OK)\ndef update_order_status(order_id: str, status_update: OrderUpdateStatus, db: Session = Depends(get_db)):\n    order = db.query(Order).filter(Order.id == order_id).first()\n    if not order:\n        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=\"Order not found\")\n\n    current_status = OrderStatus(order.status)\n    if status_update.new_status not in current_status.next_states():\n        raise HTTPException(\n            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,\n            detail=f\"Invalid status transition from {current_status.value} to {status_update.new_status.value}\"\n        )\n\n    order.status = status_update.new_status.value\n    db.commit()\n    db.refresh(order)\n    return order\n\n@router.delete(\"/{order_id}\", status_code=status.HTTP_204_NO_CONTENT)\ndef delete_order(order_id: str, db: Session = Depends(get_db)):\n    order = db.query(Order).filter(Order.id == order_id).first()\n    if not order:\n        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=\"Order not found\")\n    db.delete(order)\n    db.commit()\n    return None",
+      "sha256": "cf38ec7aa4be514cb8d660926604fafd5343ee8da97ab635c666c4d33ccaf239",
+      "size": 2612,
+      "mtime_ms": 1794683892158.839
+    }
+  }
+}

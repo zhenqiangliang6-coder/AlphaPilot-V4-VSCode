@@ -1,0 +1,83 @@
+{
+  "task_id": "d230ccd5-c76e-437a-b4e6-27fc7bfbaee6",
+  "created_at": "2026-11-14T11:42:11.062Z",
+  "workspace_root": "C:\\Users\\49772\\Desktop\\shopflow_ecommerce",
+  "files": {
+    "backend/core/database.py": {
+      "existed": false
+    },
+    "backend/models/enums.py": {
+      "existed": true,
+      "content": "from enum import Enum\nfrom typing import List\n\nclass OrderStatus(str, Enum):\n    PENDING = \"pending\"\n    CONFIRMED = \"confirmed\"\n    SHIPPED = \"shipped\"\n    DELIVERED = \"delivered\"\n    CANCELLED = \"cancelled\"\n\n    def next_states(self) -> List[\"OrderStatus\"]:\n        transitions = {\n            \"pending\": [OrderStatus.CONFIRMED, OrderStatus.CANCELLED],\n            \"confirmed\": [OrderStatus.SHIPPED, OrderStatus.CANCELLED],\n            \"shipped\": [OrderStatus.DELIVERED],\n            \"delivered\": [],\n            \"cancelled\": []\n        }\n        return transitions.get(self.value, [])",
+      "sha256": "3ada9ce809947cfd4d132482c7d941b7a34728c1df3e930529b978dc970a996d",
+      "size": 587,
+      "mtime_ms": 1794656363367.223
+    },
+    "backend/models/order.py": {
+      "existed": true,
+      "content": "from sqlalchemy import Column, Integer, String, Float, JSON, DateTime\nfrom datetime import datetime, timezone\nfrom backend.database import Base\nfrom backend.models.enums import OrderStatus\n\nclass Order(Base):\n    __tablename__ = \"orders\"\n\n    id = Column(Integer, primary_key=True, index=True)\n    user_id = Column(String, index=True, nullable=False)\n    status = Column(String, default=OrderStatus.PENDING.value, nullable=False)\n    total_amount = Column(Float, default=0.0, nullable=False)\n    items = Column(JSON, default=list, nullable=False)\n    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)",
+      "sha256": "0f89ae4141710eeef270a97c54f47cb6fde7ac4b695cee0baf6cd0af54099273",
+      "size": 640,
+      "mtime_ms": 1794656363348.677
+    },
+    "backend/schemas/order.py": {
+      "existed": true,
+      "content": "from datetime import datetime\nfrom typing import List, Any\nfrom pydantic import BaseModel, ConfigDict, Field\n\nfrom backend.models.enums import OrderStatus\n\nclass OrderCreate(BaseModel):\n    user_id: str\n    total_amount: float\n    items: List[dict] = Field(default_factory=list)\n\nclass OrderResponse(BaseModel):\n    model_config = ConfigDict(from_attributes=True)\n\n    id: int\n    user_id: str\n    status: OrderStatus\n    total_amount: float\n    items: List[Any]\n    created_at: datetime\n\nclass OrderUpdateStatus(BaseModel):\n    new_status: OrderStatus",
+      "sha256": "68103803fd4a9b0d7168ca01b39ed166e583318e800200ea75ba78183a7d26dd",
+      "size": 552,
+      "mtime_ms": 1794656363371.2253
+    },
+    "backend/main.py": {
+      "existed": true,
+      "content": "from contextlib import asynccontextmanager\nfrom fastapi import FastAPI\nfrom fastapi.middleware.cors import CORSMiddleware\nfrom backend.database import engine, Base\nfrom backend.routers import orders\n\n@asynccontextmanager\nasync def lifespan(app: FastAPI):\n    Base.metadata.create_all(bind=engine)\n    yield\n\napp = FastAPI(lifespan=lifespan)\n\napp.add_middleware(\n    CORSMiddleware,\n    allow_origins=[\"*\"],\n    allow_credentials=True,\n    allow_methods=[\"*\"],\n    allow_headers=[\"*\"],\n)\n\napp.include_router(orders.router, prefix=\"/orders\")\n\n@app.get(\"/\")\ndef read_root():\n    return {\"message\": \"ShopFlow API is running\"}",
+      "sha256": "551daf1292d80335863b65de7b6856562ae8fa37c9f65e02d97ef269e646cf1c",
+      "size": 621,
+      "mtime_ms": 1794656363360.7056
+    },
+    "backend/routers/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794656363354.7324
+    },
+    "backend/routers/orders.py": {
+      "existed": true,
+      "content": "from fastapi import APIRouter, Depends, HTTPException, status\r\nfrom sqlalchemy.orm import Session\r\nfrom typing import   # ← BUG: List removed\r\n\r\nfrom backend.database import get_db\r\nfrom backend.models.order import Order\r\nfrom backend.models.enums import OrderStatus\r\nfrom backend.schemas.order import OrderCreate, OrderResponse, OrderUpdateStatus\r\n\r\nrouter = APIRouter()\r\n\r\n@router.post(\"/\", response_model=OrderResponse, status_code=status.HTTP_200_OK)\r\ndef create_order(order_in: OrderCreate, db: Session = Depends(get_db)):\r\n    db_order = Order(\r\n        user_id=order_in.user_id,\r\n        total_amount=order_in.total_amount,\r\n        items=order_in.items,\r\n        status=OrderStatus.PENDING.value\r\n    )\r\n    db.add(db_order)\r\n    db.commit()\r\n    db.refresh(db_order)\r\n    return db_order\r\n\r\n@router.get(\"/\", response_model=List[OrderResponse], status_code=status.HTTP_200_OK)\r\ndef get_orders(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):\r\n    orders = db.query(Order).offset(skip).limit(limit).all()\r\n    return orders\r\n\r\n@router.get(\"/{order_id}\", response_model=OrderResponse, status_code=status.HTTP_200_OK)\r\ndef get_order(order_id: int, db: Session = Depends(get_db)):\r\n    order = db.query(Order).filter(Order.id == order_id).first()\r\n    if not order:\r\n        raise HTTPException(status_code=404, detail=\"Order not found\")\r\n    return order\r\n\r\n@router.put(\"/{order_id}/status\", response_model=OrderResponse, status_code=status.HTTP_200_OK)\r\ndef update_order_status(order_id: int, payload: OrderUpdateStatus, db: Session = Depends(get_db)):\r\n    order = db.query(Order).filter(Order.id == order_id).first()\r\n    if not order:\r\n        raise HTTPException(status_code=404, detail=\"Order not found\")\r\n    \r\n    current_status = OrderStatus(order.status)\r\n    if payload.new_status not in current_status.next_states():\r\n        raise HTTPException(\r\n            status_code=422, \r\n            detail=f\"Invalid status transition from {current_status.value} to {payload.new_status.value}\"\r\n        )\r\n        \r\n    order.status = payload.new_status.value\r\n    db.commit()\r\n    db.refresh(order)\r\n    return order\r\n\r\n@router.delete(\"/{order_id}\", status_code=status.HTTP_204_NO_CONTENT)\r\ndef delete_order(order_id: int, db: Session = Depends(get_db)):\r\n    order = db.query(Order).filter(Order.id == order_id).first()\r\n    if not order:\r\n        raise HTTPException(status_code=404, detail=\"Order not found\")\r\n    db.delete(order)\r\n    db.commit()\r\n    return None",
+      "sha256": "783e38e2a0d4029a9ad55734082990c50a5aae456b6522419a1affac23c589ab",
+      "size": 2494,
+      "mtime_ms": 1794656372613.3586
+    },
+    ".alphapilot_generated.mark": {
+      "existed": true,
+      "content": "[\n  \"backend/__init__.py\",\n  \"backend/database.py\",\n  \"backend/main.py\",\n  \"backend/models/__init__.py\",\n  \"backend/models/enums.py\",\n  \"backend/models/enums.py\",\n  \"backend/models/order.py\",\n  \"backend/routers/__init__.py\",\n  \"backend/routers/orders.py\",\n  \"backend/routers/orders.py\",\n  \"backend/schemas/__init__.py\",\n  \"backend/schemas/order.py\",\n  \"backend/schemas/order.py\",\n  \"tests/conftest.py\",\n  \"tests/test_orders.py\"\n]",
+      "sha256": "a1aceed5fe66b5ad00b318f87f8505cb97c64acc0a62e0bdb9d9e455628fc74a",
+      "size": 429,
+      "mtime_ms": 1794656363372.6753
+    },
+    "backend/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794656363337.556
+    },
+    "backend/core/__init__.py": {
+      "existed": false
+    },
+    "backend/models/__init__.py": {
+      "existed": true,
+      "content": "from backend.models.order import Order\nfrom backend.models.enums import OrderStatus",
+      "sha256": "7c8373f672bf5bd6becdaa15792f5de6ad98dcc0c7598af97c69822894b2f0e1",
+      "size": 83,
+      "mtime_ms": 1794656363344.395
+    },
+    "backend/schemas/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794656363350.7183
+    }
+  }
+}

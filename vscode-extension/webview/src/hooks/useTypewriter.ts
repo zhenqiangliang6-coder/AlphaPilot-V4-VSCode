@@ -2,7 +2,7 @@
 // ⚡ rAF 时间步进打字机引擎 — 替换逐字符 setTimeout 的 O(n) 定时器方案
 // 特性：时间步进（帧率无关）、智能追赶（落后过多自动加速）、收尾快速补齐
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 export interface UseTypewriterOptions {
   /** 打字速度（字符/秒），默认 90 */
@@ -28,11 +28,12 @@ export function useTypewriter(
 ): string {
   const { cps = 90, enabled = true, catchUpThreshold = 240, finalBoost = 12 } = options;
 
-  const [displayedLen, setDisplayedLen] = useState(() =>
-    enabled && active ? 0 : target.length
-  );
+  // 初始长度必须统一：非流式挂载（历史消息）直接完整显示，
+  // lenRef 若停在 0 会导致 effect 空转推进几帧才追平（肉眼看不到但浪费 rAF）
+  const initialLen = enabled && active ? 0 : target.length;
+  const [displayedLen, setDisplayedLen] = useState(() => initialLen);
 
-  const lenRef = useRef(0);
+  const lenRef = useRef(initialLen);
   const rafRef = useRef(0);
   const lastTsRef = useRef(0);
   const accRef = useRef(0); // 小数累加器：dt * speed 不足 1 字符时累积到下一帧
@@ -44,12 +45,19 @@ export function useTypewriter(
   activeRef.current = active;
 
   // target 收缩时同步收缩（防脏数据）
-  if (target.length < lenRef.current) {
-    lenRef.current = target.length;
-    if (lenRef.current < displayedLen) {
-      setDisplayedLen(lenRef.current);
+  // 注：收缩处理放在 layout effect 而非渲染期 —— 渲染期 setState 属于
+  // "adjusting state during render" 模式（React 官方认可但有约束），
+  // 挪进 effect 语义更干净，也为并发特性留足安全边际。
+  const prevTargetLenRef = useRef(target.length);
+  useLayoutEffect(() => {
+    if (target.length < prevTargetLenRef.current) {
+      // target 收缩 = 内容被替换/清空：直接完整显示新 target，清空小数累加器
+      lenRef.current = target.length;
+      accRef.current = 0;
+      setDisplayedLen(target.length);
     }
-  }
+    prevTargetLenRef.current = target.length;
+  }, [target]);
 
   useEffect(() => {
     if (!enabled) {

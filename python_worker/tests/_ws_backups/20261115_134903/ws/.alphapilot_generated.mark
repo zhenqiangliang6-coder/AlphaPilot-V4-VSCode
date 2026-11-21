@@ -1,0 +1,8 @@
+[
+  "backend/main.py",
+  "backend/models/__init__.py",
+  "backend/models/inventory.py",
+  "backend/routers/inventory.py",
+  "backend/schemas/inventory.py",
+  "tests/test_inventory.py"
+]

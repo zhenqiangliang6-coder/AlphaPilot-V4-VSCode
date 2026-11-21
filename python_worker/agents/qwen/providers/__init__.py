@@ -15,6 +15,9 @@ _PROVIDER_MAP = {
     "modelscope": "ModelScopeClient",
     "qwen": "QwenClient",
     "deepseek": "DeepSeekClient",
+    "deepseek_maas": "DeepSeekMaaSClient",
+    "tencent_maas": "TencentMaaSClient",
+    "volc_deepseek": "VolcDeepSeekClient",
     "openai": "OpenAICompatibleClient",
     "local": "OpenAICompatibleClient",
 }
@@ -39,6 +42,15 @@ def get_llm_client(provider: str = None) -> LLMClient:
     elif client_name == "DeepSeekClient":
         from .deepseek_client import DeepSeekClient
         return DeepSeekClient()
+    elif client_name == "DeepSeekMaaSClient":
+        from .maas_client import DeepSeekMaaSClient
+        return DeepSeekMaaSClient()
+    elif client_name == "TencentMaaSClient":
+        from .maas_client import TencentMaaSClient
+        return TencentMaaSClient()
+    elif client_name == "VolcDeepSeekClient":
+        from .maas_client import VolcDeepSeekClient
+        return VolcDeepSeekClient()
     elif client_name == "OpenAICompatibleClient":
         from .openai_compatible_client import OpenAICompatibleClient
         return OpenAICompatibleClient()

@@ -40,6 +40,31 @@ load_dotenv(Path(__file__).resolve().parents[3] / ".env")
 _NETWORK_RETRY_MAX = 2
 _NETWORK_RETRY_DELAYS = [1, 2]
 
+# G10.52（2026-11-18）：ModelScope 主链从 429 恢复 200 后暴露的健壮性缺口。
+# 旧实现流/非流都只靠 requests 的 (connect, read)=(15,180) 超时：服务端保持
+# 连接活跃却持续吐 reasoning/保活字节、迟迟不给完整 body 时 read timeout 永不
+# 触发，长 prompt（refine/fix 阶段带整个工作区源码）会 hang 死整个任务链。
+# v45 靠 429 被动降级到有墙钟治理的 qwen_client 才幸免；主链恢复后 R7 fix
+# 卡死即此因。与 qwen_client 共用同一组墙钟环境变量口径，超时抛错 → 走既有
+# 降级链 → call_llm 最终兜底 DashScope，FAIL-CLOSED。
+_DEFAULT_STREAM_WALL_TIMEOUT_SEC = 240.0
+_DEFAULT_STREAM_FIRST_CONTENT_SEC = 45.0
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return max(1.0, float(os.getenv(name, "").strip() or default))
+    except (ValueError, AttributeError):
+        return default
+
+
+def stream_wall_timeout_sec() -> float:
+    return _env_float("QWEN_STREAM_WALL_TIMEOUT_SEC", _DEFAULT_STREAM_WALL_TIMEOUT_SEC)
+
+
+def stream_first_content_sec() -> float:
+    return _env_float("QWEN_STREAM_FIRST_CONTENT_SEC", _DEFAULT_STREAM_FIRST_CONTENT_SEC)
+
 # 429 insufficient balance 有可能是「单分钟限流被误报成余额不足」。
 # 按社区实测建议做 1 次短退避验证：自愈了就继续用，没自愈才冷却。
 # 用环境变量可关闭（MODELSCOPE_QUOTA_VERIFY=0），便于离线契约测试。
@@ -66,6 +91,55 @@ _KEY_ENV_NAMES = (
     "MODELSCOPE_API_KEY_B",
     "MODELSCOPE_API_KEY_C",
 )
+
+# G10.28 续：账号轮换从「仅换 key」升级为「(key, base_url, model_chain) 整组切换」。
+# 每个账号的 base_url 与模型链可独立配置（MODELSCOPE_BASE_URL{_A/_B/_C}、
+# MODELSCOPE_MODEL{_A/_B/_C} + FALLBACK_1..5{_A/_B/_C}），缺省回退全局配置。
+_ACCOUNT_SUFFIXES = ("", "_A", "_B", "_C")
+
+_MODEL_CHAIN_KEY_NAMES = (
+    "MODELSCOPE_MODEL",
+    "MODELSCOPE_FALLBACK_1",
+    "MODELSCOPE_FALLBACK_2",
+    "MODELSCOPE_FALLBACK_3",
+    "MODELSCOPE_FALLBACK_4",
+    "MODELSCOPE_FALLBACK_5",
+)
+
+
+def _build_model_chain(suffix: str = "") -> list:
+    """构建单个账号的模型降级链；suffix 为空即全局链。"""
+    chain = []
+    for key in _MODEL_CHAIN_KEY_NAMES:
+        val = (os.getenv(f"{key}{suffix}") or "").strip()
+        if val and val not in chain:
+            chain.append(val)
+    return chain
+
+
+_DEFAULT_BASE_URL = "https://api-inference.modelscope.cn/v1"
+_DEFAULT_MODEL = "Qwen/Qwen3.8-Flash-Next"
+
+
+def _build_account(suffix: str = "") -> dict:
+    """构建单个账号的 (key, base_url, chain) 三元组；无 key 返回 None。
+
+    G10.28 续：账号轮换从「仅换 key」升级为「整组切换」。每个账号的
+    base_url 与模型降级链可独立配置（MODELSCOPE_BASE_URL{_A/_B/_C}、
+    MODELSCOPE_MODEL{_A/_B/_C} + FALLBACK_1..5{_A/_B/_C}），缺省逐项回退
+    全局配置。保证「换 key 必换 base_url + 模型链」，避免新 key 配旧模型名
+    造成 400 无效模型。
+    """
+    key = (os.getenv(f"MODELSCOPE_API_KEY{suffix}") or "").strip()
+    if not key:
+        return None
+    base_url = (
+        os.getenv(f"MODELSCOPE_BASE_URL{suffix}")
+        or os.getenv("MODELSCOPE_BASE_URL")
+        or _DEFAULT_BASE_URL
+    ).rstrip("/")
+    chain = _build_model_chain(suffix) or _build_model_chain("") or [_DEFAULT_MODEL]
+    return {"key": key, "base_url": base_url, "chain": chain}
 
 
 def _proxy_cooldown_sec() -> float:
@@ -159,19 +233,23 @@ def _is_network_error(exc: Exception) -> bool:
 
 class ModelScopeClient(LLMClient):
     def __init__(self):
-        keys: list = []
-        for name in _KEY_ENV_NAMES:
-            val = (os.getenv(name) or "").strip()
-            if val and val not in keys:
-                keys.append(val)
-        self._api_keys = keys
+        # G10.28 续：账号池由「纯 key 列表」升级为 (key, base_url, chain) 三元组，
+        # 轮换时整组切换，杜绝「新 key 配旧 base_url/旧模型名」的 400 无效模型。
+        accounts: list = []
+        seen_keys: list = []
+        for suffix in _ACCOUNT_SUFFIXES:
+            acct = _build_account(suffix)
+            if not acct or acct["key"] in seen_keys:
+                continue
+            seen_keys.append(acct["key"])
+            accounts.append(acct)
+        self._accounts = accounts
         self._key_index = 0
-        # 向后兼容：既有代码读 self._api_key 判断「是否配置」
-        self._api_key = keys[0] if keys else ""
-        self._base_url = (
-            os.getenv("MODELSCOPE_BASE_URL")
-            or "https://api-inference.modelscope.cn/v1"
-        ).rstrip("/")
+        # 向后兼容：既有代码读 self._api_key 判断「是否配置」，
+        # 测试契约读 self._api_keys / self._key_index / self._current_key()。
+        self._api_keys = [a["key"] for a in accounts]
+        self._api_key = self._api_keys[0] if self._api_keys else ""
+        self._base_url = accounts[0]["base_url"] if accounts else _DEFAULT_BASE_URL
         proxy = (os.getenv("MODELSCOPE_PROXY_URL") or "").strip()
         self._proxies = {"http": proxy, "https": proxy} if proxy else None
         # 独立 Session：trust_env=False 让 "直连" 真正不经由环境变量代理。
@@ -182,15 +260,10 @@ class ModelScopeClient(LLMClient):
 
     # ------------------------------------------------------------------
     # 模型降级链：MODELSCOPE_MODEL → MODELSCOPE_FALLBACK_1..5
+    # G10.28 续：链改为按当前账号返回（整组切换），避免换号后仍用旧账号模型名。
     # ------------------------------------------------------------------
     def _get_chain(self):
-        chain = []
-        for key in ("MODELSCOPE_MODEL", "MODELSCOPE_FALLBACK_1", "MODELSCOPE_FALLBACK_2",
-                    "MODELSCOPE_FALLBACK_3", "MODELSCOPE_FALLBACK_4", "MODELSCOPE_FALLBACK_5"):
-            val = (os.getenv(key) or "").strip()
-            if val and val not in chain:
-                chain.append(val)
-        return chain or ["Qwen/Qwen3.8-Flash-Next"]
+        return self._current_chain()
 
     @staticmethod
     def _extract_text(data: dict) -> str:
@@ -208,19 +281,35 @@ class ModelScopeClient(LLMClient):
         return message.get("content") or delta.get("content") or ""
 
     # ------------------------------------------------------------------
-    # G10.28: 账号级额度轮换
+    # G10.28: 账号级额度轮换（key + base_url + 模型链 整组切换）
     # ------------------------------------------------------------------
+    def _current_account(self) -> dict:
+        if not self._accounts:
+            return {}
+        return self._accounts[min(self._key_index, len(self._accounts) - 1)]
+
     def _current_key(self) -> str:
         if not self._api_keys:
             return ""
         return self._api_keys[min(self._key_index, len(self._api_keys) - 1)]
 
+    def _current_base_url(self) -> str:
+        return self._current_account().get("base_url") or self._base_url
+
+    def _current_chain(self) -> list:
+        chain = self._current_account().get("chain")
+        if chain:
+            return chain
+        # 无账号（或测试直连）时的全局兜底，维持旧默认链语义
+        return _build_model_chain("") or [_DEFAULT_MODEL]
+
     def _rotate_key(self) -> bool:
-        """切到池内下一个 key；已到末尾返回 False（交由上层熔断）。"""
+        """切到池内下一个账号并整组切换；已到末尾返回 False（交由上层熔断）。"""
         if self._key_index + 1 >= len(self._api_keys):
             return False
         self._key_index += 1
         self._api_key = self._current_key()
+        self._base_url = self._current_base_url()
         return True
 
     def _post(self, model, prompt, temperature, stream, proxies):
@@ -231,16 +320,18 @@ class ModelScopeClient(LLMClient):
         body.update(_THINK_OFF)
         if stream:
             body["stream"] = True
-        url = f"{self._base_url}/chat/completions"
 
         # 只把「429 免费额度耗尽」当作换账号信号；网络错误 / 5xx /
         # 普通限流仍交给既有路径策略与降级链处理，避免放大故障。
+        # base_url 每次尝试按当前账号重取，配合 _rotate_key 的整组切换，
+        # 保证换 key 的同时不再沿用旧账号的 base_url。
         response = None
         for _attempt in range(max(1, len(self._api_keys))):
             headers = {
                 "Authorization": f"Bearer {self._current_key()}",
                 "Content-Type": "application/json",
             }
+            url = f"{self._current_base_url()}/chat/completions"
             response = self._session.post(
                 url, headers=headers, json=body,
                 timeout=(15, 180), stream=stream, proxies=proxies or {},
@@ -251,8 +342,9 @@ class ModelScopeClient(LLMClient):
                 except Exception:
                     pass
                 print(
-                    f"[ModelScope] 当前账号额度耗尽，切换备用 key "
-                    f"({self._key_index + 1}/{len(self._api_keys)}) 重发"
+                    f"[ModelScope] 当前账号额度耗尽，切换备用账号 "
+                    f"({self._key_index + 1}/{len(self._api_keys)}，"
+                    f"base_url={self._current_base_url()}) 重发"
                 )
                 continue
             break
@@ -303,11 +395,32 @@ class ModelScopeClient(LLMClient):
             )
             _maybe_trip_account_circuit(response)
             response.raise_for_status()
+            # G10.52：墙钟上界。read timeout 只约束相邻 chunk 间隔，服务端
+            # 持续吐 reasoning/保活字节时会永不触发；用 monotonic 墙钟兜底，
+            # 首正文 45s / 全程 240s 超界即抛错，交回降级链（FAIL-CLOSED）。
+            wall_sec = stream_wall_timeout_sec()
+            first_sec = stream_first_content_sec()
+            started = time.monotonic()
+            produced = False
+            # 兼容非 SSE 响应（含既有 key 轮换契约里的 json-only mock）：
+            # 无 iter_lines 时按一次性 JSON 提取，语义等同旧 _call_one。
+            if not hasattr(response, "iter_lines"):
+                text = self._extract_text(response.json())
+                if text:
+                    yield text
+                return
             # SSE 响应头通常只有 `text/event-stream`，不带 charset；
             # requests 会默认按 ISO-8859-1 解码，UTF-8 中文会变成 mojibake
             # （曾导致生成的 .py 里中文注释乱码 → SyntaxError）。
             # 因此取原始字节并显式按 UTF-8 解码，绝不依赖库的编码猜测。
             for raw_line in response.iter_lines(decode_unicode=False):
+                elapsed = time.monotonic() - started
+                if elapsed > wall_sec or (not produced and elapsed > first_sec):
+                    raise TimeoutError(
+                        f"ModelScope 流式超上界 "
+                        f"(wall={wall_sec:.0f}s/first={first_sec:.0f}s, "
+                        f"produced={produced})"
+                    )
                 if not raw_line:
                     continue
                 line = (raw_line.decode("utf-8", errors="replace")
@@ -324,6 +437,7 @@ class ModelScopeClient(LLMClient):
                     import json
                     chunk = self._extract_text(json.loads(data_str))
                     if chunk:
+                        produced = True
                         yield chunk
                 except (ValueError, TypeError):
                     continue
@@ -346,28 +460,20 @@ class ModelScopeClient(LLMClient):
         if not self._api_key:
             raise RuntimeError("MODELSCOPE_API_KEY 未设置")
 
-        chain = self._get_chain()
-        last_error = None
-        for model in chain:
-            if _provider_circuit_open("modelscope"):
-                break
-            try:
-                print(f"[ModelScope] 调用模型: {model}")
-                result = self._call_one(model, prompt, temperature)
-                if model != chain[0]:
-                    print(f"[ModelScope] 降级模型 {model} 调用成功")
-                return result
-            except Exception as e:
-                print(f"[ModelScope] 模型 {model} 失败: {e}")
-                last_error = e
-                if _provider_circuit_open("modelscope"):
-                    print("[ModelScope] 额度冷却/鉴权失效，停止遍历降级链，交回跨 Provider 兜底")
-                    break
-                continue
-
-        raise RuntimeError(
-            f"所有 ModelScope 模型均不可用 ({', '.join(chain)}): {last_error}"
-        )
+        # G10.52：非流式阻塞 post 在服务端「连接活跃但无完整 body」时 read
+        # timeout 永不触发（v55 R7 fix 卡死实证）。改为走 call_stream 拼接——
+        # 两者共用 _post（429 key 轮换 + 直连/代理路径语义不变），但流式迭代
+        # 带首正文/全程墙钟上界（_stream_one），超时抛错交回降级链。
+        # 与 QwenClient.call() 的实现口径一致。
+        chunks = []
+        for chunk in self.call_stream(prompt, temperature):
+            if "[API 调用失败" in chunk:
+                raise RuntimeError(chunk.strip())
+            chunks.append(chunk)
+        text = "".join(chunks)
+        if not text.strip():
+            raise RuntimeError("ModelScope 返回空内容")
+        return text
 
     def call_stream(self, prompt: str, temperature: float = 0.3, **kwargs) -> Generator[str, None, None]:
         if _provider_circuit_open("modelscope"):
@@ -378,36 +484,51 @@ class ModelScopeClient(LLMClient):
             yield "\n\n[API 调用失败: MODELSCOPE_API_KEY 未设置]"
             return
 
-        chain = self._get_chain()
         last_error = None
-        for model in chain:
-            if _provider_circuit_open("modelscope"):
-                break
-            for label, proxies in self._paths():
+        # G10.28 续：账号轮换是「整组切换」（key + base_url + 模型链）。
+        # _post 在额度 429 时换号；若某次模型尝试期间发生了换号（_key_index
+        # 前进），说明旧账号的模型链已不适用，须跳出旧链、用新账号自己的链
+        # 重新开始，避免「新 key 配旧模型名」导致 400 无效模型。
+        while True:
+            account_index = self._key_index
+            chain = self._get_chain()
+            rotated = False
+            for model in chain:
                 if _provider_circuit_open("modelscope"):
                     break
-                emitted = False
-                try:
-                    print(f"[ModelScope Stream] 调用模型: {model} ({label})")
-                    for chunk in self._stream_one(model, prompt, temperature, proxies):
-                        emitted = True
-                        yield chunk
-                    if not emitted:
-                        raise ValueError("ModelScope 流式返回空内容")
-                    if model != chain[0]:
-                        print(f"[ModelScope Stream] 降级模型 {model} 调用成功")
-                    return
-                except Exception as e:
-                    print(f"[ModelScope Stream] 模型 {model} ({label}) 失败: {e}")
-                    last_error = e
-                    if label == "proxy" and _is_network_error(e):
-                        _open_proxy_circuit()
-                    if emitted:
-                        # 已向调用方吐出内容，换路径重试会造成重复输出
-                        return
+                for label, proxies in self._paths():
                     if _provider_circuit_open("modelscope"):
-                        print("[ModelScope Stream] 额度冷却/鉴权失效，停止遍历降级链")
                         break
-                    continue
+                    emitted = False
+                    try:
+                        print(f"[ModelScope Stream] 调用模型: {model} ({label})")
+                        for chunk in self._stream_one(model, prompt, temperature, proxies):
+                            emitted = True
+                            yield chunk
+                        if not emitted:
+                            raise ValueError("ModelScope 流式返回空内容")
+                        if model != chain[0]:
+                            print(f"[ModelScope Stream] 降级模型 {model} 调用成功")
+                        return
+                    except Exception as e:
+                        print(f"[ModelScope Stream] 模型 {model} ({label}) 失败: {e}")
+                        last_error = e
+                        if label == "proxy" and _is_network_error(e):
+                            _open_proxy_circuit()
+                        if emitted:
+                            # 已向调用方吐出内容，换路径重试会造成重复输出
+                            return
+                        if self._key_index != account_index:
+                            # 该模型尝试期间发生了账号轮换，用新账号链重来
+                            rotated = True
+                            break
+                        if _provider_circuit_open("modelscope"):
+                            print("[ModelScope Stream] 额度冷却/鉴权失效，停止遍历降级链")
+                            break
+                        continue
+                if rotated:
+                    break
+            if not rotated:
+                break
 
         yield f"\n\n[API 调用失败: 所有 ModelScope 模型不可用 - {last_error}]"

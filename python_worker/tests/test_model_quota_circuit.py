@@ -32,7 +32,16 @@ class _FakeResp:
             raise RuntimeError(f"HTTP {self.status_code}")
 
     def iter_lines(self, decode_unicode=True):
-        return iter([])
+        if self.status_code != 200:
+            return iter([])
+        # G10.36 起「流结束但零正文」明确判失败，G10.38 起还会把该模型
+        # 摘入流式失败冷却。本文件里的 200 是「正常可用模型」占位，
+        # 必须给真实正文，否则测的就不是额度熔断而是零正文防护了。
+        import json
+        return iter([
+            "data: " + json.dumps({"choices": [{"delta": {"content": "ok"}}]}),
+            "data: [DONE]",
+        ])
 
 
 def _make_client(monkeypatch, models):

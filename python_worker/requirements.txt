@@ -4,3 +4,5 @@ requests
 psycopg2-binary>=2.9.9
 pgvector>=0.3.0
 openai>=1.0.0,<3.0.0
+# 本地 embedding（ONNX Runtime，零深度学习依赖）；onnxruntime/tokenizers 由其传递依赖自动带入
+fastembed>=0.9,<1.0

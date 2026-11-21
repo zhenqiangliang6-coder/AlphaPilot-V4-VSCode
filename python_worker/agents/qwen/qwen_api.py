@@ -212,58 +212,98 @@ def _get_client():
     return get_cached_llm_client()
 
 
+def _provider_chain() -> list:
+    """有序多级 Provider 降级链。
+
+    链序由环境变量 LLM_PROVIDER_CHAIN 控制（逗号分隔、去重）。未设置时
+    保持向后兼容：LLM_PROVIDER 为主链，跨 Provider 降级固定接到 qwen。
+    链首建议保持 modelscope（最稳，当日魔粒耗尽后自动降级，额度恢复后
+    自动回归链首，无需改 LLM_PROVIDER）。
+    """
+    raw = (os.getenv("LLM_PROVIDER_CHAIN") or "").strip()
+    if raw:
+        chain = []
+        for p in raw.split(","):
+            p = p.strip().lower()
+            if p and p not in chain:
+                chain.append(p)
+        if chain:
+            return chain
+    primary = os.getenv("LLM_PROVIDER", "qwen").lower().strip()
+    if primary == "qwen":
+        return ["qwen"]
+    return [primary, "qwen"]
+
+
+def _client_for(provider: str, is_primary: bool):
+    """主链走 _get_client 缓存（保留既有契约对它的 monkeypatch），
+    其余 Provider 通过注册中心按名构造。"""
+    if is_primary and provider == os.getenv("LLM_PROVIDER", "qwen").lower().strip():
+        return _get_client()
+    from .providers import get_llm_client
+    return get_llm_client(provider)
+
+
 def call_llm(prompt: str, temperature: float = 0.3) -> str:
-    client = _get_client()
-    try:
-        return client.call(prompt, temperature=temperature)
-    except RuntimeError:
-        provider = os.getenv("LLM_PROVIDER", "qwen").lower().strip()
-        if provider != "qwen":
-            print(f"[Provider] {provider} 全部不可用，自动降级到 DashScope (Qwen)")
-            from .providers.qwen_client import QwenClient
-            fallback = QwenClient()
-            return fallback.call(prompt, temperature=temperature)
-        raise
+    chain = _provider_chain()
+    errors = []
+    for idx, provider in enumerate(chain):
+        try:
+            client = _client_for(provider, idx == 0)
+        except ValueError as e:
+            errors.append(f"{provider}: {e}")
+            print(f"[Provider] 未接入降级链，跳过 {provider}: {e}")
+            continue
+        try:
+            return client.call(prompt, temperature=temperature)
+        except RuntimeError as e:
+            errors.append(f"{provider}: {e}")
+            print(f"[Provider] {provider} 全部不可用，尝试下一 Provider: {e}")
+            continue
+    raise RuntimeError(f"所有 Provider 不可用: {'; '.join(errors)}")
 
 
 def call_llm_stream(prompt: str, temperature: float = 0.3) -> Generator[str, None, None]:
-    client = _get_client()
-    provider = os.getenv("LLM_PROVIDER", "qwen").lower().strip()
-
-    gen = client.call_stream(prompt, temperature=temperature)
-    if provider != "qwen":
+    chain = _provider_chain()
+    errors = []
+    for idx, provider in enumerate(chain):
+        try:
+            client = _client_for(provider, idx == 0)
+        except ValueError as e:
+            errors.append(f"{provider}: {e}")
+            print(f"[Provider] 未接入降级链，跳过 {provider}: {e}")
+            continue
+        gen = client.call_stream(prompt, temperature=temperature)
         try:
             first = next(gen, None)
         except Exception as e:
-            print(f"[Provider] {provider} 流式调用异常，自动降级到 DashScope (Qwen): {e}")
-            from .providers.qwen_client import QwenClient
-            fallback = QwenClient()
-            yield from fallback.call_stream(prompt, temperature=temperature)
-            return
+            print(f"[Provider] {provider} 流式调用异常，尝试下一 Provider: {e}")
+            errors.append(f"{provider}: {type(e).__name__}")
+            continue
         if first is None or "[API 调用失败" in str(first):
-            if first is not None and _is_transient_network_failure(str(first)):
+            msg = str(first) if first is not None else "空首块"
+            errors.append(f"{provider}: {msg}")
+            print(f"[Provider] {provider} 流式全部不可用，尝试下一 Provider")
+            if idx == 0 and _is_transient_network_failure(msg):
                 print(f"[Provider] {provider} 网络型失败，"
                       f"{_PROVIDER_NETWORK_RETRY_DELAY_SEC:.0f}s 后重试一次主链")
                 time.sleep(_PROVIDER_NETWORK_RETRY_DELAY_SEC)
-                retried = client.call_stream(prompt, temperature=temperature)
-                retry_first = next(retried, None)
-                if retry_first is not None and "[API 调用失败" not in str(retry_first):
-                    print(f"[Provider] {provider} 重试成功，继续使用主链")
-                    yield retry_first
-                    yield from retried
-                    return
+                try:
+                    retried = client.call_stream(prompt, temperature=temperature)
+                    retry_first = next(retried, None)
+                    if retry_first is not None and "[API 调用失败" not in str(retry_first):
+                        print(f"[Provider] {provider} 重试成功，继续使用主链")
+                        yield retry_first
+                        yield from retried
+                        return
+                except Exception as e:
+                    print(f"[Provider] {provider} 重试异常: {e}")
                 print(f"[Provider] {provider} 重试仍失败，执行跨 Provider 降级")
-            print(f"[Provider] {provider} 流式全部不可用，自动降级到 DashScope (Qwen)")
-            from .providers.qwen_client import QwenClient
-            fallback = QwenClient()
-            yield from fallback.call_stream(prompt, temperature=temperature)
-            return
-        if first:
-            yield first
+            continue
+        yield first
         yield from gen
         return
-
-    yield from gen
+    yield f"\n\n[API 调用失败: 所有 Provider 不可用 - {'; '.join(errors)}]"
 
 
 def call_llm_with_persona(

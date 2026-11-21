@@ -1,0 +1,68 @@
+{
+  "task_id": "17ed194c-310f-4cc7-93af-33e69cc02c2d",
+  "created_at": "2026-11-14T18:21:35.572Z",
+  "workspace_root": "C:\\Users\\49772\\Desktop\\shopflow_ecommerce",
+  "files": {
+    "backend/main.py": {
+      "existed": true,
+      "content": "\"\"\"\nMain application entry point for ShopFlow API.\n\"\"\"\nimport logging\nfrom fastapi import FastAPI\nfrom fastapi.middleware.cors import CORSMiddleware\n\nfrom backend.database import Base, engine\nfrom backend.routers import orders\n\n# Configure basic logging\nlogging.basicConfig(level=logging.INFO)\nlogger = logging.getLogger(__name__)\n\n# Create tables\ntry:\n    Base.metadata.create_all(bind=engine)\n    logger.info(\"Database tables initialized successfully.\")\nexcept Exception as e:\n    logger.error(f\"Failed to initialize database: {e}\")\n    raise e\n\napp = FastAPI(title=\"ShopFlow API\", version=\"1.0.0\")\n\norigins = [\n    \"*\",\n]\n\napp.add_middleware(\n    CORSMiddleware,\n    allow_origins=origins,\n    allow_credentials=True,\n    allow_methods=[\"*\"],\n    allow_headers=[\"*\"],\n)\n\napp.include_router(orders.router, prefix=\"/orders\", tags=[\"orders\"])\n\n\n@app.get(\"/\")\ndef read_root():\n    return {\"message\": \"ShopFlow API is running\"}",
+      "sha256": "32e82b8373d8821989d992f82c63c984d165c5dff7768ffdf8e95624ba49343d",
+      "size": 925,
+      "mtime_ms": 1794680258535.6504
+    },
+    "backend/models/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794680258552.5464
+    },
+    "backend/models/inventory.py": {
+      "existed": false
+    },
+    "backend/schemas/inventory.py": {
+      "existed": false
+    },
+    "backend/routers/inventory.py": {
+      "existed": false
+    },
+    "tests/test_inventory.py": {
+      "existed": false
+    },
+    ".alphapilot_generated.mark": {
+      "existed": true,
+      "content": "[\n  \"backend/__init__.py\",\n  \"backend/routers/orders.py\"\n]",
+      "sha256": "8121bc490bf6c12e35e0bc4d6cdf49832a6fb55d6c22cd15a5e76bcac3741da2",
+      "size": 58,
+      "mtime_ms": 1794680336462.7117
+    },
+    "backend/__init__.py": {
+      "existed": true,
+      "content": "# Package initialization file",
+      "sha256": "17ffff7dc20364054cd49465ff3c827778147fccd42383c8500bf0f346974d4e",
+      "size": 29,
+      "mtime_ms": 1794680336456.4395
+    },
+    "backend/routers/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794680336465.6123
+    },
+    "backend/schemas/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794680258552.5464
+    },
+    "tests/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794680258559.3694
+    }
+  }
+}

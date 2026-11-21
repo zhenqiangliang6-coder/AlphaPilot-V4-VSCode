@@ -470,6 +470,22 @@ _EXPLICIT_NEGATIONS = (
     "受保护", "原样", "保持不变", "勿", "不得改",
 )
 
+# G10.32：题面还会用「端点」正向点名要改的既有文件，而不写 .py 路径。
+# v11 第 1 遍 R8 实证：题面第 4 条「修改 POST /orders 逻辑」要求改
+# backend/routers/orders.py 实现库存扣减，但白名单只认 .py 路径，
+# 增量契约保护把 orders.py 的写操作整个丢弃（保留磁盘现状），于是
+# LLM 自己生成的 test_inventory.py 里「下单扣减库存」断言必然失败，
+# 候选工作区 6 failed(AttributeError) → 全量回滚 → R8 零落盘。
+# 收紧条件：同一行必须有「正向修改动词 + HTTP 方法 + 端点路径」，
+# 且不含强否定词；只映射到 backend/routers/<首段>.py，不碰 tests/、
+# schemas/ 或 main.py。「原样」不参与屏蔽 —— 它通常修饰同一行里另一个
+# 受保护文件（如 tests/test_orders.py），不该连带否决端点放行。
+_ENDPOINT_EDIT_RE = re.compile(
+    r"(?:修改|调整|扩展|更新|改写|补齐|接入)\s*"
+    r"(?:POST|GET|PUT|PATCH|DELETE)\s+"
+    r"(/[A-Za-z0-9_{}./-]+)")
+_ENDPOINT_STRONG_NEG = ("不要", "不得", "禁止", "不许", "不可", "勿")
+
 
 def _explicitly_named_edit_targets(req: str) -> set:
     """提取题面正向点名要修改的既有文件；否定语境一律不认。
@@ -484,6 +500,13 @@ def _explicitly_named_edit_targets(req: str) -> set:
             continue
         for m in _EXPLICIT_PATH_RE.finditer(line):
             out.add(m.group(0).replace("\\", "/").lstrip("./"))
+    for line in (req or "").splitlines():
+        if any(neg in line for neg in _ENDPOINT_STRONG_NEG):
+            continue
+        for m in _ENDPOINT_EDIT_RE.finditer(line):
+            seg = m.group(1).strip("/").split("/")[0]
+            if seg and re.fullmatch(r"[A-Za-z0-9_]+", seg):
+                out.add(f"backend/routers/{seg}.py")
     return out
 
 
@@ -648,10 +671,22 @@ def _ensure_requested_deliverables(context: dict, intent: str) -> dict:
         context["final_file_ops"] = [op for op in ops if not op.pop("_drop", False)]
         ops = context["final_file_ops"]
 
-    produced = {_norm(op.get("path")) for op in ops}
+    # G10.37：cleanup_previous_generated 会在 final_file_ops 开头插入
+    # delete op。此刻磁盘上还留着上一遍的同名文件，只看 exists() 会
+    # 误判「题面点名的文件已交付」；Node 随后删掉它却不会重建，
+    # 工作区变成零测试文件（pytest exit 5），质量门必挂（v16 实证）。
+    # 凡是被本轮 delete 命中的路径，一律视为磁盘上不存在，强制补齐。
+    deleted = {
+        _norm(op.get("path")) for op in ops
+        if str(op.get("op") or "").lower() == "delete"
+    }
+    produced = {
+        _norm(op.get("path")) for op in ops
+        if str(op.get("op") or "").lower() != "delete"
+    }
     missing = [
         p for p in expected
-        if p not in produced and not (Path(ws_root) / p).exists()
+        if p not in produced and (p in deleted or not (Path(ws_root) / p).exists())
     ]
     if not missing:
         return {"checked": len(expected), "missing": [], "recovered": [],

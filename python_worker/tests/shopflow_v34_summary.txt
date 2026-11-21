@@ -1,0 +1,4 @@
+v34 start 2026-11-16 08:21:35
+pass 1 rc=1 at 2026-11-16 08:36:06
+STOP: pass 1 failed, not burning remaining passes
+DONE

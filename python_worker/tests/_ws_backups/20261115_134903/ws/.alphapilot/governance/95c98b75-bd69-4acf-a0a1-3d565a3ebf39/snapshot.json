@@ -1,0 +1,35 @@
+{
+  "task_id": "95c98b75-bd69-4acf-a0a1-3d565a3ebf39",
+  "created_at": "2026-11-14T11:52:38.304Z",
+  "workspace_root": "C:\\Users\\49772\\Desktop\\shopflow_ecommerce",
+  "files": {
+    "backend/routers/orders.py": {
+      "existed": true,
+      "content": "from fastapi import APIRouter, Depends, HTTPException, status\r\nfrom sqlalchemy.orm import Session\r\nfrom typing import   # ← BUG: List removed\r\n\r\nfrom backend.database import get_db\r\nfrom backend.models.order import Order, OrderStatus\r\nfrom backend.schemas.order import OrderCreate, OrderResponse, OrderUpdateStatus\r\n\r\nrouter = APIRouter()\r\n\r\n@router.post(\"/\", response_model=OrderResponse, status_code=status.HTTP_200_OK)\r\ndef create_order(order_in: OrderCreate, db: Session = Depends(get_db)):\r\n    db_order = Order(\r\n        user_id=order_in.user_id,\r\n        total_amount=order_in.total_amount,\r\n        items=order_in.items,\r\n        status=OrderStatus.PENDING.value\r\n    )\r\n    db.add(db_order)\r\n    db.commit()\r\n    db.refresh(db_order)\r\n    return db_order\r\n\r\n@router.get(\"/\", response_model=List[OrderResponse], status_code=status.HTTP_200_OK)\r\ndef get_orders(db: Session = Depends(get_db)):\r\n    return db.query(Order).all()\r\n\r\n@router.get(\"/{order_id}\", response_model=OrderResponse, status_code=status.HTTP_200_OK)\r\ndef get_order(order_id: int, db: Session = Depends(get_db)):\r\n    db_order = db.query(Order).filter(Order.id == order_id).first()\r\n    if not db_order:\r\n        raise HTTPException(status_code=404, detail=\"Order not found\")\r\n    return db_order\r\n\r\n@router.put(\"/{order_id}/status\", response_model=OrderResponse, status_code=status.HTTP_200_OK)\r\ndef update_order_status(order_id: int, order_in: OrderUpdateStatus, db: Session = Depends(get_db)):\r\n    db_order = db.query(Order).filter(Order.id == order_id).first()\r\n    if not db_order:\r\n        raise HTTPException(status_code=404, detail=\"Order not found\")\r\n    \r\n    current_status = OrderStatus(db_order.status)\r\n    if order_in.new_status not in current_status.next_states():\r\n        raise HTTPException(status_code=422, detail=\"Invalid status transition\")\r\n        \r\n    db_order.status = order_in.new_status\r\n    db.commit()\r\n    db.refresh(db_order)\r\n    return db_order\r\n\r\n@router.delete(\"/{order_id}\", status_code=status.HTTP_204_NO_CONTENT)\r\ndef delete_order(order_id: int, db: Session = Depends(get_db)):\r\n    db_order = db.query(Order).filter(Order.id == order_id).first()\r\n    if not db_order:\r\n        raise HTTPException(status_code=404, detail=\"Order not found\")\r\n    db.delete(db_order)\r\n    db.commit()\r\n    return None",
+      "sha256": "a26619bc26581347d0d50ed06374a8e3c521749496eafb7a65b8698f92314657",
+      "size": 2317,
+      "mtime_ms": 1794657050299.985
+    },
+    ".alphapilot_generated.mark": {
+      "existed": true,
+      "content": "[\n  \"backend/__init__.py\",\n  \"backend/database.py\",\n  \"backend/main.py\",\n  \"backend/models/__init__.py\",\n  \"backend/models/enums.py\",\n  \"backend/models/order.py\",\n  \"backend/routers/__init__.py\",\n  \"backend/routers/orders.py\",\n  \"backend/schemas/__init__.py\",\n  \"backend/schemas/order.py\",\n  \"requirements.txt\",\n  \"tests/__init__.py\",\n  \"tests/conftest.py\",\n  \"tests/test_orders.py\"\n]",
+      "sha256": "f651f0681a151815f1e0b113bf9cd13d9303bd0e035b056e2dbfc22f6c458eb6",
+      "size": 384,
+      "mtime_ms": 1794657040110.8655
+    },
+    "backend/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794657040097.731
+    },
+    "backend/routers/__init__.py": {
+      "existed": true,
+      "content": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime_ms": 1794657040090.771
+    }
+  }
+}

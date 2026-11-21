@@ -137,6 +137,29 @@ def _extract_conversation_id(payload: dict) -> str | None:
     return None
 
 
+def has_pending_authorization(context, steps=None) -> bool:
+    """判断任务是否存在「真正未决的人工授权」，据此决定是否跳过记忆写回。
+
+    背景：
+      finalize_task 会为所有文件操作（create/modify/delete/test/doc）生成
+      authorization_requests（R6 安全契约，交由 Node.js 执行端独立校验）。
+      这属于「已产出结果、等待宿主独立验证」的正常完成态，不应阻断记忆写回。
+      真正需要跳过写回的场景，是某个步骤被 defer、等待用户/宿主授权后才能继续
+      （例如 test 步骤需授权才能运行 pytest），此时任务尚未产出最终结论。
+
+    判定信号（任一命中即视为存在未决授权）：
+      - meta.deferred_steps 非空（_defer_test_for_authorization 设置）
+      - 任一步骤 status == "awaiting_authorization"（STEP_STATE_AWAITING_AUTHORIZATION）
+    """
+    meta = (context or {}).get("meta") or {}
+    if meta.get("deferred_steps"):
+        return True
+    return any(
+        isinstance(s, dict) and s.get("status") == "awaiting_authorization"
+        for s in (steps or ())
+    )
+
+
 def prepare_worker_request(payload, task_id, task_type, model_name, protocol_metadata=None):
     """Build Qwen-parity routing, context, memory, skill, and task metadata."""
     original_prompt = payload.get("prompt", "")
@@ -331,7 +354,7 @@ def save_worker_memory(user_id, task_id, task_type, intent, result, steps, conte
     if (
         not save_task_memories
         or not user_id
-        or context.get("meta", {}).get("authorization_requests")
+        or has_pending_authorization(context, steps)
     ):
         return
     try:
