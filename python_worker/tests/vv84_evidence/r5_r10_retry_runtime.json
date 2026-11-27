@@ -1,0 +1,59 @@
+{
+  "run_id": "vv84-r5-r10-retry",
+  "status": "passed",
+  "node_url": "http://127.0.0.1:3303",
+  "redis_container": "alphapilot-vv84-redis",
+  "redis_port": 16382,
+  "postgres_container": "alphapilot-vv83-postgres",
+  "database": "alphapilot_test_vv84",
+  "workspace": "D:\\Copilot_Alphapilot\\vv84_shopflow_isolated",
+  "project_id": "shopflow-ecommerce-vv84-20261127",
+  "baseline_path": "D:\\Copilot_Alphapilot\\Copilot_Alphapilot\\python_worker\\tests\\vv84_evidence\\workspace_baseline_r8_r10.json",
+  "pytest_command": "python -u -m pytest python_worker/tests/test_observe_task_system.py::TestShopFlowProductionPath -k \"round5 or round6 or round7 or round8 or round9 or round10\" -v -s",
+  "run_started_local": "2026-11-27T16:56:22.6085648+08:00",
+  "test_exit_code": 0,
+  "finished_local": "2026-11-27T17:14:34.7368458+08:00",
+  "test_counts": {
+    "passed": 6,
+    "failed": 0,
+    "deselected": 1,
+    "duration_seconds": 1090.88
+  },
+  "rounds": [
+    {
+      "round": "R5",
+      "task_id": "453f1469-e705-4263-aa35-58ec04ca6875",
+      "status": "PASS"
+    },
+    {
+      "round": "R6",
+      "task_id": "69151743-37c4-4cc7-bdcd-cc2c6b053fdf",
+      "status": "PASS"
+    },
+    {
+      "round": "R7",
+      "task_id": "3de746a6-5a27-4858-9f11-15c07b5519ec",
+      "status": "PASS"
+    },
+    {
+      "round": "R8",
+      "task_id": "cbeb977d-1252-4960-a208-6705e2a36335",
+      "status": "PASS"
+    },
+    {
+      "round": "R9",
+      "task_id": "dd6da514-14cf-480c-957a-1aa5e1b1acba",
+      "status": "PASS"
+    },
+    {
+      "round": "R10",
+      "task_id": "0a0d1175-1725-4b75-a05d-7e58460a8567",
+      "status": "PASS"
+    }
+  ],
+  "r8_authorized_paths_verified": [
+    "backend/services/__init__.py",
+    "backend/services/inventory_service.py"
+  ],
+  "lifecycle_note": "R8 FileOps authorization was approved and applied; the persisted Worker result status remained awaiting_authorization."
+}
